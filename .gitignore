@@ -29,6 +29,9 @@ arcana/output/
 *.pt
 *.pth
 
+# Python packaging artifacts
+*.egg-info/
+
 # Mac OS / Windows noise
 .DS_Store
 Thumbs.db

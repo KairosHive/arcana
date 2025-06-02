@@ -28,6 +28,8 @@ import os
 
 # Always use folders INSIDE the script's directory
 script_root = os.path.dirname(os.path.abspath(__file__))
+IMAGES_ROOT = os.path.abspath(os.path.join(script_root, "..", "images"))
+
 db_dir = os.path.join(script_root, "databases")
 latents_dir = os.path.join(script_root, "latents")
 os.makedirs(db_dir, exist_ok=True)
@@ -69,9 +71,14 @@ def txt2vec(text):
     return out
 
 
+# Add this at the top of your db script
+IMAGES_ROOT = os.path.abspath(os.path.join(script_root, "..", "images"))
+
 def build(glob_path, index_path, batch_size=32):
     paths = glob(glob_path, recursive=True)
     image_paths = [p for p in paths if p.lower().endswith(('.jpg', '.png'))]
+    # Save relative paths only!
+    image_paths_rel = [os.path.relpath(p, IMAGES_ROOT) for p in image_paths]
 
     index = Index(ndim=1024, metric="cos")
     idx2path = {}
@@ -79,19 +86,18 @@ def build(glob_path, index_path, batch_size=32):
     for batch_start in tqdm(range(0, len(image_paths), batch_size)):
         batch_paths = image_paths[batch_start:batch_start + batch_size]
         images = [cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB) for path in batch_paths]
-        # Use the processor to get batched tensors
         image_inputs = processor(images=images, return_tensors="pt").pixel_values.to("cuda")
         with torch.no_grad():
             batch_vecs = model.get_image_features(image_inputs).cpu().float().numpy()
-
         for i, vec in enumerate(batch_vecs):
             global_idx = batch_start + i
             index.add(global_idx, vec)
-            idx2path[global_idx] = batch_paths[i]
-
+            # Save RELATIVE path (so that app always builds correct full path)
+            idx2path[global_idx] = os.path.relpath(batch_paths[i], IMAGES_ROOT)
     with open(index_path, "wb") as f:
         pickle.dump((index.save(), idx2path), f)
     return index, idx2path
+
 
 
 
@@ -193,22 +199,21 @@ def parse_args():
     parser.add_argument('--n_components', type=int, default=2, choices=[2, 3], help='Number of latent space dimensions (2 or 3)')
     return parser.parse_args()
 
-
-if __name__ == "__main__":
+def main():
     args = parse_args()
-    imgs_path = args.imgs_path
+    imgs_path = args.imgs_path  # could be "" or "japan" or "japan/subfolder"
+    full_imgs_path = os.path.join(IMAGES_ROOT, imgs_path)  # always correct
+
     name = args.name
     n_components = args.n_components
-    # add images/ before the imgs_path
-    imgs_path = "../images/" + imgs_path
 
     index_name = os.path.join(db_dir, f"index_{name}.pkl")
     latent_name = os.path.join(latents_dir, f"latent_space_{name}_{n_components}d.pkl")
     print("path to index:", index_name)
     print("path to latent space:", latent_name)
     print("images path:", imgs_path)
-
-    index, idx2path = build(imgs_path + "/*", index_name)
+    
+    index, idx2path = build(os.path.join(full_imgs_path, "*"), index_name)
     vecs, paths, labels = latent_space(index, idx2path, n_components=n_components)
     if n_components == 2:
         df = pd.DataFrame(vecs, columns=['x', 'y'])
@@ -218,3 +223,5 @@ if __name__ == "__main__":
     df['label'] = labels
     df.to_pickle(latent_name)
 
+if __name__ == "__main__":
+    main()

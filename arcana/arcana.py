@@ -20,6 +20,8 @@ APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 LATENTS_DIR = os.path.join(APP_ROOT, "latents")
 DB_DIR = os.path.join(APP_ROOT, "databases")
 
+IMAGES_ROOT = os.path.abspath(os.path.join(APP_ROOT, "..", "images"))
+
 OUTPUT_DIR = os.path.join(APP_ROOT, "output")
 STORIES_DIR = os.path.join(OUTPUT_DIR, "stories")
 SELECTIONS_DIR = os.path.join(OUTPUT_DIR, "selections")
@@ -71,9 +73,20 @@ dataset_options = get_matching_datasets()
 default_dataset = dataset_options[0]['value'] if dataset_options else None
 
 # ------------- DATA LOADING HELPERS -------------
+def encode_image(image_rel_path):
+    full_path = os.path.join(IMAGES_ROOT, image_rel_path)
+    image = cv2.imread(full_path)
+    if image is None:
+        print(f"[ERROR] Could not load image: {full_path}")
+        return None
+    _, buffer = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+    return base64.b64encode(buffer).decode()
+
 def encode_thumbnail(path, max_side=128):
-    img = cv2.imread(path)
+    full_path = os.path.join(IMAGES_ROOT, path)
+    img = cv2.imread(full_path)
     if img is None:
+        print(f"[ERROR] Could not load image: {full_path}")
         return None
     h, w = img.shape[:2]
     scale = max_side / max(h, w)
@@ -86,6 +99,7 @@ def encode_thumbnail(path, max_side=128):
     _, buffer = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
     img_str = base64.b64encode(buffer).decode()
     return f"data:image/jpeg;base64,{img_str}"
+
 
 def load_data(name, n_dim=2):
     latent_path = os.path.join(LATENTS_DIR, f"latent_space_{name}_{n_dim}d.pkl")
@@ -108,11 +122,6 @@ def load_index(name):
         index, idx2path = pickle.load(f)
     index = Index.restore(index)
     return index, idx2path
-
-def encode_image(image_path):
-    image = cv2.imread(image_path)
-    _, buffer = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
-    return base64.b64encode(buffer).decode()
 
 # ------------- CLIP MODEL LOAD ONCE -------------
 model = CLIPModel.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K", torch_dtype=torch.float16)
@@ -407,34 +416,52 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
     msg = ""
     triggered = ctx.triggered_id if hasattr(ctx, 'triggered_id') else None
 
-    # Choose folder based on mode and button
     if triggered == 'save-button':
         # Selections go to output/selections/[your_subfolder]
         subfolder = folder or "session"
         save_dir = os.path.join(SELECTIONS_DIR, subfolder)
         os.makedirs(save_dir, exist_ok=True)
         selected_paths = [id['index'] for id, selected in zip(ids, selections) if selected]
+        n_saved = 0
         for path in selected_paths:
+            full_img_path = os.path.join(IMAGES_ROOT, path)
             basename = os.path.basename(path)
-            cv2.imwrite(os.path.join(save_dir, basename), cv2.imread(path))
-        msg = f"{len(selected_paths)} images saved successfully to {save_dir}."
+            img = cv2.imread(full_img_path)
+            if img is not None:
+                cv2.imwrite(os.path.join(save_dir, basename), img)
+                n_saved += 1
+            else:
+                print(f"[ERROR] Could not load image for saving: {full_img_path}")
+        msg = f"{n_saved} images saved successfully to {save_dir}."
+
     elif triggered == 'save-story-btn':
         # Stories go to output/stories/[your_subfolder]
         subfolder = folder or "story"
         save_dir = os.path.join(STORIES_DIR, subfolder)
         os.makedirs(save_dir, exist_ok=True)
+        n_saved = 0
         if story_cache and 'story' in story_cache:
             for i, item in enumerate(story_cache['story']):
                 basename = f"{i:02d}_" + os.path.basename(item['path'])
-                cv2.imwrite(os.path.join(save_dir, basename), cv2.imread(item['path']))
+                full_img_path = os.path.join(IMAGES_ROOT, item['path'])
+                img = cv2.imread(full_img_path)
+                if img is not None:
+                    cv2.imwrite(os.path.join(save_dir, basename), img)
+                    n_saved += 1
+                else:
+                    print(f"[ERROR] Could not load image for saving: {full_img_path}")
             with open(os.path.join(save_dir, "story.txt"), 'w', encoding='utf-8') as f:
                 for i, chunk in enumerate(story_cache['chunks']):
                     f.write(f"{i+1}. {chunk}\n")
-            msg = f"Story and {len(story_cache['story'])} images saved successfully to {save_dir}."
+            msg = f"Story and {n_saved} images saved successfully to {save_dir}."
         else:
             msg = "No story to save."
     return msg
 
-if __name__ == '__main__':
+def main():
     app.run(debug=False)
+
+if __name__ == '__main__':
+    main()
+
 

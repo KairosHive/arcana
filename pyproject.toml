@@ -1,0 +1,33 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools"]
+
+[tool.setuptools.packages.find]
+include = ["arcana*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.black]
+line-length = 128
+
+[project]
+name = "arcana"
+version = "0.1.0"
+description = "Latent space navigation for large-scale image databases using AI."
+dynamic = ["dependencies"]
+readme = {file = "README.md", content-type = "text/markdown"}
+keywords = ["latent space", "CLIP", "image retrieval", "generative", "dash", "exploration"]
+requires-python = ">=3.8"
+classifiers = [
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+]
+
+[project.scripts]
+arcana = "arcana.arcana:main"
+arcana-build-latent = "arcana.db:main"

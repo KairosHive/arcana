@@ -38,7 +38,7 @@ We recommend [conda](https://docs.conda.io/en/latest/miniconda.html) or [virtual
 ```bash
 conda create -n arcana python=3.10
 conda activate arcana
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### 3. **Prepare your images**
@@ -60,7 +60,7 @@ project_root/
 Generate CLIP features, a latent space embedding, and an index for your image folder:
 
 ```bash
-python arcana/build_latent.py --imgs_path ../images --name mydataset --n_components 2
+arcana-build-latent --imgs_path AntarticaTrip --name Antartica --n_components 2
 ```
 - `--imgs_path` is your image folder
 - `--name` is the dataset name (used as a key)
@@ -71,7 +71,7 @@ python arcana/build_latent.py --imgs_path ../images --name mydataset --n_compone
 ### 5. **Run the app**
 
 ```bash
-python arcana/arcana.py
+arcana
 ```
 
 The app will launch at `http://127.0.0.1:8050/` (visit in your browser).

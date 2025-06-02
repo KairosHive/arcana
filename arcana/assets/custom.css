@@ -1,0 +1,23 @@
+html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #121212 !important;
+}
+#_dash-app-content {
+    margin: 0 !important;
+}
+.app-container {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #121212 !important;
+}
+
+html, body {
+    overflow-x: hidden !important;
+    /* already have margin:0, padding:0, background from before */
+}
+
+body {
+    width: 100vw !important;
+    /* this ensures you don’t get scroll from body being too wide, but usually not strictly needed */
+}

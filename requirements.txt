@@ -1,0 +1,29 @@
+# Core scientific stack
+numpy>=1.23
+pandas>=1.4
+matplotlib>=3.5
+scikit-learn>=1.2
+opencv-python-headless>=4.7
+
+# Deep Learning & Transformers
+torch>=2.0
+torchvision>=0.15
+transformers>=4.39
+
+# Approximate Nearest Neighbor Search
+usearch>=2.8
+
+# Dash and Plotly stack
+dash>=2.16
+dash-daq>=0.5
+plotly>=5.19
+
+# Progress bars
+tqdm>=4.65
+
+# For base64 encoding (part of stdlib, listed for clarity)
+# base64
+
+# Optional: for type hints and parallelism (part of stdlib)
+# typing
+# concurrent.futures

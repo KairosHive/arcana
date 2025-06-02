@@ -1,0 +1,34 @@
+# Python/IDE related
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+*.env
+*.sqlite3
+
+# VSCode
+.vscode/
+
+# Dash/Flask stuff
+*.log
+
+# Ignore everything in images/, but keep the folder itself (images/ is at project root)
+images/*
+!images/.gitkeep
+
+# Ignore all data output inside arcana/
+arcana/databases/
+arcana/latents/
+arcana/output/
+
+# If you have big assets
+*.h5
+*.ckpt
+*.pt
+*.pth
+
+# Mac OS / Windows noise
+.DS_Store
+Thumbs.db

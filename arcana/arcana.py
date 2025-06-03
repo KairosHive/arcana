@@ -14,6 +14,10 @@ import dash_daq as daq
 import numpy as np
 import plotly.graph_objects as go
 import re
+from PIL import Image
+from diffusers import StableDiffusionImg2ImgPipeline
+from io import BytesIO
+
 
 torch.set_grad_enabled(False)
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -73,14 +77,20 @@ dataset_options = get_matching_datasets()
 default_dataset = dataset_options[0]['value'] if dataset_options else None
 
 # ------------- DATA LOADING HELPERS -------------
-def encode_image(image_rel_path):
+def encode_image(image_rel_path, max_width=1024):
     full_path = os.path.join(IMAGES_ROOT, image_rel_path)
     image = cv2.imread(full_path)
     if image is None:
         print(f"[ERROR] Could not load image: {full_path}")
         return None
+    h, w = image.shape[:2]
+    if w > max_width:
+        scale = max_width / float(w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
     _, buffer = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
     return base64.b64encode(buffer).decode()
+
 
 def encode_thumbnail(path, max_side=128):
     full_path = os.path.join(IMAGES_ROOT, path)
@@ -125,14 +135,20 @@ def load_index(name):
 
 # ------------- CLIP MODEL LOAD ONCE -------------
 model = CLIPModel.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K", torch_dtype=torch.float16)
-model.eval().to("cuda")
+#model.eval().to("cuda")
+model.eval().to("cpu")
 processor = CLIPProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
 
 def search(index, idx2path, query, n):
-    inputs = processor.tokenizer(query, return_tensors="pt").to("cuda")
+    # Move model to GPU for the search
+    # model.to("cuda")
+    inputs = processor.tokenizer(query, return_tensors="pt")
     vec = model.get_text_features(**inputs).detach().cpu().numpy().flatten()
+    # model.to("cpu")                     # <<<<<<<< BACK TO CPU
+    # torch.cuda.empty_cache()            # <<<<<<<< RELEASE VRAM
     idxs = index.search(vec, n, exact=True)
     return [(idx.key, idx2path[idx.key], idx.distance) for idx in idxs]
+
 
 # ------------- DASH APP -------------
 latent_options = get_latent_options()
@@ -186,12 +202,14 @@ app.layout = html.Div(style={'backgroundColor': '#121212', 'color': 'white', 'pa
     ], style={'width': '55%', 'display': 'inline-block', 'verticalAlign': 'top'}),
 
     html.Div([
-        html.Div(id='image-display', style={'overflowY': 'scroll', 'maxHeight': '80vh'}),
-        html.Button('Save Selected Images', id='save-button'),
-        dcc.Input(id='save-folder', type='text', placeholder='Enter folder path...', style={'width': '100%', 'marginTop': '5px'}),
-        html.Button('Save Story', id='save-story-btn', style={'marginTop': '10px', 'marginLeft': '0px', 'display': 'none'}),
-        html.Div(id='save-confirmation', style={'marginTop': '10px'})
-    ], style={'width': '42%', 'display': 'inline-block', 'paddingLeft': '3%', 'verticalAlign': 'top'}),
+            # Place the button above images!
+            html.Button('Inject Poetry', id='inject-poetry-btn', style={'marginBottom': '10px', 'display': 'none'}),
+            html.Div(id='image-display', style={'overflowY': 'scroll', 'maxHeight': '80vh'}),
+            html.Button('Save Selected Images', id='save-button'),
+            dcc.Input(id='save-folder', type='text', placeholder='Enter folder path...', style={'width': '100%', 'marginTop': '5px'}),
+            html.Button('Save Story', id='save-story-btn', style={'marginTop': '10px', 'marginLeft': '0px', 'display': 'none'}),
+            html.Div(id='save-confirmation', style={'marginTop': '10px'})
+        ], style={'width': '42%', 'display': 'inline-block', 'paddingLeft': '3%', 'verticalAlign': 'top'}),
 
     html.Img(id="hover-thumb", style={
         "display": "none", "position": "fixed", "top": "8px", "left": "8px", "zIndex": 1000,
@@ -200,12 +218,12 @@ app.layout = html.Div(style={'backgroundColor': '#121212', 'color': 'white', 'pa
     }),
 ])
 
-# Show/hide relevant controls for each mode
 @app.callback(
     [Output('search-box', 'style'),
      Output('num-images', 'style'),
      Output('story-box', 'style'),
-     Output('main-action-btn', 'children')],
+     Output('main-action-btn', 'children'),
+     Output('inject-poetry-btn', 'style')],
     Input('mode-select', 'value'),
 )
 def toggle_inputs(mode):
@@ -213,16 +231,117 @@ def toggle_inputs(mode):
         return (
             {'display': 'block', 'width': '60%', 'marginRight': '10px'},
             {'display': 'block', 'width': '15%', 'marginRight': '10px'},
-            {'display': 'none', 'width': '70%', 'height': '70px', 'marginRight': '10px'},
-            'Search'
+            {'display': 'none'},
+            'Search',
+            {'display': 'none'}
         )
     else:
         return (
-            {'display': 'none', 'width': '60%', 'marginRight': '10px'},
-            {'display': 'none', 'width': '15%', 'marginRight': '10px'},
+            {'display': 'none'},
+            {'display': 'none'},
             {'display': 'block', 'width': '70%', 'height': '70px', 'marginRight': '10px'},
-            'Generate Story'
+            'Generate Story',
+            {'display': 'block', 'marginTop': '10px'}
         )
+
+@app.callback(
+    [Output('save-confirmation', 'children', allow_duplicate=True),
+     Output('story-cache', 'data', allow_duplicate=True),
+     Output('image-display', 'children', allow_duplicate=True)],
+    Input('inject-poetry-btn', 'n_clicks'),
+    State('story-cache', 'data'),
+    State('save-folder', 'value'),
+    prevent_initial_call='initial_duplicate'
+)
+def inject_poetry(n_clicks, story_cache, folder):
+    if not story_cache or 'story' not in story_cache:
+        return "No story data available.", dash.no_update, dash.no_update
+
+    subfolder = folder or "story"
+    output_dir = os.path.join(STORIES_DIR, subfolder, "poetry_injected")
+    os.makedirs(output_dir, exist_ok=True)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        "stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16"
+    ).to(device)
+
+    pipe.enable_xformers_memory_efficient_attention()
+    pipe.enable_vae_slicing()
+    pipe.safety_checker = None
+    pipe.watermark = None
+
+    strength = 0.8
+    num_steps = 4
+    guidance_scale = 1.0
+    negative_prompt = "text, letters, watermark, logo, blurry, low quality"
+
+    updated_story_images = []
+    new_image_display = []
+
+    for idx, item in enumerate(story_cache['story']):
+        img_path = os.path.join(IMAGES_ROOT, item['path'])
+        prompt = item['text']
+        init_img = Image.open(img_path).convert("RGB")
+
+        max_width = 1024
+        w, h = init_img.size
+        if w > max_width:
+            scale = max_width / float(w)
+            new_w = (max_width // 8) * 8
+            new_h = (int(h * scale) // 8) * 8
+            init_img = init_img.resize((new_w, new_h), Image.LANCZOS)
+        else:
+            new_w, new_h = (w // 8) * 8, (h // 8) * 8
+            init_img = init_img.resize((new_w, new_h), Image.LANCZOS)
+
+        gen = torch.manual_seed(2222 + idx)
+
+        out_img = pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            image=init_img,
+            strength=strength,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale,
+            generator=gen,
+        ).images[0]
+
+        safe_prompt = "".join(c if c.isalnum() or c in " _-" else "_" for c in prompt)[:60]
+        gen_name = f"{idx:02d}_{os.path.splitext(os.path.basename(img_path))[0]}_{safe_prompt}_poetry.png"
+        poetry_img_path = os.path.join(output_dir, gen_name)
+        out_img.save(poetry_img_path)
+
+        # Encode the poetry image directly for UI
+        buffered = BytesIO()
+        out_img.save(buffered, format="JPEG")
+        poetry_img_str = base64.b64encode(buffered.getvalue()).decode()
+
+        updated_story_images.append({
+            'text': prompt,
+            'path': item['path'],
+            'original_img_str': item['img_str'],
+            'poetry_img_str': poetry_img_str,
+            'poetry_img_path': poetry_img_path
+        })
+
+        # Replace UI image with poetry-injected one
+        new_image_display.append(html.Div([
+            html.H5(prompt, style={'marginBottom': '4px', 'color': '#ffc107'}),
+            html.Img(src=f'data:image/jpeg;base64,{poetry_img_str}', style={'width': '100%', 'marginBottom': '10px'}),
+            daq.BooleanSwitch(id={'type': 'select-image', 'index': item['path']}, on=True, style={'display': 'none'}),
+        ], style={'marginBottom': '24px', 'padding': '10px', 'backgroundColor': '#1e1e1e', 'borderRadius': '5px'}))
+
+    pipe.to("cpu")
+    del pipe
+    torch.cuda.empty_cache()
+
+    # Update the story_cache with poetry images included
+    updated_cache = {'story': updated_story_images, 'chunks': story_cache['chunks']}
+
+    return f"Poetry-injected images saved successfully in {output_dir}.", updated_cache, new_image_display
+
+
 @app.callback(
     [Output('image-display', 'children'),
      Output('scatter-plot', 'figure'),
@@ -417,7 +536,6 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
     triggered = ctx.triggered_id if hasattr(ctx, 'triggered_id') else None
 
     if triggered == 'save-button':
-        # Selections go to output/selections/[your_subfolder]
         subfolder = folder or "session"
         save_dir = os.path.join(SELECTIONS_DIR, subfolder)
         os.makedirs(save_dir, exist_ok=True)
@@ -431,29 +549,45 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
                 cv2.imwrite(os.path.join(save_dir, basename), img)
                 n_saved += 1
             else:
-                print(f"[ERROR] Could not load image for saving: {full_img_path}")
+                print(f"[ERROR] Could not load image: {full_img_path}")
         msg = f"{n_saved} images saved successfully to {save_dir}."
 
     elif triggered == 'save-story-btn':
-        # Stories go to output/stories/[your_subfolder]
         subfolder = folder or "story"
         save_dir = os.path.join(STORIES_DIR, subfolder)
-        os.makedirs(save_dir, exist_ok=True)
+        poetry_dir = os.path.join(save_dir, "poetry_injected")
+        original_dir = os.path.join(save_dir, "original")
+        os.makedirs(poetry_dir, exist_ok=True)
+        os.makedirs(original_dir, exist_ok=True)
+
         n_saved = 0
         if story_cache and 'story' in story_cache:
             for i, item in enumerate(story_cache['story']):
-                basename = f"{i:02d}_" + os.path.basename(item['path'])
+                # Save original image (from disk directly to avoid decoding issues)
                 full_img_path = os.path.join(IMAGES_ROOT, item['path'])
-                img = cv2.imread(full_img_path)
-                if img is not None:
-                    cv2.imwrite(os.path.join(save_dir, basename), img)
+                original_img = cv2.imread(full_img_path)
+                if original_img is not None:
+                    cv2.imwrite(os.path.join(original_dir, f"{i:02d}_original.jpg"), original_img)
                     n_saved += 1
                 else:
-                    print(f"[ERROR] Could not load image for saving: {full_img_path}")
+                    print(f"[ERROR] Could not load original image from disk: {full_img_path}")
+
+                # Save poetry-injected image if available (from file path)
+                poetry_img_path = item.get('poetry_img_path')
+                if poetry_img_path and os.path.exists(poetry_img_path):
+                    poetry_img = cv2.imread(poetry_img_path)
+                    if poetry_img is not None:
+                        cv2.imwrite(os.path.join(poetry_dir, f"{i:02d}_poetry.jpg"), poetry_img)
+                        n_saved += 1
+                    else:
+                        print(f"[ERROR] Could not load poetry-injected image from disk: {poetry_img_path}")
+
+            # Save story text
             with open(os.path.join(save_dir, "story.txt"), 'w', encoding='utf-8') as f:
                 for i, chunk in enumerate(story_cache['chunks']):
                     f.write(f"{i+1}. {chunk}\n")
-            msg = f"Story and {n_saved} images saved successfully to {save_dir}."
+
+            msg = f"Story and {n_saved} images (original + poetry-injected) saved successfully to {save_dir}."
         else:
             msg = "No story to save."
     return msg

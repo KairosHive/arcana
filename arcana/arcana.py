@@ -271,7 +271,7 @@ def inject_poetry(n_clicks, story_cache, folder):
     pipe.safety_checker = None
     pipe.watermark = None
 
-    strength = 0.7
+    strength = 0.72
     num_steps = 4
     guidance_scale = 1.0
     negative_prompt = "text, letters, watermark, logo, blurry, low quality"

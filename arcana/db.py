@@ -29,6 +29,7 @@ import os
 # Always use folders INSIDE the script's directory
 script_root = os.path.dirname(os.path.abspath(__file__))
 IMAGES_ROOT = os.path.abspath(os.path.join(script_root, "..", "images"))
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
 db_dir = os.path.join(script_root, "databases")
 latents_dir = os.path.join(script_root, "latents")
@@ -74,31 +75,54 @@ def txt2vec(text):
 # Add this at the top of your db script
 IMAGES_ROOT = os.path.abspath(os.path.join(script_root, "..", "images"))
 
+
 def build(glob_path, index_path, batch_size=32):
+    # recursive=True pairs with ** in glob_path
     paths = glob(glob_path, recursive=True)
-    image_paths = [p for p in paths if p.lower().endswith(('.jpg', '.png'))]
-    # Save relative paths only!
-    image_paths_rel = [os.path.relpath(p, IMAGES_ROOT) for p in image_paths]
+
+    # Keep only files with allowed image extensions
+    image_paths = []
+    for p in paths:
+        ext = os.path.splitext(p)[1].lower()
+        if ext in IMAGE_EXTS:
+            image_paths.append(p)
+
+    print(f"[INFO] Found {len(image_paths)} images to index.")
 
     index = Index(ndim=1024, metric="cos")
     idx2path = {}
 
     for batch_start in tqdm(range(0, len(image_paths), batch_size)):
-        batch_paths = image_paths[batch_start:batch_start + batch_size]
-        images = [cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB) for path in batch_paths]
-        image_inputs = processor(images=images, return_tensors="pt").pixel_values.to("cuda")
+        batch_paths = image_paths[batch_start : batch_start + batch_size]
+
+        # Read with OpenCV; skip unreadable files quietly
+        rgb_images = []
+        ok_paths = []
+        for path in batch_paths:
+            bgr = cv2.imread(path)
+            if bgr is None:
+                print(f"[WARN] Could not read image, skipping: {path}")
+                continue
+            rgb_images.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            ok_paths.append(path)
+
+        if not ok_paths:
+            continue
+
+        image_inputs = processor(images=rgb_images, return_tensors="pt").pixel_values.to("cuda")
         with torch.no_grad():
             batch_vecs = model.get_image_features(image_inputs).cpu().float().numpy()
+
         for i, vec in enumerate(batch_vecs):
             global_idx = batch_start + i
             index.add(global_idx, vec)
-            # Save RELATIVE path (so that app always builds correct full path)
-            idx2path[global_idx] = os.path.relpath(batch_paths[i], IMAGES_ROOT)
+            # Store ABSOLUTE path so DBs work no matter where images live
+            idx2path[global_idx] = os.path.abspath(ok_paths[i])
+
     with open(index_path, "wb") as f:
         pickle.dump((index.save(), idx2path), f)
+
     return index, idx2path
-
-
 
 
 def search(index, idx2path, query):
@@ -168,14 +192,15 @@ def run_interpolation(steps=100):
             direction = 1
 
 
-
 def latent_space(index, idx2path, n_components=2):
 
     vecs = []
     paths = []
     for i in tqdm(idx2path.keys()):
         vecs.append(index.get(i))
-        paths.append(idx2path[i])
+        # ensure absolute (older DBs might be relative if you had them)
+        p = idx2path[i]
+        paths.append(p if os.path.isabs(p) else os.path.abspath(os.path.join(IMAGES_ROOT, p)))
     vecs = np.array(vecs)
     perplexity = min(30, max(5, math.ceil(len(vecs) / 10)))  # Adjust perplexity based on dataset size
     if n_components == 2:
@@ -194,15 +219,21 @@ def latent_space(index, idx2path, n_components=2):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Latent Space Builder for Image Datasets")
-    parser.add_argument('--imgs_path', type=str, required=True, help='Path to your image folder')
-    parser.add_argument('--name', type=str, required=True, help='Project name for saving index and embeddings')
-    parser.add_argument('--n_components', type=int, default=2, choices=[2, 3], help='Number of latent space dimensions (2 or 3)')
+    parser.add_argument("--imgs_path", type=str, required=True, help="Path to your image folder")
+    parser.add_argument("--name", type=str, required=True, help="Project name for saving index and embeddings")
+    parser.add_argument(
+        "--n_components", type=int, default=2, choices=[2, 3], help="Number of latent space dimensions (2 or 3)"
+    )
     return parser.parse_args()
+
 
 def main():
     args = parse_args()
-    imgs_path = args.imgs_path  # could be "" or "japan" or "japan/subfolder"
-    full_imgs_path = os.path.join(IMAGES_ROOT, imgs_path)  # always correct
+    imgs_path = args.imgs_path  # may be a folder under images/ or an absolute folder
+    full_imgs_path = imgs_path if os.path.isabs(imgs_path) else os.path.join(IMAGES_ROOT, imgs_path)
+
+    # NEW: if a directory was provided, turn it into a recursive glob
+    glob_arg = os.path.join(full_imgs_path, "**", "*") if os.path.isdir(full_imgs_path) else full_imgs_path
 
     name = args.name
     n_components = args.n_components
@@ -211,17 +242,19 @@ def main():
     latent_name = os.path.join(latents_dir, f"latent_space_{name}_{n_components}d.pkl")
     print("path to index:", index_name)
     print("path to latent space:", latent_name)
-    print("images path:", imgs_path)
-    
-    index, idx2path = build(os.path.join(full_imgs_path, "*"), index_name)
+    print("images path (search):", glob_arg)
+
+    index, idx2path = build(glob_arg, index_name)  # << use glob_arg
     vecs, paths, labels = latent_space(index, idx2path, n_components=n_components)
+
     if n_components == 2:
-        df = pd.DataFrame(vecs, columns=['x', 'y'])
+        df = pd.DataFrame(vecs, columns=["x", "y"])
     elif n_components == 3:
-        df = pd.DataFrame(vecs, columns=['x', 'y', 'z'])
-    df['path'] = paths
-    df['label'] = labels
+        df = pd.DataFrame(vecs, columns=["x", "y", "z"])
+    df["path"] = paths
+    df["label"] = labels
     df.to_pickle(latent_name)
+
 
 if __name__ == "__main__":
     main()

@@ -21,6 +21,7 @@ from functools import lru_cache
 from flask import Response, request
 import urllib.parse
 from dash import ALL
+import hashlib
 
 
 torch.set_grad_enabled(False)
@@ -361,6 +362,7 @@ app.layout = html.Div(
         dcc.Store(id="story-cache", storage_type="memory"),
         dcc.Store(id="grouped-results", storage_type="memory"),
         dcc.Store(id="carousel-state", storage_type="memory"),
+        dcc.Store(id="carousel-order", storage_type="memory"),
         html.Div(
             [
                 dcc.Graph(id="scatter-plot", style={"height": "80vh"}),
@@ -603,6 +605,7 @@ def inject_poetry(n_clicks, story_cache, folder):
         Output("story-cache", "data"),
         Output("grouped-results", "data"),
         Output("carousel-state", "data"),
+        Output("carousel-order", "data"),
     ],
     [
         Input("main-action-btn", "n_clicks"),
@@ -624,7 +627,7 @@ def update_images(
 ):
     # Nothing selected yet
     if not dataset_value:
-        return [], go.Figure(), {"display": "none"}, {}, [], {}
+        return [], go.Figure(), {"display": "none"}, {}, [], {}, []
 
     # Parse "<name>::<dim>" defensively
     try:
@@ -632,7 +635,7 @@ def update_images(
         n_dim = int(dim)
     except Exception as e:
         print(f"[update_images] bad dataset value={dataset_value!r}: {e}")
-        return [], go.Figure(), {"display": "none"}, {}, [], {}
+        return [], go.Figure(), {"display": "none"}, {}, [], {}, []
 
     db_name = latent_name
 
@@ -767,7 +770,7 @@ def update_images(
             )
         show_save_story = {"display": "block", "marginTop": "10px"}
         story_cache = {"story": story_images, "chunks": story_chunks}
-        return images, fig, show_save_story, story_cache, groups_store, car_state_store
+        return images, fig, show_save_story, story_cache, groups_store, car_state_store, []
 
     # --- PROMPT mode with grouping / carousel ---
     if mode == "prompt" and trigger == "main-action-btn" and search_value:
@@ -812,8 +815,10 @@ def update_images(
             print(f"[DEBUG] Ungrouped results: {groups}")
 
         car_state = {g["gid"]: 0 for g in groups}
+        carousel_order = [g["gid"] for g in groups if len(g.get("paths", [])) > 1]
         print(f"[DEBUG] Carousel state: {car_state}")
         cards = []
+
         for g in groups:
             n = len(g["paths"])
             print(f"[DEBUG] Group {g['gid']} has {n} paths: {g['paths']}")
@@ -925,7 +930,7 @@ def update_images(
                 )
 
         print(f"[DEBUG] Returning {len(cards)} cards")
-        return cards, fig, {"display": "none"}, {}, groups, car_state
+        return cards, fig, {"display": "none"}, {}, groups, car_state, carousel_order
 
     # --- Scatter click (unchanged) ---
     if trigger == "scatter-plot" and clickData:
@@ -934,7 +939,7 @@ def update_images(
         image_path = custom[0] if custom else None
         if not image_path:
             # No 'path' available for this dataset; just return the fig without cards
-            return images, fig, {"display": "none"}, {}, [], {}
+            return images, fig, {"display": "none"}, {}, [], {}, []
 
         qpath = urllib.parse.quote(image_path)
         images.append(
@@ -955,13 +960,13 @@ def update_images(
                 style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
             )
         )
-        return images, fig, {"display": "none"}, {}, [], {}
+        return images, fig, {"display": "none"}, {}, [], {}, []
 
     # keep camera on pan/zoom
     if is_3d and relayoutData and "scene.camera" in relayoutData:
         fig.update_layout(scene_camera=relayoutData["scene.camera"])
 
-    return images, fig, show_save_story, story_cache, groups_store, car_state_store
+    return images, fig, show_save_story, story_cache, groups_store, car_state_store, []
 
 
 @app.callback(
@@ -974,44 +979,59 @@ def update_images(
     [
         Input({"type": "left", "gid": ALL}, "n_clicks"),
         Input({"type": "right", "gid": ALL}, "n_clicks"),
+        Input("grouped-results", "data"),  # NEW: keep counters in sync with fresh groups
+        Input("carousel-order", "data"),  # NEW: know DOM order of carousels
     ],
     [
         State("carousel-state", "data"),
-        State("grouped-results", "data"),
     ],
     prevent_initial_call=True,
 )
-def nav_carousel(left_clicks, right_clicks, car_state, groups):
-    if not groups:
-        return car_state, [], [], []
+def nav_carousel(left_clicks, right_clicks, groups, order, car_state):
+    # Defensive defaults
+    groups = groups or []
+    order = order or []
 
-    if car_state is None:
-        car_state = {}
-
-    # Only groups that actually render a carousel component
-    car_groups = [g for g in groups if len(g.get("paths", [])) > 1]
+    # Only consider groups that actually render a carousel
+    car_groups = {g["gid"]: g for g in groups if len(g.get("paths", [])) > 1}
 
     # If there are no carousel components in the layout, return empty lists
-    if not car_groups:
-        return car_state, [], [], []
+    if not order:
+        return car_state or {}, [], [], []
 
+    # Initialize or reconcile carousel state with the current groups
+    car_state = dict(car_state or {})
+    for gid in car_groups:
+        car_state.setdefault(gid, 0)
+    # Drop stale gids from state
+    car_state = {gid: idx for gid, idx in car_state.items() if gid in car_groups}
+
+    # If the trigger was a left/right click, update that gid
     trig = ctx.triggered_id
     if isinstance(trig, dict) and trig.get("type") in ("left", "right"):
         gid = trig.get("gid")
-        group = next((g for g in car_groups if g["gid"] == gid), None)
-        if group:
-            n = len(group["paths"])
+        g = car_groups.get(gid)
+        if g:
+            n = len(g["paths"])
             cur = car_state.get(gid, 0)
             cur = (cur - 1) % n if trig["type"] == "left" else (cur + 1) % n
             car_state[gid] = cur
 
+    # Build outputs strictly following the DOM order we stored
     srcs, srcsets, counters = [], [], []
-    for g in car_groups:
-        gid = g["gid"]
+    for gid in order:
+        g = car_groups.get(gid)
+        if not g:
+            # If the DOM still has an old component for a gid that vanished,
+            # append placeholders so list lengths match number of components.
+            srcs.append(dash.no_update)
+            srcsets.append(dash.no_update)
+            counters.append(dash.no_update)
+            continue
+
         paths = g["paths"]
         cur = car_state.get(gid, 0) % len(paths)
-        p = paths[cur]
-        qp = urllib.parse.quote(p)
+        qp = urllib.parse.quote(paths[cur])
         srcs.append(f"/preview?p={qp}&w=900")
         srcsets.append(f"/preview?p={qp}&w=600 600w, " f"/preview?p={qp}&w=900 900w, " f"/preview?p={qp}&w=1400 1400w")
         counters.append(f"{cur+1}/{len(paths)}")
@@ -1104,9 +1124,11 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
                 continue
             full_img_path = resolve_path(path)
             basename = os.path.basename(full_img_path)
+            prefix = hashlib.md5(path.encode("utf-8")).hexdigest()[:8]
+            safe_name = f"{prefix}_{basename}"
             img = cv2.imread(full_img_path)
             if img is not None:
-                cv2.imwrite(os.path.join(save_dir, basename), img)
+                cv2.imwrite(os.path.join(save_dir, safe_name), img)
                 n_saved += 1
             else:
                 print(f"[ERROR] Could not load image: {full_img_path}")

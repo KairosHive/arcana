@@ -22,6 +22,20 @@ from flask import Response, request
 import urllib.parse
 from dash import ALL
 import hashlib
+import shutil  # <— add at top of file with other imports if not present
+import librosa
+from matplotlib import pyplot as plt
+
+
+
+# --- audio + CLAP ---
+import soundfile as sf
+try:
+    import torchaudio
+except Exception:
+    torchaudio = None
+from transformers import ClapModel, ClapProcessor
+
 
 
 torch.set_grad_enabled(False)
@@ -34,6 +48,28 @@ IMAGES_ROOT = os.path.abspath(os.path.join(APP_ROOT, "..", "images"))
 OUTPUT_DIR = os.path.join(APP_ROOT, "output")
 STORIES_DIR = os.path.join(OUTPUT_DIR, "stories")
 SELECTIONS_DIR = os.path.join(OUTPUT_DIR, "selections")
+AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+
+# ---- FAST SPEC CONFIG + CACHE ----
+SPEC_CACHE_DIR = os.path.join(APP_ROOT, "cache_specs")
+os.makedirs(SPEC_CACHE_DIR, exist_ok=True)
+
+# small but good-looking preview defaults (tweak if you want)
+SPEC_PREVIEW_SR = 16000
+SPEC_PREVIEW_SEC = None
+SPEC_N_MELS = 96
+SPEC_NFFT = 1024
+SPEC_HOP = 256
+SPEC_WIDTH = 900
+SPEC_HEIGHT = 160
+
+# 256-color look-up table (no heavy plotting)
+_SPEC_LUT = (plt.get_cmap("magma")(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
+
+# lightweight threadpool to prewarm cache
+SPEC_EXEC = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4)//2))
+
+
 
 os.makedirs(STORIES_DIR, exist_ok=True)
 os.makedirs(SELECTIONS_DIR, exist_ok=True)
@@ -42,6 +78,24 @@ os.makedirs(SELECTIONS_DIR, exist_ok=True)
 # ------------- FILE DISCOVERY HELPERS -------------
 
 from functools import lru_cache
+
+def _slugify(txt: str, maxlen: int = 40) -> str:
+    s = "".join(c if c.isalnum() else "-" for c in txt).strip("-")
+    s = re.sub(r"-+", "-", s)
+    return s[:maxlen] or "text"
+
+def _short_poetry_name(img_path: str, prompt: str, idx: int, ext: str = "png") -> str:
+    base_hash = hashlib.md5(img_path.encode("utf-8")).hexdigest()[:8]
+    prompt_slug = _slugify(prompt, maxlen=36)
+    return f"{idx:02d}_{base_hash}_{prompt_slug}_poetry.{ext}"
+
+def _win_longpath(p: str) -> str:
+    # Optional: makes Windows accept very long absolute paths.
+    if os.name == "nt":
+        ap = os.path.abspath(p)
+        if not ap.startswith("\\\\?\\"):
+            return "\\\\?\\" + ap
+    return p
 
 
 @lru_cache(maxsize=50000)
@@ -83,6 +137,54 @@ def make_resized_bytes(path: str, max_w: int = 900, q: int = 72) -> bytes | None
 @lru_cache(maxsize=50000)  # 13k fits
 def thumb_b64_for(path: str) -> str | None:
     return encode_thumbnail(path)  # uses resolve_path inside
+
+
+# --- replace current signature + body ---
+def read_audio_mono(path, target_sr=24000, seconds=None, pad=False):
+    full = resolve_path(path)
+    if torchaudio is not None:
+        wav, sr = torchaudio.load(full)  # (ch, n)
+        wav = wav.mean(dim=0).numpy()
+    else:
+        wav, sr = sf.read(full, always_2d=False)
+        if wav.ndim == 2:
+            wav = wav.mean(axis=1)
+
+    # resample
+    if sr != target_sr:
+        if torchaudio is not None:
+            wav = torchaudio.functional.resample(torch.from_numpy(wav), sr, target_sr).numpy()
+        else:
+            import librosa
+            wav = librosa.resample(wav, orig_sr=sr, target_sr=target_sr)
+
+    # crop (no right-pad unless pad=True)
+    if seconds is not None:
+        max_len = int(target_sr * seconds)
+        if wav.shape[0] > max_len:
+            wav = wav[:max_len]
+        elif pad:
+            wav = np.pad(wav, (0, max_len - wav.shape[0]))
+    return wav.astype(np.float32), target_sr
+
+
+@lru_cache(maxsize=20000)
+def make_waveform_png(path: str, width=900, height=160) -> bytes | None:
+    try:
+        x, _ = read_audio_mono(path, target_sr=24000, seconds=None, pad=False)
+        x = x / (np.max(np.abs(x)) + 1e-8)
+        img = np.full((height, width, 3), 18, dtype=np.uint8)  # dark bg
+        mid = height // 2
+        xs = np.linspace(0, len(x)-1, width).astype(int)
+        ys = (x[xs] * (height*0.45)).astype(int)
+        for i in range(1, width):
+            y0, y1 = int(mid - ys[i-1]), int(mid - ys[i])
+            cv2.line(img, (i-1, y0), (i, y1), (200,200,200), 1)
+        ok, buf = cv2.imencode(".png", img)
+        return buf.tobytes() if ok else None
+    except Exception as e:
+        print("[waveform] error:", e)
+        return None
 
 
 def _cosine_group(keys, paths, index: Index, thresh: float = 0.08):
@@ -161,24 +263,26 @@ def get_db_options(db_dir=DB_DIR):
 
 
 def get_matching_datasets(latent_dir=LATENTS_DIR, db_dir=DB_DIR):
-    latent_pattern = re.compile(r"latent_space_(.+)_(\d+)d\.pkl$")
-    latent_map = {}
+    # Files: latent_space_<name>_<mod>_<dim>d.pkl  &  index_<name>_<mod>.pkl
+    lat_pat = re.compile(r"latent_space_(.+)_(image|audio)_(\d+)d\.pkl$")
+    db_pat  = re.compile(r"index_(.+)_(image|audio)\.pkl$")
+    lat_map = {}
     for fname in os.listdir(latent_dir):
-        m = latent_pattern.match(fname)
+        m = lat_pat.match(fname)
         if m:
-            name, dim = m.group(1), m.group(2)
-            latent_map.setdefault(name, []).append(dim)
-    # Now find intersection with databases
-    db_pattern = re.compile(r"index_(.+)\.pkl$")
-    db_names = {m.group(1) for fname in os.listdir(db_dir) if (m := db_pattern.match(fname))}
+            name, mod, dim = m.group(1), m.group(2), m.group(3)
+            lat_map.setdefault((name, mod), []).append(dim)
+    db_keys = {(m.group(1), m.group(2)) for fname in os.listdir(db_dir) if (m := db_pat.match(fname))}
     options = []
-    for name, dims in latent_map.items():
-        if name in db_names:
-            for dim in sorted(dims):
-                label = f"{name} ({dim}D)"
-                value = f"{name}::{dim}"
-                options.append({"label": label, "value": value})
+    for (name, mod), dims in lat_map.items():
+        if (name, mod) in db_keys:
+            for d in sorted(dims):
+                options.append({
+                    "label": f"{name} · {mod} ({d}D)",
+                    "value": f"{name}::{d}::{mod}"
+                })
     return sorted(options, key=lambda x: x["label"])
+
 
 
 dataset_options = get_matching_datasets()
@@ -220,28 +324,25 @@ def encode_thumbnail(path, max_side=128):
     return f"data:image/jpeg;base64,{img_str}"
 
 
-def load_data(name, n_dim=2):
-    latent_path = os.path.join(LATENTS_DIR, f"latent_space_{name}_{n_dim}d.pkl")
+def load_data(name, n_dim=2, modality="image"):
+    latent_path = os.path.join(LATENTS_DIR, f"latent_space_{name}_{modality}_{n_dim}d.pkl")
     df = pd.read_pickle(latent_path)
 
-    # normalize schema / dtypes
     if "label" in df.columns:
         df["label"] = df["label"].astype(str)
     if "path" in df.columns:
         df["path"] = df["path"].astype(str)
     for col in ("x", "y", "z"):
         if col in df.columns:
-            df[col] = df[col].astype("float32")  # lighter plots
-
+            df[col] = df[col].astype("float32")
     return df.reset_index(drop=True)
 
-
-def load_index(name):
-    index_name = os.path.join(DB_DIR, f"index_{name}.pkl")
+def load_index(name, modality="image"):
+    index_name = os.path.join(DB_DIR, f"index_{name}_{modality}.pkl")
     with open(index_name, "rb") as f:
-        index, idx2path = pickle.load(f)
-    index = Index.restore(index)
-    return index, idx2path
+        idx_blob, idx2path = pickle.load(f)
+    return Index.restore(idx_blob), idx2path
+
 
 
 # ------------- CLIP MODEL LOAD ONCE -------------
@@ -250,16 +351,37 @@ model = CLIPModel.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K", torch
 model.eval().to("cpu")
 processor = CLIPProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
 
+# --- lazy CLAP (keep FP32 to avoid BN/dtype issues) ---
+_CLAP = {"model": None, "proc": None}
+def load_clap(device="cpu"):
+    if _CLAP["model"] is None:
+        m = ClapModel.from_pretrained("laion/clap-htsat-fused")
+        m.eval().to(device)
+        p = ClapProcessor.from_pretrained("laion/clap-htsat-fused")
+        _CLAP.update(model=m, proc=p)
+    return _CLAP["model"], _CLAP["proc"]
 
-def search(index, idx2path, query, n):
-    # Move model to GPU for the search
-    # model.to("cuda")
-    inputs = processor.tokenizer(query, return_tensors="pt")
-    vec = model.get_text_features(**inputs).detach().cpu().numpy().flatten()
-    # model.to("cpu")                     # <<<<<<<< BACK TO CPU
-    # torch.cuda.empty_cache()            # <<<<<<<< RELEASE VRAM
+
+def search(index, idx2path, query, n, modality="image"):
+    if modality == "image":
+        inputs = processor.tokenizer(query, return_tensors="pt")
+        vec = model.get_text_features(**inputs).detach().cpu().numpy().flatten()
+    else:
+        clap_model, clap_proc = load_clap(device="cpu")
+        inputs = clap_proc(text=[query], return_tensors="pt", padding=True)
+        # keep FP32
+        for k in inputs:
+            inputs[k] = inputs[k].to(clap_model.device)
+        with torch.no_grad():
+            try:
+                emb = clap_model.get_text_features(**inputs)
+            except AttributeError:
+                emb = clap_model(**inputs).text_embeds
+        vec = emb.squeeze().detach().cpu().numpy().flatten()
+
     idxs = index.search(vec, n, exact=True)
     return [(idx.key, idx2path[idx.key], idx.distance) for idx in idxs]
+
 
 
 # ------------- DASH APP -------------
@@ -315,6 +437,43 @@ def preview_endpoint():
         mimetype="image/jpeg",
         headers={"Cache-Control": "public, max-age=31536000"},
     )
+
+@app.server.route("/audio")
+def audio_endpoint():
+    p = request.args.get("p")
+    if not p:
+        return Response("missing p", status=400)
+    path = urllib.parse.unquote(p)
+    full = resolve_path(path)
+    if not os.path.exists(full):
+        return Response(status=404)
+    ext = os.path.splitext(full)[1].lower()
+    mime = "audio/mpeg" if ext in [".mp3", ".m4a", ".aac"] else "audio/wav"
+    with open(full, "rb") as f:
+        data = f.read()
+    return Response(data, mimetype=mime, headers={"Cache-Control": "public, max-age=31536000"})
+
+@app.server.route("/awave")
+def awave_endpoint():
+    p = request.args.get("p")
+    if not p:
+        return Response("missing p", status=400)
+    path = urllib.parse.unquote(p)
+    data = make_waveform_png(path)
+    if data is None:
+        return Response(status=404)
+    return Response(data, mimetype="image/png", headers={"Cache-Control": "public, max-age=31536000"})
+
+@app.server.route("/aspec")
+def aspec_endpoint():
+    p = request.args.get("p")
+    if not p:
+        return Response("missing p", status=400)
+    path = urllib.parse.unquote(p)
+    data = make_melspec_png(path)
+    if data is None:
+        return Response(status=404)
+    return Response(data, mimetype="image/png", headers={"Cache-Control": "public, max-age=31536000"})
 
 
 @app.callback(
@@ -417,6 +576,14 @@ app.layout = html.Div(
                     ],
                     style={"margin": "8px 0 6px 0"},
                 ),
+                html.Div(
+                    [
+                        html.Label("Spectrogram", style={"marginRight": "8px"}),
+                        daq.BooleanSwitch(id="spec-toggle", on=False, color="#00bcd4"),
+                    ],
+                    style={"margin": "6px 0 10px 0"},
+                ),
+
                 html.Div(id="image-display", style={"overflowY": "scroll", "overflowX": "hidden", "maxHeight": "80vh"}),
                 # ⬇️ ADD THIS BLOCK HERE ⬇️
                 html.Div(
@@ -555,25 +722,29 @@ def inject_poetry(n_clicks, story_cache, folder):
             generator=gen,
         ).images[0]
 
-        safe_prompt = "".join(c if c.isalnum() or c in " _-" else "_" for c in prompt)[:60]
-        gen_name = f"{idx:02d}_{os.path.splitext(os.path.basename(img_path))[0]}_{safe_prompt}_poetry.png"
+        gen_name = _short_poetry_name(img_path, prompt, idx, ext="png")
         poetry_img_path = os.path.join(output_dir, gen_name)
-        out_img.save(poetry_img_path)
 
-        # Encode the poetry image directly for UI
+        # Save (optionally with long-path helper on Windows)
+        save_path = _win_longpath(poetry_img_path)  # or just poetry_img_path if not using the helper
+        out_img.save(save_path)
+
+        # ⬇️ Put this line here:
+        poetry_img_path = os.path.abspath(poetry_img_path)
+
+        # Then build the base64 and append to updated_story_images
         buffered = BytesIO()
         out_img.save(buffered, format="JPEG")
         poetry_img_str = base64.b64encode(buffered.getvalue()).decode()
 
-        updated_story_images.append(
-            {
-                "text": prompt,
-                "path": item["path"],
-                "original_img_str": item["img_str"],
-                "poetry_img_str": poetry_img_str,
-                "poetry_img_path": poetry_img_path,
-            }
-        )
+        updated_story_images.append({
+            "text": prompt,
+            "path": item["path"],
+            "original_img_str": item["img_str"],
+            "poetry_img_str": poetry_img_str,
+            "poetry_img_path": poetry_img_path,  # now absolute
+        })
+
 
         # Replace UI image with poetry-injected one
         new_image_display.append(
@@ -595,6 +766,94 @@ def inject_poetry(n_clicks, story_cache, folder):
     updated_cache = {"story": updated_story_images, "chunks": story_cache["chunks"]}
 
     return f"Poetry-injected images saved successfully in {output_dir}.", updated_cache, new_image_display
+
+@lru_cache(maxsize=40000)  # cache reads of files we've already written
+def _read_cached_spec(key: str) -> bytes | None:
+    f = os.path.join(SPEC_CACHE_DIR, f"{key}.png")
+    try:
+        with open(f, "rb") as fh:
+            return fh.read()
+    except Exception:
+        return None
+
+def _write_cached_spec(key: str, data: bytes) -> None:
+    f = os.path.join(SPEC_CACHE_DIR, f"{key}.png")
+    try:
+        with open(f, "wb") as fh:
+            fh.write(data)
+    except Exception as e:
+        print("[spec-cache] write failed:", e)
+
+def _spec_cache_key(full_path: str, mtime: float, params: tuple) -> str:
+    s = f"{full_path}|{mtime}|" + "|".join(map(str, params)) + "|v3"
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+def _mel_db(y: np.ndarray, sr: int, n_fft: int, hop: int, n_mels: int) -> np.ndarray:
+    # Torch path is fast and can use GPU if available; falls back to librosa
+    if torchaudio is not None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        wav = torch.from_numpy(y).to(device).unsqueeze(0)  # (1, T)
+        mel = torchaudio.transforms.MelSpectrogram(
+            sample_rate=sr, n_fft=n_fft, hop_length=hop, n_mels=n_mels, power=2.0
+        ).to(device)(wav)  # (1, mels, frames)
+        db = torchaudio.transforms.AmplitudeToDB(stype="power").to(device)(mel)
+        return db.squeeze(0).detach().cpu().numpy()
+    else:
+        S = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=n_fft, hop_length=hop, n_mels=n_mels, power=2.0)
+        return librosa.power_to_db(S, ref=np.max)
+
+def _colorize_8bit(gray: np.ndarray) -> np.ndarray:
+    # gray: HxW uint8 (0..255); LUT maps to RGB
+    return _SPEC_LUT[gray]  # -> HxWx3 uint8
+
+def make_melspec_png(
+    path: str,
+    width_px: int = SPEC_WIDTH,
+    height_px: int = SPEC_HEIGHT,
+    sr: int = SPEC_PREVIEW_SR,
+    seconds: int = SPEC_PREVIEW_SEC,
+    n_fft: int = SPEC_NFFT,
+    hop_length: int = SPEC_HOP,
+    n_mels: int = SPEC_N_MELS,
+) -> bytes | None:
+    try:
+        full = resolve_path(path)
+        if not os.path.exists(full):
+            return None
+        mtime = os.path.getmtime(full)
+        key = _spec_cache_key(full, mtime, (width_px, height_px, sr, seconds, n_fft, hop_length, n_mels))
+        cached = _read_cached_spec(key)
+        if cached is not None:
+            return cached
+
+        # read & downsample short window (already normalized/padded inside)
+        y, _ = read_audio_mono(path, target_sr=sr, seconds=SPEC_PREVIEW_SEC, pad=False)
+
+        # compute mel in dB (mels x frames)
+        S_db = _mel_db(y, sr, n_fft, hop_length, n_mels)
+
+        # normalize to 0..255, flip vertically to mimic origin='lower'
+        S_db = np.nan_to_num(S_db, nan=np.min(S_db))
+        mn, mx = float(S_db.min()), float(S_db.max())
+        rng = (mx - mn) if (mx > mn) else 1.0
+        img8 = ((S_db - mn) / rng * 255.0).astype(np.uint8)
+        img8 = np.flipud(img8)  # put low freqs at bottom
+
+        # resize to requested canvas
+        img8 = cv2.resize(img8, (width_px, height_px), interpolation=cv2.INTER_AREA)
+
+        # colorize via LUT and encode PNG
+        rgb = _colorize_8bit(img8)  # HxWx3
+        ok, buf = cv2.imencode(".png", rgb)
+        if not ok:
+            return None
+        data = buf.tobytes()
+        _write_cached_spec(key, data)
+        return data
+    except Exception as e:
+        print("[melspec-fast] error:", e)
+        return None
+
 
 
 @app.callback(
@@ -620,27 +879,32 @@ def inject_poetry(n_clicks, story_cache, folder):
         State("story-box", "value"),
         State("group-similar", "on"),
         State("sim-thresh", "value"),
+        State("spec-toggle", "on"),
     ],
 )
 def update_images(
-    n_action, clickData, mode, dataset_value, search_value, num_images, relayoutData, story_value, group_on, sim_thresh
+    n_action, clickData, mode, dataset_value, search_value, num_images, relayoutData, story_value, group_on, sim_thresh, spec_on
 ):
+
     # Nothing selected yet
     if not dataset_value:
         return [], go.Figure(), {"display": "none"}, {}, [], {}, []
 
-    # Parse "<name>::<dim>" defensively
+    # Parse "<name>::<dim>::<modality>" (backward compat to ::dim)
     try:
-        latent_name, dim = dataset_value.split("::", 1)
-        n_dim = int(dim)
+        parts = (dataset_value or "").split("::")
+        if len(parts) == 3:
+            latent_name, dim, modality = parts[0], int(parts[1]), parts[2]
+        else:
+            latent_name, dim, modality = parts[0], int(parts[1]), "image"
     except Exception as e:
         print(f"[update_images] bad dataset value={dataset_value!r}: {e}")
         return [], go.Figure(), {"display": "none"}, {}, [], {}, []
-
     db_name = latent_name
 
+
     # Load coordinates only; DO NOT load the search index yet
-    df = load_data(latent_name, n_dim=n_dim)
+    df = load_data(latent_name, n_dim=dim, modality=modality)
 
     is_3d = all(c in df.columns for c in ["x", "y", "z"])
     color_seq = px.colors.qualitative.Dark24
@@ -684,13 +948,13 @@ def update_images(
 
     # --- STORY mode (unchanged logic, but return empty group/carousel stores) ---
     if mode == "story" and trigger == "main-action-btn" and story_value:
-        index, idx2path = load_index(db_name)
+        index, idx2path = load_index(db_name, modality=modality)
         print("[DEBUG] STORY mode triggered")
         story_chunks = [chunk.strip() for chunk in story_value.split("\n") if chunk.strip()]
         print(f"[DEBUG] Story chunks: {story_chunks}")
         story_images = []
         for i, chunk in enumerate(story_chunks):
-            results = search(index, idx2path, chunk, 1)
+            results = search(index, idx2path, chunk, 1, modality=modality)
             print(f"[DEBUG] Search results for chunk '{chunk}': {results}")
             if results:
                 _, path, _ = results[0]
@@ -750,24 +1014,30 @@ def update_images(
 
         for img in story_images:
             qpath = urllib.parse.quote(img["path"])
-            images.append(
+            if modality == "image":
+                media = html.Img(
+                    src=f"/preview?p={qpath}&w=900",
+                    srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w",
+                    sizes="(max-width: 900px) 90vw, 42vw",
+                    style={"width": "100%", "marginBottom": "10px"},
+                )
+            else:
+                preview_endpoint = "/aspec" if spec_on else "/awave"
+                media = html.Div([
+                    html.Img(src=f"{preview_endpoint}?p={qpath}", style={"width": "100%", "marginBottom": "8px"}),
+                    html.Audio(src=f"/audio?p={qpath}", controls=True, style={"width": "100%"}),
+                ])
+            images.append(  # unchanged wrapper...
+
                 html.Div(
                     [
                         html.H5(img["text"], style={"marginBottom": "4px", "color": "#ffc107"}),
-                        html.Img(
-                            src=f"/preview?p={qpath}&w=900",
-                            srcSet=(
-                                f"/preview?p={qpath}&w=600 600w, "
-                                f"/preview?p={qpath}&w=900 900w, "
-                                f"/preview?p={qpath}&w=1400 1400w"
-                            ),
-                            sizes="(max-width: 900px) 90vw, 42vw",
-                            style={"width": "100%", "marginBottom": "10px"},
-                        ),
+                        media,
                     ],
                     style={"marginBottom": "24px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
                 )
             )
+
         show_save_story = {"display": "block", "marginTop": "10px"}
         story_cache = {"story": story_images, "chunks": story_chunks}
         return images, fig, show_save_story, story_cache, groups_store, car_state_store, []
@@ -775,8 +1045,9 @@ def update_images(
     # --- PROMPT mode with grouping / carousel ---
     if mode == "prompt" and trigger == "main-action-btn" and search_value:
         print("[DEBUG] PROMPT mode triggered")
-        index, idx2path = load_index(db_name)
-        results = search(index, idx2path, search_value, num_images)
+        index, idx2path = load_index(db_name, modality=modality)
+        results = search(index, idx2path, search_value, num_images, modality=modality)
+
         print(f"[DEBUG] Search results: {results}")
         if len(results):
             highlighted_df = df.loc[[r[0] for r in results]]
@@ -821,23 +1092,27 @@ def update_images(
 
         for g in groups:
             n = len(g["paths"])
-            print(f"[DEBUG] Group {g['gid']} has {n} paths: {g['paths']}")
             first = g["paths"][0]
             qpath = urllib.parse.quote(first)
+
             if n == 1:
+                if modality == "image":
+                    preview = html.Img(
+                        src=f"/preview?p={qpath}&w=900",
+                        srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w",
+                        sizes="(max-width: 900px) 90vw, 42vw",
+                        style={"width": "100%", "marginBottom": "10px"},
+                    )
+                else:
+                    preview = html.Div([
+                        html.Img(src=f"{('/aspec' if spec_on else '/awave')}?p={qpath}", style={"width": "100%", "marginBottom": "6px"}),
+                        html.Audio(src=f"/audio?p={qpath}", controls=True, style={"width": "100%"}),
+                    ])
+
                 cards.append(
                     html.Div(
                         [
-                            html.Img(
-                                src=f"/preview?p={qpath}&w=900",
-                                srcSet=(
-                                    f"/preview?p={qpath}&w=600 600w, "
-                                    f"/preview?p={qpath}&w=900 900w, "
-                                    f"/preview?p={qpath}&w=1400 1400w"
-                                ),
-                                sizes="(max-width: 900px) 90vw, 42vw",
-                                style={"width": "100%", "marginBottom": "10px"},
-                            ),
+                            preview,
                             daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
                             html.Span(" (no twins)", style={"marginLeft": "10px", "opacity": 0.7}),
                         ],
@@ -845,122 +1120,107 @@ def update_images(
                     )
                 )
             else:
+                # carousel
+                if modality == "image":
+                    media_el = html.Img(
+                        id={"type": "carousel-img", "gid": g["gid"]},
+                        src=f"/preview?p={qpath}&w=900",
+                        srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w",
+                        sizes="(max-width: 900px) 90vw, 42vw",
+                        style={"width": "100%", "display": "block", "marginBottom": "10px", "borderRadius": "5px"},
+                    )
+                    extra_player = []
+                else:
+                    media_el = html.Img(
+                        id={"type": "carousel-img", "gid": g["gid"]},
+                        src=f"{('/aspec' if spec_on else '/awave')}?p={qpath}",
+                        style={"width": "100%", "display": "block", "marginBottom": "6px", "borderRadius": "5px"},
+                    )
+
+                    extra_player = [html.Audio(id={"type": "carousel-audio", "gid": g["gid"]},
+                                            src=f"/audio?p={qpath}", controls=True, style={"width": "100%"})]
+
                 cards.append(
                     html.Div(
                         [
-                            # --- overlay container ---
                             html.Div(
                                 [
-                                    html.Img(
-                                        id={"type": "carousel-img", "gid": g["gid"]},
-                                        src=f"/preview?p={qpath}&w=900",
-                                        srcSet=(
-                                            f"/preview?p={qpath}&w=600 600w, "
-                                            f"/preview?p={qpath}&w=900 900w, "
-                                            f"/preview?p={qpath}&w=1400 1400w"
-                                        ),
-                                        sizes="(max-width: 900px) 90vw, 42vw",
-                                        style={
-                                            "width": "100%",
-                                            "display": "block",
-                                            "marginBottom": "10px",
-                                            "borderRadius": "5px",
-                                        },
-                                    ),
-                                    # left arrow
-                                    html.Button(
-                                        "◀",
-                                        id={"type": "left", "gid": g["gid"]},
-                                        n_clicks=0,
-                                        style={
-                                            "position": "absolute",
-                                            "left": "8px",
-                                            "top": "50%",
-                                            "transform": "translateY(-50%)",
-                                            "backgroundColor": "rgba(0,0,0,0.6)",
-                                            "color": "#fff",
-                                            "border": "none",
-                                            "borderRadius": "9999px",
-                                            "width": "36px",
-                                            "height": "36px",
-                                            "zIndex": 2,
-                                            "cursor": "pointer",
-                                        },
-                                    ),
-                                    # right arrow
-                                    html.Button(
-                                        "▶",
-                                        id={"type": "right", "gid": g["gid"]},
-                                        n_clicks=0,
-                                        style={
-                                            "position": "absolute",
-                                            "right": "8px",
-                                            "top": "50%",
-                                            "transform": "translateY(-50%)",
-                                            "backgroundColor": "rgba(0,0,0,0.6)",
-                                            "color": "#fff",
-                                            "border": "none",
-                                            "borderRadius": "9999px",
-                                            "width": "36px",
-                                            "height": "36px",
-                                            "zIndex": 2,
-                                            "cursor": "pointer",
-                                        },
-                                    ),
+                                    media_el,
+                                    html.Button("◀", id={"type": "left", "gid": g["gid"]}, n_clicks=0,
+                                                style={"position": "absolute", "left": "8px", "top": "50%",
+                                                    "transform": "translateY(-50%)",
+                                                    "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
+                                                    "border": "none", "borderRadius": "9999px",
+                                                    "width": "36px", "height": "36px", "zIndex": 2, "cursor": "pointer"}),
+                                    html.Button("▶", id={"type": "right", "gid": g["gid"]}, n_clicks=0,
+                                                style={"position": "absolute", "right": "8px", "top": "50%",
+                                                    "transform": "translateY(-50%)",
+                                                    "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
+                                                    "border": "none", "borderRadius": "9999px",
+                                                    "width": "36px", "height": "36px", "zIndex": 2, "cursor": "pointer"}),
                                 ],
-                                # key: make the arrows overlay the image
                                 style={"position": "relative", "overflow": "hidden"},
                             ),
-                            html.Div(
-                                id={"type": "carousel-counter", "gid": g["gid"]},
-                                children=f"1/{n}",
-                                style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8},
-                            ),
+                            *extra_player,
+                            html.Div(id={"type": "carousel-counter", "gid": g["gid"]}, children=f"1/{n}",
+                                    style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8}),
                             daq.BooleanSwitch(id={"type": "select-image", "index": f"group::{g['gid']}"}, on=False),
                             html.Span(f" twins: {n}", style={"marginLeft": "10px", "opacity": 0.7}),
                         ],
-                        style={
-                            "marginBottom": "20px",
-                            "padding": "10px",
-                            "backgroundColor": "#1e1e1e",
-                            "borderRadius": "5px",
-                            "overflowX": "hidden",  # defensive: no horizontal scrollbar
-                        },
+                        style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e",
+                            "borderRadius": "5px", "overflowX": "hidden"},
                     )
                 )
 
         print(f"[DEBUG] Returning {len(cards)} cards")
+        # after you compute `groups` and before returning cards:
+        try:
+            if modality == "audio" and spec_on:
+                cand = []
+                for g in groups:
+                    cand.extend(g.get("paths", []))
+                # precompute the first N most likely to be viewed
+                for p in cand[:64]:
+                    SPEC_EXEC.submit(make_melspec_png, p)
+        except Exception as e:
+            print("[spec prewarm] skipped:", e)
+
         return cards, fig, {"display": "none"}, {}, groups, car_state, carousel_order
 
     # --- Scatter click (unchanged) ---
     if trigger == "scatter-plot" and clickData:
         pt = clickData["points"][0]
         custom = pt.get("customdata") or []
-        image_path = custom[0] if custom else None
-        if not image_path:
-            # No 'path' available for this dataset; just return the fig without cards
+        media_path = custom[0] if custom else None
+        if not media_path:
             return images, fig, {"display": "none"}, {}, [], {}, []
 
-        qpath = urllib.parse.quote(image_path)
+        qpath = urllib.parse.quote(media_path)
+        ext = os.path.splitext(media_path)[1].lower()
+        if ext in AUDIO_EXTS:
+            media = html.Div([
+                html.Img(src=f"/awave?p={qpath}", style={"width": "100%", "marginBottom": "6px"}),
+                html.Audio(src=f"/audio?p={qpath}", controls=True, style={"width": "100%"}),
+            ])
+        else:
+            media = html.Img(
+                src=f"/preview?p={qpath}&w=900",
+                srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w",
+                sizes="(max-width: 900px) 90vw, 42vw",
+                style={"width": "100%", "marginBottom": "10px"},
+            )
+
         images.append(
             html.Div(
                 [
-                    html.Img(
-                        src=f"/preview?p={qpath}&w=900",
-                        srcSet=(
-                            f"/preview?p={qpath}&w=600 600w, "
-                            f"/preview?p={qpath}&w=900 900w, "
-                            f"/preview?p={qpath}&w=1400 1400w"
-                        ),
-                        sizes="(max-width: 900px) 90vw, 42vw",
-                        style={"width": "100%", "marginBottom": "10px"},
-                    ),
-                    daq.BooleanSwitch(id={"type": "select-image", "index": image_path}, on=False),
+                    media,
+                    daq.BooleanSwitch(id={"type": "select-image", "index": media_path}, on=False),
                 ],
                 style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
             )
         )
         return images, fig, {"display": "none"}, {}, [], {}, []
+
 
     # keep camera on pan/zoom
     if is_3d and relayoutData and "scene.camera" in relayoutData:
@@ -975,38 +1235,34 @@ def update_images(
         Output({"type": "carousel-img", "gid": ALL}, "src"),
         Output({"type": "carousel-img", "gid": ALL}, "srcSet"),
         Output({"type": "carousel-counter", "gid": ALL}, "children"),
+        Output({"type": "carousel-audio", "gid": ALL}, "src"),
     ],
     [
         Input({"type": "left", "gid": ALL}, "n_clicks"),
         Input({"type": "right", "gid": ALL}, "n_clicks"),
-        Input("grouped-results", "data"),  # NEW: keep counters in sync with fresh groups
-        Input("carousel-order", "data"),  # NEW: know DOM order of carousels
+        Input("grouped-results", "data"),
+        Input("carousel-order", "data"),
     ],
     [
         State("carousel-state", "data"),
+        State("spec-toggle", "on"),  # <— NEW
     ],
     prevent_initial_call=True,
 )
-def nav_carousel(left_clicks, right_clicks, groups, order, car_state):
-    # Defensive defaults
+def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
+
     groups = groups or []
     order = order or []
-
-    # Only consider groups that actually render a carousel
     car_groups = {g["gid"]: g for g in groups if len(g.get("paths", [])) > 1}
 
-    # If there are no carousel components in the layout, return empty lists
     if not order:
-        return car_state or {}, [], [], []
+        return car_state or {}, [], [], [], []
 
-    # Initialize or reconcile carousel state with the current groups
     car_state = dict(car_state or {})
     for gid in car_groups:
         car_state.setdefault(gid, 0)
-    # Drop stale gids from state
     car_state = {gid: idx for gid, idx in car_state.items() if gid in car_groups}
 
-    # If the trigger was a left/right click, update that gid
     trig = ctx.triggered_id
     if isinstance(trig, dict) and trig.get("type") in ("left", "right"):
         gid = trig.get("gid")
@@ -1017,37 +1273,56 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state):
             cur = (cur - 1) % n if trig["type"] == "left" else (cur + 1) % n
             car_state[gid] = cur
 
-    # Build outputs strictly following the DOM order we stored
-    srcs, srcsets, counters = [], [], []
+    srcs, srcsets, counters, audios = [], [], [], []
     for gid in order:
         g = car_groups.get(gid)
         if not g:
-            # If the DOM still has an old component for a gid that vanished,
-            # append placeholders so list lengths match number of components.
-            srcs.append(dash.no_update)
-            srcsets.append(dash.no_update)
-            counters.append(dash.no_update)
+            srcs.append(dash.no_update); srcsets.append(dash.no_update)
+            counters.append(dash.no_update); audios.append(dash.no_update)
             continue
-
         paths = g["paths"]
         cur = car_state.get(gid, 0) % len(paths)
         qp = urllib.parse.quote(paths[cur])
-        srcs.append(f"/preview?p={qp}&w=900")
-        srcsets.append(f"/preview?p={qp}&w=600 600w, " f"/preview?p={qp}&w=900 900w, " f"/preview?p={qp}&w=1400 1400w")
+
+        # If it's an image carousel, we use /preview and set srcset; if audio, we use /awave + /audio
+        is_audio = os.path.splitext(paths[0])[1].lower() in AUDIO_EXTS
+        if is_audio:
+            preview_ep = "/aspec" if spec_on else "/awave"
+            srcs.append(f"{preview_ep}?p={qp}")
+            srcsets.append(dash.no_update)
+            audios.append(f"/audio?p={qp}")
+        else:
+            srcs.append(f"/preview?p={qp}&w=900")
+            srcsets.append(f"/preview?p={qp}&w=600 600w, /preview?p={qp}&w=900 900w, /preview?p={qp}&w=1400 1400w")
+            audios.append(dash.no_update)
+
+
         counters.append(f"{cur+1}/{len(paths)}")
 
-    return car_state, srcs, srcsets, counters
+    return car_state, srcs, srcsets, counters, audios
 
 
-@app.callback(Output("hover-thumb", "src"), Output("hover-thumb", "style"), Input("scatter-plot", "hoverData"))
-def update_hover_thumb(hoverData):
+@app.callback(
+    Output("hover-thumb", "src"),
+    Output("hover-thumb", "style"),
+    Input("scatter-plot", "hoverData"),
+    State("dataset-dropdown", "value"),
+    State("spec-toggle", "on"),
+)
+def update_hover_thumb(hoverData, dataset_value, spec_on):
     try:
+        parts = (dataset_value or "").split("::")
+        modality = parts[2] if len(parts) == 3 else "image"
         if hoverData and "points" in hoverData:
             pt = hoverData["points"][0]
             custom = pt.get("customdata") or []
             if custom:
-                image_path = custom[0]
-                thumb_url = "/thumb?p=" + urllib.parse.quote(image_path)
+                media_path = custom[0]
+                if modality == "audio":
+                    endpoint = "/aspec?p=" if spec_on else "/awave?p="
+                else:
+                    endpoint = "/thumb?p="
+                thumb_url = endpoint + urllib.parse.quote(media_path)
                 style = {
                     "display": "block",
                     "position": "fixed",
@@ -1065,12 +1340,33 @@ def update_hover_thumb(hoverData):
     return dash.no_update, {"display": "none"}
 
 
+
+
 @app.callback(Output("save-button", "style"), Input("mode-select", "value"))
 def toggle_save_selected_button(mode):
     if mode == "prompt":
         return {"marginTop": "10px", "display": "block"}
     else:
         return {"display": "none"}
+
+@app.callback(
+    Output("inject-poetry-btn", "style", allow_duplicate=True),
+    Input("dataset-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def hide_poetry_for_audio(dataset_value):
+    parts = (dataset_value or "").split("::")
+    modality = parts[2] if len(parts) == 3 else "image"
+    return {"display": "none"} if modality == "audio" else {"display": "block", "marginTop": "10px"}
+
+@app.callback(
+    Output("spec-toggle", "style"),
+    Input("dataset-dropdown", "value"),
+)
+def toggle_spec_visibility(dataset_value):
+    parts = (dataset_value or "").split("::")
+    modality = parts[2] if len(parts) == 3 else "image"
+    return {"display": "inline-flex"} if modality == "audio" else {"display": "none"}
 
 
 @app.callback(
@@ -1122,17 +1418,34 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
         for path in selected_paths:
             if not path:
                 continue
-            full_img_path = resolve_path(path)
-            basename = os.path.basename(full_img_path)
+            full_path = resolve_path(path)
+            basename = os.path.basename(full_path)
             prefix = hashlib.md5(path.encode("utf-8")).hexdigest()[:8]
             safe_name = f"{prefix}_{basename}"
-            img = cv2.imread(full_img_path)
-            if img is not None:
-                cv2.imwrite(os.path.join(save_dir, safe_name), img)
-                n_saved += 1
+
+            ext = os.path.splitext(full_path)[1].lower()
+            if ext in AUDIO_EXTS:
+                # copy audio as-is
+                try:
+                    shutil.copy2(full_path, os.path.join(save_dir, safe_name))
+                    n_saved += 1
+                except Exception as e:
+                    print(f"[ERROR] Could not copy audio: {full_path} ({e})")
             else:
-                print(f"[ERROR] Could not load image: {full_img_path}")
-        msg = f"{n_saved} images saved successfully to {save_dir}."
+                # try image write
+                img = cv2.imread(full_path)
+                if img is not None:
+                    cv2.imwrite(os.path.join(save_dir, safe_name), img)
+                    n_saved += 1
+                else:
+                    # fallback: copy raw file if not an image
+                    try:
+                        shutil.copy2(full_path, os.path.join(save_dir, safe_name))
+                        n_saved += 1
+                    except Exception as e:
+                        print(f"[ERROR] Could not save: {full_path} ({e})")
+        msg = f"{n_saved} files saved successfully to {save_dir}."
+
 
     elif triggered == "save-story-btn":
         subfolder = folder or "story"

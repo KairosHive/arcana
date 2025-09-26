@@ -28,6 +28,8 @@ from matplotlib import pyplot as plt
 
 
 
+
+
 # --- audio + CLAP ---
 import soundfile as sf
 try:
@@ -554,76 +556,165 @@ app.layout = html.Div(
             ],
             style={"width": "55%", "display": "inline-block", "verticalAlign": "top"},
         ),
+
+        # ───────────────────────── RIGHT COLUMN ─────────────────────────
+html.Div(
+    [
+        # Controls panel “card”
         html.Div(
             [
-                # Place the button above images!
-                html.Button("Inject Poetry", id="inject-poetry-btn", style={"marginBottom": "10px", "display": "none"}),
-                # your results list
+                # ONE ROW: Poetry (when Story+Image) + Grouping + (Audio) Spectrogram
                 html.Div(
                     [
-                        html.Label("Group twins", style={"marginRight": "8px"}),
-                        daq.BooleanSwitch(id="group-similar", on=True, color="#00bcd4"),
-                        html.Label("  distance ≤", style={"marginLeft": "12px", "marginRight": "6px"}),
-                        dcc.Input(
-                            id="sim-thresh",
-                            type="number",
-                            value=0.08,
-                            step=0.01,
-                            min=0.0,
-                            max=0.5,
-                            style={"width": "90px", "color": "#000"},
+                        # Poetry inline (story+image only)
+                        html.Div(
+                            [
+                                html.Button(
+                                    "Inject Poetry",
+                                    id="inject-poetry-btn",
+                                ),
+                                daq.Knob(
+                                    id="poetry-strength",
+                                    value=0.72,
+                                    min=0.0,
+                                    max=1.0,
+                                    size=60,
+                                    color="#00bcd4",
+                                    label="Strength",
+                                ),
+                            ],
+                            id="poetry-inline",
+                            style={
+                                "display": "none",           # hidden until Story+Image
+                                "alignItems": "center",
+                                "gap": "10px",
+                            },
+                        ),
+
+                        # Grouping controls: vertical layout
+                        html.Div(
+                            [
+                                html.Div("Group twins",
+                                        style={"fontSize": "12px", "textAlign": "center", "marginBottom": "4px"}),
+                                daq.BooleanSwitch(id="group-similar", on=True, color="#00bcd4"),
+                            ],
+                            style={
+                                "display": "flex",
+                                "flexDirection": "column",
+                                "alignItems": "center",
+                                "minWidth": "80px",
+                                "marginLeft": "6px",
+                                "marginRight": "6px",
+                            },
+                        ),
+
+                        html.Div(
+                            [
+                                html.Div("distance ≤",
+                                        style={"fontSize": "12px", "textAlign": "center", "marginBottom": "4px"}),
+                                dcc.Input(
+                                    id="sim-thresh",
+                                    type="number",
+                                    value=0.08,
+                                    step=0.01,
+                                    min=0.0,
+                                    max=0.5,
+                                    style={"width": "76px", "color": "#000", "textAlign": "center"},
+                                ),
+                            ],
+                            style={
+                                "display": "flex",
+                                "flexDirection": "column",
+                                "alignItems": "center",
+                                "minWidth": "80px",
+                                "marginLeft": "6px",
+                                "marginRight": "6px",
+                            },
+                        ),
+
+
+
+                        # Spectrogram inline (audio only)
+                        html.Div(
+                            [
+                                html.Span("Spectrogram", style={"marginRight": "8px", "whiteSpace": "nowrap"}),
+                                daq.BooleanSwitch(id="spec-toggle", on=False, color="#00bcd4"),
+                            ],
+                            id="audio-spec-inline",
+                            style={
+                                "display": "none",           # shown for audio datasets
+                                "alignItems": "center",
+                                "gap": "10px",
+                                "marginLeft": "12px",
+                            },
                         ),
                     ],
-                    style={"margin": "8px 0 6px 0"},
-                ),
-                html.Div(
-                    [
-                        html.Label("Spectrogram", style={"marginRight": "8px"}),
-                        daq.BooleanSwitch(id="spec-toggle", on=False, color="#00bcd4"),
-                    ],
-                    style={"margin": "6px 0 10px 0"},
+                    style={
+                        "display": "flex",
+                        "alignItems": "center",
+                        "gap": "12px",
+                        "flexWrap": "wrap",
+                        "margin": "0 0 10px 0",
+                    },
                 ),
 
-                html.Div(id="image-display", style={"overflowY": "scroll", "overflowX": "hidden", "maxHeight": "80vh"}),
-                # ⬇️ ADD THIS BLOCK HERE ⬇️
+                # Results list
+                html.Div(
+                    id="image-display",
+                    style={"overflowY": "scroll", "overflowX": "hidden", "maxHeight": "80vh"},
+                ),
+
+                # Bulk selection buttons
                 html.Div(
                     [
-                        html.Button("Select All", id="select-all", n_clicks=0, style={"marginRight": "8px"}),
+                        html.Button("Select All", id="select-all", n_clicks=0),
                         html.Button("Clear All", id="clear-all", n_clicks=0),
                     ],
-                    style={"marginTop": "6px"},
+                    style={"display": "flex", "gap": "8px", "marginTop": "8px"},
                 ),
-                # ⬆️ ADD THIS BLOCK HERE ⬆️
-                html.Button("Save Selected Images", id="save-button"),
+
+                # Save actions
+                html.Button("Save Selected Images", id="save-button", style={"marginTop": "8px"}),
                 dcc.Input(
                     id="save-folder",
                     type="text",
                     placeholder="Enter folder path...",
-                    style={"width": "100%", "marginTop": "5px"},
+                    style={"width": "100%", "marginTop": "6px"},
                 ),
-                html.Button(
-                    "Save Story", id="save-story-btn", style={"marginTop": "10px", "marginLeft": "0px", "display": "none"}
-                ),
+                html.Button("Save Story", id="save-story-btn", style={"marginTop": "10px", "display": "none"}),
                 html.Div(id="save-confirmation", style={"marginTop": "10px"}),
             ],
-            style={"width": "42%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"},
-        ),
-        html.Img(
-            id="hover-thumb",
             style={
-                "display": "none",
-                "position": "fixed",
-                "top": "8px",
-                "left": "8px",
-                "zIndex": 1000,
-                "maxWidth": "160px",
-                "maxHeight": "120px",
-                "border": "2px solid #fff",
-                "boxShadow": "0 0 12px #000",
-                "backgroundColor": "#000",
-                "objectFit": "contain",
+                "backgroundColor": "#1b1b1b",
+                "border": "1px solid #2a2a2a",
+                "borderRadius": "10px",
+                "padding": "12px",
+                "marginTop": "6px",
             },
         ),
+    ],
+    style={"width": "42%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"},
+),
+
+# hover-thumb unchanged
+html.Img(
+    id="hover-thumb",
+    style={
+        "display": "none",
+        "position": "fixed",
+        "top": "8px",
+        "left": "8px",
+        "zIndex": 1000,
+        "maxWidth": "160px",
+        "maxHeight": "120px",
+        "border": "2px solid #fff",
+        "boxShadow": "0 0 12px #000",
+        "backgroundColor": "#000",
+        "objectFit": "contain",
+    },
+)
+
+
     ],
 )
 
@@ -634,7 +725,6 @@ app.layout = html.Div(
         Output("num-images", "style"),
         Output("story-box", "style"),
         Output("main-action-btn", "children"),
-        Output("inject-poetry-btn", "style"),
     ],
     Input("mode-select", "value"),
 )
@@ -645,7 +735,6 @@ def toggle_inputs(mode):
             {"display": "block", "width": "15%", "marginRight": "10px"},
             {"display": "none"},
             "Search",
-            {"display": "none"},
         )
     else:
         return (
@@ -653,7 +742,6 @@ def toggle_inputs(mode):
             {"display": "none"},
             {"display": "block", "width": "70%", "height": "70px", "marginRight": "10px"},
             "Generate Story",
-            {"display": "block", "marginTop": "10px"},
         )
 
 
@@ -666,9 +754,11 @@ def toggle_inputs(mode):
     Input("inject-poetry-btn", "n_clicks"),
     State("story-cache", "data"),
     State("save-folder", "value"),
+    State("poetry-strength", "value"),  # <— NEW
     prevent_initial_call="initial_duplicate",
 )
-def inject_poetry(n_clicks, story_cache, folder):
+def inject_poetry(n_clicks, story_cache, folder, strength_val):
+
     if not story_cache or "story" not in story_cache:
         return "No story data available.", dash.no_update, dash.no_update
 
@@ -686,7 +776,9 @@ def inject_poetry(n_clicks, story_cache, folder):
     pipe.safety_checker = None
     pipe.watermark = None
 
-    strength = 0.72
+    # strength = 0.72
+    strength = 0.72 if strength_val is None else max(0.0, min(1.0, float(strength_val)))
+
     num_steps = 4
     guidance_scale = 1.0
     negative_prompt = "text, letters, watermark, logo, blurry, low quality"
@@ -1349,24 +1441,29 @@ def toggle_save_selected_button(mode):
     else:
         return {"display": "none"}
 
-@app.callback(
-    Output("inject-poetry-btn", "style", allow_duplicate=True),
-    Input("dataset-dropdown", "value"),
-    prevent_initial_call=True,
-)
-def hide_poetry_for_audio(dataset_value):
-    parts = (dataset_value or "").split("::")
-    modality = parts[2] if len(parts) == 3 else "image"
-    return {"display": "none"} if modality == "audio" else {"display": "block", "marginTop": "10px"}
 
 @app.callback(
-    Output("spec-toggle", "style"),
+    Output("poetry-inline", "style"),
+    Input("mode-select", "value"),
     Input("dataset-dropdown", "value"),
 )
-def toggle_spec_visibility(dataset_value):
+def toggle_poetry_inline(mode, dataset_value):
     parts = (dataset_value or "").split("::")
     modality = parts[2] if len(parts) == 3 else "image"
-    return {"display": "inline-flex"} if modality == "audio" else {"display": "none"}
+    show = (mode == "story") and (modality == "image")
+    base = {"alignItems": "center", "gap": "10px"}
+    return {**base, "display": "flex"} if show else {**base, "display": "none"}
+
+
+@app.callback(
+    Output("audio-spec-inline", "style"),
+    Input("dataset-dropdown", "value"),
+)
+def toggle_spec_inline(dataset_value):
+    parts = (dataset_value or "").split("::")
+    modality = parts[2] if len(parts) == 3 else "image"
+    base = {"alignItems": "center", "gap": "10px", "marginLeft": "12px"}
+    return {**base, "display": "flex"} if modality == "audio" else {**base, "display": "none"}
 
 
 @app.callback(

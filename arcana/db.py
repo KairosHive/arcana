@@ -12,6 +12,8 @@ import math
 import pickle
 import argparse
 from glob import glob
+import hashlib
+
 
 import numpy as np
 import torch
@@ -23,6 +25,10 @@ from sklearn.cluster import KMeans
 
 from usearch.index import Index
 from transformers import CLIPModel, CLIPProcessor, ClapModel, ClapProcessor
+
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+import random
+
 
 # Optional audio backends
 try:
@@ -52,12 +58,300 @@ os.makedirs(latents_dir, exist_ok=True)
 # --------------------------------------------------------------------------------------
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+CLIP_MODEL_ID = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+CLAP_MODEL_ID = "laion/clap-htsat-fused"
+
 
 def is_image(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in IMAGE_EXTS
 
 def is_audio(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in AUDIO_EXTS
+
+# ---------- NEW: text encoder + label helpers ----------
+
+
+def _row_norm(X: np.ndarray) -> np.ndarray:
+    X = X.astype(np.float32, copy=False)
+    X /= (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
+    return X
+
+def choose_k(
+    X: np.ndarray,
+    k_min: int = 2,
+    k_max: int = 20,
+    metric: str = "silhouette",   # "silhouette" | "calinski" | "davies"
+    sample_size: int = 5000,
+    random_state: int = 0,
+) -> tuple[int, dict[int, float]]:
+    """
+    Normalize X once, optionally subsample for speed, then score KMeans for k in [k_min, k_max].
+    Returns (best_k, scores_by_k).
+    """
+    Xn = _row_norm(X)
+    if Xn.shape[0] > sample_size:
+        idx = random.Random(random_state).sample(range(Xn.shape[0]), sample_size)
+        Xs = Xn[idx]
+    else:
+        Xs = Xn
+
+    scores = {}
+    best_k, best_val = None, None
+
+    for k in range(max(2, k_min), max(2, k_max) + 1):
+        try:
+            km = KMeans(n_clusters=k, random_state=random_state, n_init="auto").fit(Xs)
+            labels = km.labels_
+            if metric == "silhouette":
+                val = silhouette_score(Xs, labels)
+                better = (best_val is None) or (val > best_val)
+            elif metric == "calinski":
+                val = calinski_harabasz_score(Xs, labels)
+                better = (best_val is None) or (val > best_val)
+            elif metric == "davies":
+                val = davies_bouldin_score(Xs, labels)
+                better = (best_val is None) or (val < best_val)  # lower is better
+            else:
+                raise ValueError(f"Unknown metric: {metric}")
+            scores[k] = float(val)
+            if better:
+                best_k, best_val = k, val
+        except Exception as e:
+            print(f"[auto-k] k={k} skipped: {e}")
+
+    if best_k is None:
+        best_k = max(2, k_min)
+    return best_k, scores
+
+
+def _text2vec(text: str, modality: str) -> np.ndarray:
+    """Route text encoding to the right model for this dataset's modality."""
+    if modality == "image":
+        return txt2vec_clip(text)
+    elif modality == "audio":
+        return txt2vec_clap(text)
+    else:
+        raise ValueError(f"Unsupported modality for text2vec: {modality}")
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    a = a.astype(np.float32); b = b.astype(np.float32)
+    na = np.linalg.norm(a) + 1e-8
+    nb = np.linalg.norm(b) + 1e-8
+    return float((a @ b) / (na * nb))
+
+def _load_label_dict(path_or_inline: str | None) -> dict[str, list[str]]:
+    """
+    Accepts:
+      - path to a JSON or CSV
+        * JSON: {"labelA": ["term1", "term2"], "labelB": ["..."]}
+        * CSV : columns `label,term` (multiple rows per label)
+      - inline comma list "rain,wind,thunder"  -> {"rain":["rain"], ...}
+      - None -> empty dict
+    """
+    if not path_or_inline:
+        return {}
+
+    # Inline comma list?
+    if ("," in path_or_inline) and (not os.path.exists(path_or_inline)):
+        labels = [x.strip() for x in path_or_inline.split(",") if x.strip()]
+        return {lab: [lab] for lab in labels}
+
+    # File path
+    p = os.path.abspath(path_or_inline)
+    if not os.path.exists(p):
+        print(f"[WARN] Label dictionary path not found: {path_or_inline}")
+        return {}
+
+    ext = os.path.splitext(p)[1].lower()
+    if ext in {".json"}:
+        import json
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # normalize to dict[str, list[str]]
+        out: dict[str, list[str]] = {}
+        for k, v in data.items():
+            if isinstance(v, str):
+                out[k] = [v]
+            elif isinstance(v, list):
+                out[k] = [str(t) for t in v]
+        return out
+
+    elif ext in {".csv"}:
+        import csv
+        out: dict[str, list[str]] = {}
+        with open(p, "r", encoding="utf-8") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                lab = str(row.get("label", "")).strip()
+                term = str(row.get("term", "")).strip()
+                if lab and term:
+                    out.setdefault(lab, []).append(term)
+        return out
+
+    else:
+        print(f"[WARN] Unsupported label dict extension: {ext}")
+        return {}
+
+# ---------- NEW: label list + embeddings cache ----------
+
+_LABEL_MEM_CACHE: dict[str, tuple[list[str], np.ndarray]] = {}
+
+def _read_label_list(src: str | None) -> tuple[list[str], str]:
+    """
+    Returns (labels, cache_key_base).
+    - If src is a file path (.txt): read all non-empty lines.
+    - If src is inline comma list: split by comma.
+    - If None/empty: return ([], "empty").
+    cache_key_base is used to form a stable on-disk cache filename.
+    """
+    if not src:
+        return [], "empty"
+
+    if os.path.exists(src):
+        # TXT file (one label per line)
+        p = os.path.abspath(src)
+        with open(p, "rb") as f:
+            raw = f.read()
+        # content-based hash so we invalidate when file content changes
+        h = hashlib.md5(raw).hexdigest()[:12]
+        text = raw.decode("utf-8", errors="ignore")
+        labels = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return labels, f"file:{p}|md5:{h}"
+    else:
+        # inline comma list
+        labels = [x.strip() for x in src.split(",") if x.strip()]
+        h = hashlib.md5(",".join(labels).encode("utf-8")).hexdigest()[:12]
+        return labels, f"inline:{h}"
+
+def _text2vec(text: str, modality: str) -> np.ndarray:
+    if modality == "image":
+        return txt2vec_clip(text)
+    elif modality == "audio":
+        return txt2vec_clap(text)
+    else:
+        raise ValueError(f"Unsupported modality: {modality}")
+
+def _encode_label_matrix(
+    labels: list[str],
+    modality: str,
+    cache_base: str,
+    cache_dir: str = db_dir,  # reuse your databases/ dir
+) -> tuple[list[str], np.ndarray]:
+    """
+    Returns (labels, M) where M is (L, D) of L2-normalized label embeddings.
+    Uses both in-memory and on-disk caches so we never re-encode unchanged labels.
+    """
+    if not labels:
+        return [], np.zeros((0, 1), dtype=np.float32)
+
+    model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
+    cache_key = f"{modality}|{model_id}|{cache_base}"
+    if cache_key in _LABEL_MEM_CACHE:
+        return _LABEL_MEM_CACHE[cache_key]
+
+    # on-disk cache filename
+    model_tag = hashlib.md5(model_id.encode("utf-8")).hexdigest()[:8]
+    disk_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()[:12]
+    cache_path = os.path.join(cache_dir, f"label_cache_{modality}_{disk_hash}_{model_tag}.pkl")
+
+    # Try load disk cache
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                saved = pickle.load(f)
+            saved_labels, M = saved["labels"], saved["embeddings"]
+            if saved_labels == labels and isinstance(M, np.ndarray):
+                # ensure normalized
+                M = M.astype(np.float32)
+                M /= (np.linalg.norm(M, axis=1, keepdims=True) + 1e-8)
+                _LABEL_MEM_CACHE[cache_key] = (saved_labels, M)
+                return saved_labels, M
+        except Exception as e:
+            print(f"[WARN] failed to load label cache ({cache_path}): {e}")
+
+    # Encode (first try vectorized batch; fallback to loop)
+    vecs = []
+    B = 64  # batch size for text encoding
+    for i in range(0, len(labels), B):
+        batch = labels[i : i + B]
+        try:
+            # fast path: encode each text with the proper encoder
+            if modality == "image":
+                # CLIP tokenizer can take batch
+                model, processor = load_clip()
+                toks = processor.tokenizer(batch, return_tensors="pt", padding=True, truncation=True)
+                with torch.no_grad():
+                    v = model.get_text_features(toks.input_ids.to(model.device)).detach().cpu().float().numpy()
+                vecs.append(v)
+            else:
+                # CLAP text batch
+                model, proc = load_clap()
+                inputs = proc(text=batch, return_tensors="pt", padding=True)
+                for k in inputs:
+                    inputs[k] = inputs[k].to(model.device)
+                with torch.no_grad():
+                    try:
+                        v = model.get_text_features(**inputs)
+                    except AttributeError:
+                        v = model(**inputs).text_embeds
+                vecs.append(v.detach().cpu().float().numpy())
+        except Exception:
+            # robust fallback: per-item
+            for t in batch:
+                try:
+                    vecs.append(_text2vec(t, modality)[None, :])
+                except Exception as e:
+                    print(f"[WARN] text2vec failed for '{t}': {e}")
+
+    if not vecs:
+        return [], np.zeros((0, 1), dtype=np.float32)
+
+    M = np.concatenate(vecs, axis=0).astype(np.float32)
+    # L2 normalize for cosine via dot
+    M /= (np.linalg.norm(M, axis=1, keepdims=True) + 1e-8)
+
+    # Save disk cache
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump({"labels": labels, "embeddings": M}, f)
+    except Exception as e:
+        print(f"[WARN] failed to write label cache ({cache_path}): {e}")
+
+    _LABEL_MEM_CACHE[cache_key] = (labels, M)
+    return labels, M
+
+
+def _infer_cluster_names_from_matrix(
+    item_vecs: np.ndarray,         # (N, D), raw or normalized
+    cluster_ids: np.ndarray,       # (N,)
+    label_texts: list[str],        # L strings
+    label_mat_norm: np.ndarray,    # (L, D) L2-normalized
+) -> tuple[dict[int, str], dict[int, float]]:
+    """
+    Centroid of each cluster -> nearest label via cosine (dot with normalized rows).
+    Returns cid->label and cid->score.
+    """
+    if label_mat_norm.shape[0] == 0:
+        return {}, {}
+
+    # normalize items once
+    X = item_vecs.astype(np.float32)
+    X /= (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
+
+    cid2name, cid2score = {}, {}
+
+    for cid in sorted(set(cluster_ids.tolist())):
+        mask = (cluster_ids == cid)
+        if not np.any(mask):
+            continue
+        centroid = X[mask].mean(axis=0)
+        centroid /= (np.linalg.norm(centroid) + 1e-8)
+        # cosine to all labels -> argmax
+        scores = label_mat_norm @ centroid  # (L,)
+        j = int(np.argmax(scores))
+        cid2name[cid] = label_texts[j]
+        cid2score[cid] = float(scores[j])
+    return cid2name, cid2score
 
 # --------------------------------------------------------------------------------------
 # Lazy model loaders
@@ -71,27 +365,27 @@ def _device() -> str:
 def load_clip(device: str | None = None):
     device = device or _device()
     if _CLIP["model"] is None:
-        m = CLIPModel.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+        m = CLIPModel.from_pretrained(CLIP_MODEL_ID)
         if device == "cuda":
             m = m.to("cuda").half()
         else:
             m = m.to("cpu")
         m.eval()
-        p = CLIPProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+        p = CLIPProcessor.from_pretrained(CLIP_MODEL_ID)
         _CLIP.update(model=m, proc=p)
     return _CLIP["model"], _CLIP["proc"]
 
 def load_clap(device: str | None = None):
     device = device or _device()
     if _CLAP["model"] is None:
-        m = ClapModel.from_pretrained("laion/clap-htsat-fused")
+        m = ClapModel.from_pretrained(CLAP_MODEL_ID)
         # Keep CLAP in FP32 (BN layers are happier; avoids dtype mismatch)
         if device == "cuda":
             m = m.to("cuda")   # <-- no .half()
         else:
             m = m.to("cpu")
         m.eval()
-        p = ClapProcessor.from_pretrained("laion/clap-htsat-fused")
+        p = ClapProcessor.from_pretrained(CLAP_MODEL_ID)
         _CLAP.update(model=m, proc=p)
     return _CLAP["model"], _CLAP["proc"]
 
@@ -252,7 +546,15 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
 # --------------------------------------------------------------------------------------
 # Latent space (TSNE + kmeans labels for coloring)
 # --------------------------------------------------------------------------------------
-def latent_space(index: Index, idx2path: dict[int, str], n_components: int = 2):
+def latent_space(
+    index: Index,
+    idx2path: dict[int, str],
+    n_components: int = 2,
+    modality: str = "image",
+    n_clusters: int = 10,
+    label_texts: list[str] | None = None,
+    label_mat_norm: np.ndarray | None = None,
+):
     vecs = []
     paths = []
     for kid in tqdm(idx2path.keys(), desc="Collecting vectors"):
@@ -260,25 +562,40 @@ def latent_space(index: Index, idx2path: dict[int, str], n_components: int = 2):
         paths.append(os.path.abspath(idx2path[kid]))
     vecs = np.asarray(vecs, dtype=np.float32)
 
-    # t-SNE (2D/3D)
+    # ---- t-SNE only for visualization ----
     perplexity = int(np.clip(math.ceil(len(vecs) / 10), 5, 30))
-    if n_components == 2:
-        tsne = TSNE(n_components=2, perplexity=perplexity, init="pca", learning_rate="auto")
-        coords = tsne.fit_transform(vecs)
-    elif n_components == 3:
-        tsne = TSNE(n_components=3, perplexity=perplexity, init="pca", learning_rate="auto")
-        coords = tsne.fit_transform(vecs)
-    else:
-        raise ValueError("n_components must be 2 or 3")
+    tsne = TSNE(n_components=n_components, perplexity=perplexity, init="pca", learning_rate="auto")
+    coords = tsne.fit_transform(vecs)
 
-    # simple clustering for color labels
+    # ---- choose k (optional) & cluster on ORIGINAL embeddings ----
+    X_for_kmeans = _row_norm(vecs)
+    if n_clusters is None or n_clusters <= 0:
+        # pull globals via closure or pass args in; here we read env-like defaults
+        k_min  = int(os.getenv("ARCANA_K_MIN", "2"))
+        k_max  = int(os.getenv("ARCANA_K_MAX", "20"))
+        metric = os.getenv("ARCANA_K_METRIC", "silhouette")
+        best_k, scores = choose_k(X_for_kmeans, k_min=k_min, k_max=k_max, metric=metric)
+        print(f"[auto-k] selected k={best_k} via {metric} in [{k_min},{k_max}]  scores={scores}")
+        n_clusters = int(best_k)
+
     try:
-        kmeans = KMeans(n_clusters=10, random_state=0, n_init="auto").fit(coords)
-        labels = kmeans.labels_
+        km = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(X_for_kmeans)
+        cluster_ids = km.labels_.astype(int)
     except Exception:
-        labels = np.zeros(len(coords), dtype=int)
+        cluster_ids = np.zeros(len(coords), dtype=int)
 
-    return coords, paths, labels
+
+    # Label clusters if we have a label matrix
+    inferred = []
+    if label_texts and label_mat_norm is not None and label_mat_norm.shape[0] > 0:
+        cid2name, _ = _infer_cluster_names_from_matrix(vecs, cluster_ids, label_texts, label_mat_norm)
+        inferred = [cid2name.get(int(c), "") for c in cluster_ids]
+    else:
+        inferred = [""] * len(cluster_ids)
+
+    return coords, paths, cluster_ids, inferred
+
+
 
 # --------------------------------------------------------------------------------------
 # CLI
@@ -292,6 +609,18 @@ def parse_args():
                         help="Latent space dimensionality (2 or 3).")
     parser.add_argument("--modality", type=str, choices=["image", "audio"], default="image",
                         help="Which encoder/indexer to use.")
+    parser.add_argument("--labels", type=str, default=None,
+                        help="TXT path (one label per line) or inline comma list: 'rain,wind,thunder'.")
+    parser.add_argument("--k", type=int, default=0,
+    help="KMeans cluster count. Use 0 for auto.")
+    parser.add_argument("--k_min", type=int, default=2,
+        help="Auto-k: minimum k to consider.")
+    parser.add_argument("--k_max", type=int, default=20,
+        help="Auto-k: maximum k to consider.")
+    parser.add_argument("--k_metric", type=str, choices=["silhouette","calinski","davies"],
+        default="silhouette", help="Auto-k selection metric.")
+
+
     return parser.parse_args()
 
 def main():
@@ -316,15 +645,37 @@ def main():
     print("search path:         ", glob_arg)
     print("modality:            ", args.modality)
 
+        # Prepare label candidates (TXT or inline), then get cached embeddings
+    label_texts, cache_base = _read_label_list(args.labels)
+    if label_texts:
+        label_texts, label_mat = _encode_label_matrix(label_texts, args.modality, cache_base)
+    else:
+        label_mat = np.zeros((0, 1), dtype=np.float32)
+
     index, idx2path = build(glob_arg, index_name, modality=args.modality)
-    coords, paths, labels = latent_space(index, idx2path, n_components=args.n_components)
+    if args.k <= 0:
+        os.environ["ARCANA_K_MIN"] = str(args.k_min)
+        os.environ["ARCANA_K_MAX"] = str(args.k_max)
+        os.environ["ARCANA_K_METRIC"] = args.k_metric
+
+    coords, paths, cluster_ids, inferred_names = latent_space(
+        index=index,
+        idx2path=idx2path,
+        n_components=args.n_components,
+        modality=args.modality,
+        n_clusters=(0 if args.k <= 0 else int(args.k)),
+        label_texts=label_texts,
+        label_mat_norm=label_mat,
+    )
 
     if args.n_components == 2:
         df = pd.DataFrame(coords, columns=["x", "y"])
     else:
         df = pd.DataFrame(coords, columns=["x", "y", "z"])
     df["path"] = paths
-    df["label"] = labels.astype(int)
+    df["cluster_id"] = cluster_ids.astype(int)
+    # prefer inferred; fallback to "C<id>" if empty
+    df["label"] = [name if name else f"C{int(cid)}" for name, cid in zip(inferred_names, cluster_ids)]
 
     df.to_pickle(latent_name)
     print(f"[OK] Saved latent DataFrame to {latent_name}")

@@ -47,6 +47,12 @@ torch.set_grad_enabled(False)
 # --------------------------------------------------------------------------------------
 script_root = os.path.dirname(os.path.abspath(__file__))
 IMAGES_ROOT = os.path.abspath(os.path.join(script_root, "..", "images"))
+ASSETS_DIR = os.path.join(script_root, "assets")
+DEFAULT_LABELS = {
+    "image": os.path.join(ASSETS_DIR, "labels_image.txt"),
+    "audio": os.path.join(ASSETS_DIR, "labels_audio.txt"),
+}
+
 
 db_dir = os.path.join(script_root, "databases")
 latents_dir = os.path.join(script_root, "latents")
@@ -645,12 +651,21 @@ def main():
     print("search path:         ", glob_arg)
     print("modality:            ", args.modality)
 
-        # Prepare label candidates (TXT or inline), then get cached embeddings
-    label_texts, cache_base = _read_label_list(args.labels)
+    # Prepare label candidates (TXT or inline), then get cached embeddings
+    label_src = args.labels
+    if not label_src:
+        # pick default by modality if file exists
+        cand = DEFAULT_LABELS.get(args.modality)
+        if cand and os.path.exists(cand):
+            print(f"[INFO] Using default labels: {cand}")
+            label_src = cand
+
+    label_texts, cache_base = _read_label_list(label_src)
     if label_texts:
         label_texts, label_mat = _encode_label_matrix(label_texts, args.modality, cache_base)
     else:
         label_mat = np.zeros((0, 1), dtype=np.float32)
+
 
     index, idx2path = build(glob_arg, index_name, modality=args.modality)
     if args.k <= 0:

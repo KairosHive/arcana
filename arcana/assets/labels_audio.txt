@@ -1,0 +1,102 @@
+Speech
+Conversation
+Whisper
+Laughter
+Crying
+Shout
+Applause
+Crowd
+Chant
+Narration
+Singing
+Choir
+Rap
+Opera
+Podcast
+Phone Call
+Footsteps
+Heartbeat
+Breathing
+Snoring
+Door Close
+Door Creak
+Keyboard
+Typing
+Click
+Beep
+Alarm
+Siren
+Bell
+Chime
+Clap
+Snap
+Crackle
+Pop
+Rustle
+Rattle
+Hum
+Buzz
+Whirr
+Hiss
+Static
+White Noise
+Pink Noise
+Drone
+Whoosh
+Swoosh
+Impact
+Explosion
+Splash
+Drip
+Rain Light
+Rain Heavy
+Thunder
+Wind Breeze
+Wind Storm
+Ocean Waves
+River
+Waterfall
+Fire Crackle
+Leaves
+Birdsong
+Insects
+Frogs
+Dog Bark
+Cat Meow
+Horse
+Cow
+Sheep
+Pig
+Engine Car
+Engine Motorcycle
+Train
+Subway
+Airplane
+Helicopter
+Boat
+Horn
+Traffic
+Market
+Restaurant
+Kitchen
+Office
+Classroom
+Factory
+Construction
+Sports Crowd
+Stadium
+Church Bells
+Temple Chant
+Festival
+Ambient Room
+Reverb Hall
+Echo
+Dry Close
+Distorted
+Lo-Fi
+Hi-Fi
+Bass Rumble
+Sub-Bass
+Bright Sparkle
+Warm Tone
+Cold Tone

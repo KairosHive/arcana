@@ -16,7 +16,11 @@ It allows you to interactively search by prompt, visualize clusters, and assembl
 
 ---
 
-## Demo
+## Demo - search mode
+
+![image](https://github.com/user-attachments/assets/dd46c1b2-d8db-4417-b173-a9872e01a927)
+
+## Demo - story mode
 
 ![image](https://github.com/user-attachments/assets/9977b27d-501e-49ac-9ebc-60bb8d42a467)
 

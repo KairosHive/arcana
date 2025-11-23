@@ -1011,7 +1011,9 @@ def update_images(
     if is_3d:
         fig = px.scatter_3d(df, x="x", y="y", z="z", **scatter_kwargs)
     else:
-        fig = px.scatter(df, x="x", y="y", **scatter_kwargs)
+        fig = px.scatter(
+            df, x="x", y="y", render_mode="webgl", **scatter_kwargs
+        )
 
     fig.update_traces(marker=dict(size=4 if is_3d else 8))
     fig.update_layout(
@@ -1028,6 +1030,14 @@ def update_images(
             else {}
         ),
     )
+    
+    if is_3d:
+        fig.update_traces(marker=dict(opacity=0.6), selector=dict(type="scatter3d"))
+    else:
+        fig.update_traces(marker=dict(opacity=0.6), selector=dict(type="scattergl"))
+
+    # keep camera/zoom across updates
+    fig.update_layout(uirevision="keep")
 
     trigger = ctx.triggered_id if hasattr(ctx, "triggered_id") else None
     print(f"[update_images] trigger={trigger} mode={mode} dataset={dataset_value}")
@@ -1070,7 +1080,7 @@ def update_images(
                         z=zs,
                         mode="lines+markers",
                         line=dict(color="gold", width=4),
-                        marker=dict(size=10, color="gold"),
+                        marker=dict(size=8, symbol="cross"),
                         text=story_texts,
                         hovertemplate="%{text}<extra></extra>",
                         name="Story Path",
@@ -1144,27 +1154,46 @@ def update_images(
         if len(results):
             highlighted_df = df.loc[[r[0] for r in results]]
             print(f"[DEBUG] Highlighted DataFrame: {highlighted_df.shape[0]} rows")
+            # ...inside update_images(), in the PROMPT block, after highlighted_df = ...
+            # after: highlighted_df = df.loc[[r[0] for r in results]]
+
             if is_3d:
                 fig.add_trace(
                     go.Scatter3d(
-                        x=highlighted_df["x"],
-                        y=highlighted_df["y"],
-                        z=highlighted_df["z"],
+                        x=highlighted_df["x"], y=highlighted_df["y"], z=highlighted_df["z"],
                         mode="markers",
-                        marker=dict(color="cyan", size=8, symbol="x"),
+                        marker=dict(size=10, symbol="cross", opacity=1),
                         name="Search Results",
                     )
                 )
             else:
+                # remove any previous "Search Results" trace so you don't stack them
+                fig.data = tuple(t for t in fig.data if getattr(t, "name", None) != "Search Results")
+
+                xs = highlighted_df["x"].to_list()
+                ys = highlighted_df["y"].to_list()
+
+                # NOTE: use go.Scatter (SVG) so it sits above the scattergl canvas
                 fig.add_trace(
                     go.Scatter(
-                        x=highlighted_df["x"],
-                        y=highlighted_df["y"],
+                        x=xs, y=ys,
                         mode="markers",
-                        marker=dict(color="cyan", size=12, symbol="x"),
+                        marker=dict(
+                            symbol="x",          # or "x-thin-open"
+                            size=20,
+                            color="#33C3F0",
+                            line=dict(width=2),
+                        ),
                         name="Search Results",
+                        hoverinfo="skip",
+                        showlegend=True,
+                        cliponaxis=False,       # keeps the X strokes visible at edges
+                        opacity=1.0,
                     )
                 )
+
+
+
 
         keys = [k for (k, p, d) in results]
         paths = [p for (k, p, d) in results]
@@ -1337,59 +1366,116 @@ def update_images(
     ],
     [
         State("carousel-state", "data"),
-        State("spec-toggle", "on"),  # <— NEW
+        State("spec-toggle", "on"),
     ],
     prevent_initial_call=True,
 )
 def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
+    """
+    Robust carousel navigation:
+
+    - Uses the number of actual carousel components (len(left_clicks)) as
+      the ground truth for how many values to return.
+    - Derives audio vs image behaviour from the stored groups.
+    - Keeps car_state consistent with currently existing groups only.
+    """
 
     groups = groups or []
     order = order or []
+    car_state = dict(car_state or {})
+
+    # Only groups that actually have "twins"
     car_groups = {g["gid"]: g for g in groups if len(g.get("paths", [])) > 1}
 
-    if not order:
-        return car_state or {}, [], [], [], []
+    # How many carousel components are currently mounted in the layout?
+    n_components = len(left_clicks or [])  # equals number of left/right buttons & imgs
+    if not car_groups or n_components == 0:
+        # No carousels to drive → return empty lists of the correct size
+        return car_state, [], [], [], []
 
-    car_state = dict(car_state or {})
-    for gid in car_groups:
+    # Determine in which order the carousels appear in the layout
+    # Prefer the stored "order" (built when cards are created), but
+    # intersect it with existing groups just in case.
+    if order:
+        gid_list = [gid for gid in order if gid in car_groups]
+    else:
+        # fallback: use the dict order
+        gid_list = list(car_groups.keys())
+
+    # Clamp to the current number of components (safety against stale order)
+    gid_list = gid_list[:n_components]
+
+    # Ensure state only contains current groups
+    for gid in gid_list:
         car_state.setdefault(gid, 0)
-    car_state = {gid: idx for gid, idx in car_state.items() if gid in car_groups}
+    car_state = {gid: car_state[gid] for gid in gid_list}
 
+    # Which dataset type? (image vs audio) → determines if we have audio carousels
+    sample_gid = gid_list[0]
+    sample_path = car_groups[sample_gid]["paths"][0]
+    is_audio_dataset = os.path.splitext(sample_path)[1].lower() in AUDIO_EXTS
+
+    # Handle user click (if any)
     trig = ctx.triggered_id
     if isinstance(trig, dict) and trig.get("type") in ("left", "right"):
         gid = trig.get("gid")
-        g = car_groups.get(gid)
-        if g:
-            n = len(g["paths"])
+        if gid in car_groups:
+            paths = car_groups[gid]["paths"]
+            n = len(paths)
             cur = car_state.get(gid, 0)
-            cur = (cur - 1) % n if trig["type"] == "left" else (cur + 1) % n
+            if trig["type"] == "left":
+                cur = (cur - 1) % n
+            else:
+                cur = (cur + 1) % n
             car_state[gid] = cur
 
-    srcs, srcsets, counters, audios = [], [], [], []
-    for gid in order:
-        g = car_groups.get(gid)
-        if not g:
-            srcs.append(dash.no_update); srcsets.append(dash.no_update)
-            counters.append(dash.no_update); audios.append(dash.no_update)
-            continue
+    srcs = []
+    srcsets = []
+    counters = []
+    audios = []
+
+    for gid in gid_list:
+        g = car_groups[gid]
         paths = g["paths"]
         cur = car_state.get(gid, 0) % len(paths)
         qp = urllib.parse.quote(paths[cur])
 
-        # If it's an image carousel, we use /preview and set srcset; if audio, we use /awave + /audio
-        is_audio = os.path.splitext(paths[0])[1].lower() in AUDIO_EXTS
-        if is_audio:
+        if is_audio_dataset:
+            # Image is a spectrogram or waveform, plus an <audio> element
             preview_ep = "/aspec" if spec_on else "/awave"
             srcs.append(f"{preview_ep}?p={qp}")
-            srcsets.append(dash.no_update)
+            srcsets.append(dash.no_update)  # no srcset needed for spectrogram
             audios.append(f"/audio?p={qp}")
         else:
+            # Normal image carousel
             srcs.append(f"/preview?p={qp}&w=900")
-            srcsets.append(f"/preview?p={qp}&w=600 600w, /preview?p={qp}&w=900 900w, /preview?p={qp}&w=1400 1400w")
-            audios.append(dash.no_update)
+            srcsets.append(
+                f"/preview?p={qp}&w=600 600w, "
+                f"/preview?p={qp}&w=900 900w, "
+                f"/preview?p={qp}&w=1400 1400w"
+            )
 
+        counters.append(f"{cur + 1}/{len(paths)}")
 
-        counters.append(f"{cur+1}/{len(paths)}")
+    # If the layout has somehow more components than gids (extremely defensive),
+    # pad with dash.no_update so Dash's lengths always match.
+    def _pad(lst, target_len):
+        if len(lst) < target_len:
+            lst = list(lst) + [dash.no_update] * (target_len - len(lst))
+        else:
+            lst = lst[:target_len]
+        return lst
+
+    srcs = _pad(srcs, n_components)
+    srcsets = _pad(srcsets, n_components)
+    counters = _pad(counters, n_components)
+
+    if is_audio_dataset:
+        audios = _pad(audios, n_components)
+    else:
+        # For image datasets, there are *no* carousel-audio components,
+        # so the output list must be empty.
+        audios = []
 
     return car_state, srcs, srcsets, counters, audios
 

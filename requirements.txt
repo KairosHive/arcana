@@ -34,3 +34,6 @@ tqdm>=4.65
 soundfile
 librosa
 numba>=0.56
+
+# --- Optimal Transport (for palette EMD) ---
+pot>=0.9

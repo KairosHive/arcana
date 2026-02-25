@@ -7,6 +7,8 @@ import base64
 import os
 import pickle
 import torch
+import threading
+import json
 from usearch.index import Index
 from transformers import CLIPModel, CLIPProcessor
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +27,19 @@ import hashlib
 import shutil  # <— add at top of file with other imports if not present
 import librosa
 from matplotlib import pyplot as plt
+
+# --- palette/style search ---
+try:
+    from .db import search_by_palette, search_by_style, search_combined, load_palette_features, load_style_features
+    PALETTE_STYLE_AVAILABLE = True
+except ImportError:
+    try:
+        from db import search_by_palette, search_by_style, search_combined, load_palette_features, load_style_features
+        PALETTE_STYLE_AVAILABLE = True
+    except ImportError:
+        PALETTE_STYLE_AVAILABLE = False
+        search_by_palette = search_by_style = search_combined = None
+        load_palette_features = load_style_features = None
 
 
 
@@ -386,6 +401,62 @@ def search(index, idx2path, query, n, modality="image"):
 
 
 
+# ------------- PALETTE CACHE -------------
+# Cache precomputed dominant colors to avoid K-means on every request
+_palette_cache = {}  # db_name -> {path: dominant_colors array}
+_palette_cache_lock = threading.Lock()
+
+def _load_palette_cache(db_name: str) -> dict:
+    """Load precomputed dominant colors from features file."""
+    palette_path = os.path.join(DB_DIR, f"features_{db_name}_palette.npz")
+    if not os.path.exists(palette_path):
+        return {}
+    
+    try:
+        data = np.load(palette_path)
+        ids = data['ids']
+        dominant = data['dominant']  # (n_images, n_colors, 4)
+        
+        # Build path -> dominant mapping
+        # We need idx2path to map ids to paths
+        index_path = os.path.join(DB_DIR, f"{db_name}_image.json")
+        if not os.path.exists(index_path):
+            return {}
+        
+        with open(index_path) as f:
+            idx2path = json.load(f)
+        idx2path = {int(k): v for k, v in idx2path.items()}
+        
+        cache = {}
+        for i, img_id in enumerate(ids):
+            if img_id in idx2path:
+                path = idx2path[img_id]
+                # Normalize path for consistent lookup
+                cache[os.path.normpath(path)] = dominant[i]
+        return cache
+    except Exception as e:
+        print(f"[palette cache] Failed to load {palette_path}: {e}")
+        return {}
+
+def get_cached_palette(path: str, db_name: str = None) -> np.ndarray | None:
+    """Get precomputed dominant colors for a path."""
+    norm_path = os.path.normpath(path)
+    
+    # Try all loaded caches
+    with _palette_cache_lock:
+        for name, cache in _palette_cache.items():
+            if norm_path in cache:
+                return cache[norm_path]
+        
+        # If db_name specified and not loaded, load it
+        if db_name and db_name not in _palette_cache:
+            _palette_cache[db_name] = _load_palette_cache(db_name)
+            if norm_path in _palette_cache[db_name]:
+                return _palette_cache[db_name][norm_path]
+    
+    return None
+
+
 # ------------- DASH APP -------------
 latent_options = get_latent_options()
 db_options = get_db_options()
@@ -439,6 +510,97 @@ def preview_endpoint():
         mimetype="image/jpeg",
         headers={"Cache-Control": "public, max-age=31536000"},
     )
+
+
+@app.server.route("/palette")
+def palette_endpoint():
+    """Generate a color palette swatch image for an image."""
+    p = request.args.get("p")
+    if not p:
+        return Response("missing p", status=400)
+    path = urllib.parse.unquote(p)
+    
+    # Number of colors
+    try:
+        n_colors = min(max(4, int(request.args.get("n", 16))), 32)
+    except:
+        n_colors = 16
+    
+    # Swatch dimensions
+    try:
+        width = min(max(100, int(request.args.get("w", 300))), 600)
+        height = min(max(20, int(request.args.get("h", 30))), 60)
+    except:
+        width, height = 300, 30
+    
+    # Optional db_name for cache lookup
+    db_name = request.args.get("db", None)
+    
+    try:
+        # Try cached palette first (much faster)
+        cached = get_cached_palette(path, db_name)
+        if cached is not None:
+            # Cached is (32, 4) with [L, A, B, proportion]
+            # Take top n_colors by proportion
+            palette = cached[:n_colors]
+            colors = palette[:, :3]
+            proportions = palette[:, 3]
+            # Renormalize proportions
+            proportions = proportions / (proportions.sum() + 1e-8)
+        else:
+            # Fallback: compute on the fly (slower)
+            try:
+                from .palette import extract_dominant_colors
+            except ImportError:
+                from palette import extract_dominant_colors
+            
+            palette = extract_dominant_colors(path, n_colors=n_colors)
+            colors = palette[:, :3]
+            proportions = palette[:, 3]
+        
+        # Colors are in LAB, convert to RGB for display
+        # LAB values: L [0-100], A,B [-128 to 127]
+        # Convert back to uint8 LAB then to RGB
+        lab_colors = np.zeros((n_colors, 1, 3), dtype=np.float32)
+        lab_colors[:, 0, :] = colors
+        
+        # Undo the float conversion: L back to 0-255, A,B back to 0-255
+        lab_colors[:, :, 0] = lab_colors[:, :, 0] * (255.0 / 100.0)  # L: 0-100 -> 0-255
+        lab_colors[:, :, 1] = lab_colors[:, :, 1] + 128.0             # A: -128,127 -> 0-255
+        lab_colors[:, :, 2] = lab_colors[:, :, 2] + 128.0             # B: -128,127 -> 0-255
+        lab_colors = np.clip(lab_colors, 0, 255).astype(np.uint8)
+        
+        # Convert LAB to BGR
+        bgr_colors = cv2.cvtColor(lab_colors, cv2.COLOR_LAB2BGR)
+        
+        # Create swatch image
+        swatch = np.zeros((height, width, 3), dtype=np.uint8)
+        x = 0
+        for i, prop in enumerate(proportions):
+            w = int(prop * width)
+            if i == len(proportions) - 1:
+                w = width - x  # Fill remaining
+            if w > 0:
+                swatch[:, x:x+w] = bgr_colors[i, 0]
+                x += w
+        
+        # Encode as PNG
+        ok, buf = cv2.imencode(".png", swatch)
+        if not ok:
+            return Response(status=500)
+        
+        return Response(
+            buf.tobytes(),
+            mimetype="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except Exception as e:
+        # Return a gray placeholder on error
+        print(f"[palette endpoint] Error: {e}")
+        swatch = np.full((height, width, 3), 64, dtype=np.uint8)
+        ok, buf = cv2.imencode(".png", swatch)
+        return Response(buf.tobytes(), mimetype="image/png") if ok else Response(status=500)
+
 
 @app.server.route("/audio")
 def audio_endpoint():
@@ -505,7 +667,11 @@ app.layout = html.Div(
             [
                 dcc.RadioItems(
                     id="mode-select",
-                    options=[{"label": "Prompt Search", "value": "prompt"}, {"label": "Generate Story", "value": "story"}],
+                    options=[
+                        {"label": "Prompt Search", "value": "prompt"},
+                        {"label": "Generate Story", "value": "story"},
+                        {"label": "Moodboard", "value": "moodboard"},
+                    ],
                     value="prompt",
                     labelStyle={"display": "inline-block", "marginRight": "25px", "fontWeight": "bold"},
                 ),
@@ -524,9 +690,14 @@ app.layout = html.Div(
         dcc.Store(id="grouped-results", storage_type="memory"),
         dcc.Store(id="carousel-state", storage_type="memory"),
         dcc.Store(id="carousel-order", storage_type="memory"),
+        dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
+        dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Currently selected reference image
         html.Div(
             [
-                dcc.Graph(id="scatter-plot", style={"height": "80vh"}),
+                html.Div(
+                    dcc.Graph(id="scatter-plot", style={"height": "80vh"}),
+                    id="scatter-wrapper",
+                ),
                 html.Div(
                     [
                         dcc.Input(
@@ -553,7 +724,166 @@ app.layout = html.Div(
                     id="controls-bar",
                     style={"display": "flex", "alignItems": "center", "marginTop": "10px"},
                 ),
+                # Moodboard controls (hidden by default)
+                html.Div(
+                    [
+                        # Header
+                        html.Div("Similarity Search", style={"fontSize": "16px", "fontWeight": "600", "color": "#00bcd4", "marginBottom": "12px"}),
+                        
+                        # Feature Cards Row
+                        html.Div(
+                            [
+                                # Color Palette Card
+                                html.Div(
+                                    [
+                                        html.Div([
+                                            dcc.Checklist(
+                                                id="moodboard-palette-check",
+                                                options=[{"label": "🎨 Color Palette", "value": "palette"}],
+                                                value=["palette"],
+                                                inline=True,
+                                                style={"fontWeight": "500"},
+                                            ),
+                                        ], style={"marginBottom": "8px"}),
+                                        html.Div([
+                                            html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            dcc.Dropdown(
+                                                id="palette-method",
+                                                options=[
+                                                    {"label": "Histogram", "value": "histogram"},
+                                                    {"label": "EMD", "value": "emd"},
+                                                    {"label": "Moments", "value": "moments"},
+                                                ],
+                                                value="histogram",
+                                                clearable=False,
+                                                style={"width": "100px", "color": "#000", "fontSize": "12px"},
+                                            ),
+                                        ], style={"display": "flex", "alignItems": "center"}),
+                                        html.Div([
+                                            html.Span("Colors:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            dcc.Dropdown(
+                                                id="palette-n-colors",
+                                                options=[{"label": str(n), "value": n} for n in [4, 8, 12, 16, 24, 32]],
+                                                value=16,
+                                                clearable=False,
+                                                style={"width": "60px", "color": "#000", "fontSize": "12px"},
+                                            ),
+                                        ], style={"display": "flex", "alignItems": "center", "marginTop": "6px"}),
+                                    ],
+                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"},
+                                ),
+                                # Style Card
+                                html.Div(
+                                    [
+                                        html.Div([
+                                            dcc.Checklist(
+                                                id="moodboard-style-check",
+                                                options=[{"label": "✨ Style/Texture", "value": "style"}],
+                                                value=[],
+                                                inline=True,
+                                                style={"fontWeight": "500"},
+                                            ),
+                                        ], style={"marginBottom": "8px"}),
+                                        html.Div([
+                                            html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            dcc.Dropdown(
+                                                id="style-method",
+                                                options=[
+                                                    {"label": "Gram", "value": "gram"},
+                                                    {"label": "Edge", "value": "edge"},
+                                                    {"label": "LBP", "value": "lbp"},
+                                                ],
+                                                value="gram",
+                                                clearable=False,
+                                                style={"width": "80px", "color": "#000", "fontSize": "12px"},
+                                            ),
+                                        ], style={"display": "flex", "alignItems": "center"}),
+                                    ],
+                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"},
+                                ),
+                            ],
+                            style={"display": "flex", "gap": "10px", "marginBottom": "12px", "flexWrap": "wrap"},
+                        ),
+                        
+                        # Search Options Row
+                        html.Div(
+                            [
+                                dcc.Input(
+                                    id="moodboard-prompt",
+                                    type="text",
+                                    placeholder="Filter by prompt (optional)...",
+                                    style={"flex": "1", "minWidth": "150px", "padding": "8px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff"},
+                                ),
+                                html.Div([
+                                    html.Span("Results:", style={"fontSize": "11px", "color": "#888", "marginRight": "4px"}),
+                                    dcc.Input(
+                                        id="moodboard-num",
+                                        type="number",
+                                        value=50,
+                                        min=1,
+                                        max=500,
+                                        style={"width": "60px", "padding": "6px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff", "textAlign": "center"},
+                                    ),
+                                ], style={"display": "flex", "alignItems": "center"}),
+                            ],
+                            style={"display": "flex", "gap": "10px", "alignItems": "center", "marginBottom": "12px", "flexWrap": "wrap"},
+                        ),
+                        
+                        # Display Options Row
+                        html.Div(
+                            [
+                                dcc.Checklist(
+                                    id="show-palette-swatches",
+                                    options=[{"label": "Show palettes", "value": "show"}],
+                                    value=["show"],
+                                    inline=True,
+                                    style={"fontSize": "12px"},
+                                ),
+                                html.Div([
+                                    html.Span("Image size:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                    dcc.Dropdown(
+                                        id="moodboard-img-size",
+                                        options=[
+                                            {"label": "Small", "value": "small"},
+                                            {"label": "Medium", "value": "medium"},
+                                            {"label": "Large", "value": "large"},
+                                            {"label": "Full", "value": "full"},
+                                        ],
+                                        value="medium",
+                                        clearable=False,
+                                        style={"width": "90px", "color": "#000", "fontSize": "12px"},
+                                    ),
+                                ], style={"display": "flex", "alignItems": "center"}),
+                                html.Div([
+                                    html.Span("Columns:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                    dcc.Dropdown(
+                                        id="moodboard-columns",
+                                        options=[{"label": str(n), "value": n} for n in [1, 2, 3, 4]],
+                                        value=2,
+                                        clearable=False,
+                                        style={"width": "55px", "color": "#000", "fontSize": "12px"},
+                                    ),
+                                ], style={"display": "flex", "alignItems": "center"}),
+                                html.Button(
+                                    "Find Similar", 
+                                    id="moodboard-search-btn", 
+                                    n_clicks=0,
+                                    style={"padding": "8px 20px", "backgroundColor": "#00bcd4", "color": "#fff", "border": "none", "borderRadius": "4px", "fontWeight": "600", "cursor": "pointer"},
+                                ),
+                            ],
+                            style={"display": "flex", "gap": "12px", "alignItems": "center", "flexWrap": "wrap"},
+                        ),
+                    ],
+                    id="moodboard-controls",
+                    style={"display": "none", "marginTop": "10px", "padding": "16px", "backgroundColor": "#1a1a1a", "borderRadius": "10px", "border": "1px solid #333"},
+                ),
+                # Reference image display (sticky in left column)
+                html.Div(
+                    id="moodboard-ref-display",
+                    style={"display": "none", "marginTop": "12px", "padding": "12px", "backgroundColor": "#1a1a1a", "borderRadius": "10px", "border": "1px solid #00bcd4", "position": "sticky", "top": "10px"},
+                ),
             ],
+            id="left-column",
             style={"width": "55%", "display": "inline-block", "verticalAlign": "top"},
         ),
 
@@ -658,31 +988,111 @@ html.Div(
                     },
                 ),
 
+                # Moodboard gallery (shown in moodboard mode)
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                html.Span("📌 Reference Images", style={"fontWeight": "600", "color": "#00bcd4"}),
+                                html.Span(" — click to select, then Find Similar", style={"fontSize": "12px", "color": "#888"}),
+                            ],
+                            style={"marginBottom": "10px"},
+                        ),
+                        html.Div(id="moodboard-gallery", style={
+                            "display": "grid", 
+                            "gridTemplateColumns": "repeat(auto-fill, minmax(90px, 1fr))",
+                            "gap": "8px",
+                            "maxHeight": "300px",
+                            "overflowY": "auto",
+                            "padding": "4px",
+                        }),
+                        html.Div(
+                            [
+                                html.Button(
+                                    "Clear References", 
+                                    id="clear-moodboard-btn", 
+                                    n_clicks=0, 
+                                    style={"padding": "6px 14px", "backgroundColor": "#444", "border": "none", "borderRadius": "4px", "color": "#ccc", "fontSize": "12px", "cursor": "pointer"},
+                                ),
+                                html.Button(
+                                    "Save Moodboard", 
+                                    id="save-moodboard-btn", 
+                                    n_clicks=0, 
+                                    style={"padding": "6px 14px", "backgroundColor": "#2a6a4f", "border": "none", "borderRadius": "4px", "color": "#fff", "fontSize": "12px", "cursor": "pointer"},
+                                ),
+                            ],
+                            style={"display": "flex", "gap": "8px", "marginTop": "10px"},
+                        ),
+                        # Moodboard save folder input
+                        dcc.Input(
+                            id="moodboard-save-folder",
+                            type="text",
+                            placeholder="Folder name to save moodboard images...",
+                            style={"width": "100%", "marginTop": "8px", "padding": "8px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff"},
+                        ),
+                        html.Div(id="moodboard-save-confirmation", style={"marginTop": "6px", "fontSize": "12px"}),
+                        
+                        # Divider
+                        html.Hr(style={"margin": "16px 0", "borderColor": "#444"}),
+                        
+                        # Selection controls for results
+                        html.Div("Results Selection", style={"fontWeight": "600", "color": "#888", "fontSize": "12px", "marginBottom": "8px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
+                        html.Div(
+                            [
+                                html.Button("Select All", id="moodboard-select-all", n_clicks=0, 
+                                           style={"padding": "6px 14px", "backgroundColor": "#333", "border": "none", "borderRadius": "4px", "color": "#ccc", "fontSize": "12px", "cursor": "pointer"}),
+                                html.Button("Clear All", id="moodboard-clear-all", n_clicks=0,
+                                           style={"padding": "6px 14px", "backgroundColor": "#333", "border": "none", "borderRadius": "4px", "color": "#ccc", "fontSize": "12px", "cursor": "pointer"}),
+                            ],
+                            style={"display": "flex", "gap": "8px", "marginBottom": "10px"},
+                        ),
+                        html.Button("Save Selected Images", id="moodboard-save-selected", n_clicks=0,
+                                   style={"width": "100%", "padding": "8px", "backgroundColor": "#00796b", "border": "none", "borderRadius": "4px", "color": "#fff", "fontWeight": "600", "cursor": "pointer"}),
+                        dcc.Input(
+                            id="moodboard-results-folder",
+                            type="text",
+                            placeholder="Folder name to save selected results...",
+                            style={"width": "100%", "marginTop": "8px", "padding": "8px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff"},
+                        ),
+                        html.Div(id="moodboard-results-confirmation", style={"marginTop": "6px", "fontSize": "12px"}),
+                    ],
+                    id="moodboard-section",
+                    style={"display": "none", "marginBottom": "16px", "padding": "14px", 
+                           "backgroundColor": "#1e1e1e", "borderRadius": "10px", "border": "1px solid #333"},
+                ),
+
                 # Results list
                 html.Div(
                     id="image-display",
                     style={"overflowY": "scroll", "overflowX": "hidden", "maxHeight": "80vh"},
                 ),
 
-                # Bulk selection buttons
+                # Bulk selection buttons (hidden in moodboard mode)
                 html.Div(
                     [
                         html.Button("Select All", id="select-all", n_clicks=0),
                         html.Button("Clear All", id="clear-all", n_clicks=0),
                     ],
+                    id="bulk-selection-btns",
                     style={"display": "flex", "gap": "8px", "marginTop": "8px"},
                 ),
 
-                # Save actions
-                html.Button("Save Selected Images", id="save-button", style={"marginTop": "8px"}),
-                dcc.Input(
-                    id="save-folder",
-                    type="text",
-                    placeholder="Enter folder path...",
-                    style={"width": "100%", "marginTop": "6px"},
+                # Save actions (hidden in moodboard mode)
+                html.Div(
+                    [
+                        html.Button("Save Selected Images", id="save-button", style={"marginTop": "8px"}),
+                        dcc.Input(
+                            id="save-folder",
+                            type="text",
+                            placeholder="Enter folder path...",
+                            style={"width": "100%", "marginTop": "6px"},
+                        ),
+                    ],
+                    id="save-actions-section",
                 ),
                 html.Button("Save Story", id="save-story-btn", style={"marginTop": "10px", "display": "none"}),
                 html.Div(id="save-confirmation", style={"marginTop": "10px"}),
+                html.Div(id="moodboard-added-notification", style={"marginTop": "6px"}),
             ],
             style={
                 "backgroundColor": "#1b1b1b",
@@ -693,6 +1103,7 @@ html.Div(
             },
         ),
     ],
+    id="right-column",
     style={"width": "42%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"},
 ),
 
@@ -725,24 +1136,633 @@ html.Img(
         Output("num-images", "style"),
         Output("story-box", "style"),
         Output("main-action-btn", "children"),
+        Output("controls-bar", "style"),
+        Output("moodboard-controls", "style"),
+        Output("moodboard-section", "style"),
+        Output("scatter-wrapper", "style"),
+        Output("left-column", "style"),
+        Output("right-column", "style"),
+        Output("bulk-selection-btns", "style"),
+        Output("save-actions-section", "style"),
     ],
     Input("mode-select", "value"),
 )
 def toggle_inputs(mode):
+    controls_visible = {"display": "flex", "alignItems": "center", "marginTop": "10px"}
+    controls_hidden = {"display": "none"}
+    moodboard_controls_visible = {"display": "block", "marginTop": "10px", "padding": "10px", "backgroundColor": "#1a1a1a", "borderRadius": "5px"}
+    moodboard_section_visible = {"display": "block", "marginBottom": "12px", "padding": "10px", 
+                                  "backgroundColor": "#1e1e1e", "borderRadius": "5px"}
+    moodboard_section_hidden = {"display": "none"}
+    
+    # Column styles
+    left_col_normal = {"width": "55%", "display": "inline-block", "verticalAlign": "top"}
+    right_col_normal = {"width": "42%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"}
+    
+    # For moodboard: small left (just moodboard controls), larger right (results)
+    left_col_moodboard = {"width": "30%", "display": "inline-block", "verticalAlign": "top"}
+    right_col_moodboard = {"width": "67%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"}
+    
+    scatter_visible = {"display": "block"}
+    scatter_hidden = {"display": "none"}
+    
+    bulk_btns_visible = {"display": "flex", "gap": "8px", "marginTop": "8px"}
+    save_section_visible = {"display": "block"}
+    
     if mode == "prompt":
         return (
             {"display": "block", "width": "60%", "marginRight": "10px"},
             {"display": "block", "width": "15%", "marginRight": "10px"},
             {"display": "none"},
             "Search",
+            controls_visible,
+            controls_hidden,
+            moodboard_section_hidden,
+            scatter_visible,
+            left_col_normal,
+            right_col_normal,
+            bulk_btns_visible,
+            save_section_visible,
         )
-    else:
+    elif mode == "story":
         return (
             {"display": "none"},
             {"display": "none"},
             {"display": "block", "width": "70%", "height": "70px", "marginRight": "10px"},
             "Generate Story",
+            controls_visible,
+            controls_hidden,
+            moodboard_section_hidden,
+            scatter_visible,
+            left_col_normal,
+            right_col_normal,
+            bulk_btns_visible,
+            save_section_visible,
         )
+    else:  # moodboard
+        return (
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+            "Search",
+            controls_hidden,
+            moodboard_controls_visible,
+            moodboard_section_visible,
+            scatter_hidden,
+            left_col_moodboard,
+            right_col_moodboard,
+            {"display": "none"},  # hide bulk selection
+            {"display": "none"},  # hide save actions
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MOODBOARD CALLBACKS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("moodboard-store", "data"),
+    [
+        Input({"type": "add-to-moodboard", "index": ALL}, "n_clicks"),
+        Input({"type": "remove-from-moodboard", "index": ALL}, "n_clicks"),
+        Input("clear-moodboard-btn", "n_clicks"),
+    ],
+    State("moodboard-store", "data"),
+    prevent_initial_call=True,
+)
+def update_moodboard(add_clicks, remove_clicks, clear_clicks, current_moodboard):
+    """Add or remove images from moodboard."""
+    current_moodboard = current_moodboard or []
+    
+    # Use ctx.triggered to get actual trigger info including value
+    if not ctx.triggered:
+        return dash.no_update
+    
+    trigger_info = ctx.triggered[0]
+    trigger_prop = trigger_info.get("prop_id", "")
+    trigger_value = trigger_info.get("value")
+    
+    # Only process if it was an actual click (value > 0)
+    if trigger_value is None or trigger_value == 0:
+        return dash.no_update
+    
+    if "clear-moodboard-btn" in trigger_prop:
+        return []
+    
+    triggered_id = ctx.triggered_id
+    if isinstance(triggered_id, dict):
+        path = triggered_id["index"]
+        if triggered_id.get("type") == "add-to-moodboard":
+            if path and path not in current_moodboard:
+                current_moodboard.append(path)
+        elif triggered_id.get("type") == "remove-from-moodboard":
+            if path in current_moodboard:
+                current_moodboard.remove(path)
+    
+    return current_moodboard
+
+
+@app.callback(
+    Output("moodboard-added-notification", "children"),
+    Input({"type": "add-to-moodboard", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def show_moodboard_added_notification(clicks):
+    """Show brief feedback when an image is added to moodboard."""
+    triggered = ctx.triggered_id
+    if isinstance(triggered, dict) and triggered.get("type") == "add-to-moodboard":
+        # Check if this was an actual click (not initial load)
+        if any(c and c > 0 for c in clicks if c is not None):
+            return html.Div(
+                "Image added to moodboard",
+                style={
+                    "color": "#4CAF50", "fontSize": "12px", "padding": "4px 8px",
+                    "backgroundColor": "rgba(76, 175, 80, 0.15)", "borderRadius": "4px",
+                    "display": "inline-block",
+                },
+            )
+    return ""
+
+
+@app.callback(
+    Output("moodboard-ref-display", "children"),
+    Output("moodboard-ref-display", "style"),
+    [
+        Input("selected-moodboard-image", "data"),
+        Input("palette-n-colors", "value"),
+        Input("mode-select", "value"),
+    ],
+)
+def update_moodboard_ref_display(ref_image, n_colors, mode):
+    """Update the reference image display in the left column."""
+    # Only show in moodboard mode
+    if mode != "moodboard" or not ref_image:
+        return [], {"display": "none"}
+    
+    n_colors = n_colors or 16
+    qpath = urllib.parse.quote(ref_image)
+    
+    content = [
+        html.Div("REFERENCE IMAGE", style={"color": "#00bcd4", "fontWeight": "600", "fontSize": "11px", "marginBottom": "10px", "textTransform": "uppercase", "letterSpacing": "1px"}),
+        html.Img(
+            src=f"/preview?p={qpath}&w=600",
+            srcSet=f"/preview?p={qpath}&w=400 400w, /preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w",
+            sizes="25vw",
+            style={"width": "100%", "borderRadius": "6px", "border": "2px solid #00bcd4", "marginBottom": "8px"},
+        ),
+        html.Img(
+            src=f"/palette?p={qpath}&n={n_colors}&w=300&h=20",
+            style={"width": "100%", "borderRadius": "4px"},
+        ),
+        html.Div(
+            os.path.basename(ref_image),
+            style={"color": "#888", "fontSize": "10px", "marginTop": "8px", "wordBreak": "break-all"},
+        ),
+    ]
+    
+    style = {
+        "display": "block", 
+        "marginTop": "12px", 
+        "padding": "12px", 
+        "backgroundColor": "#1a1a1a", 
+        "borderRadius": "10px", 
+        "border": "1px solid #00bcd4",
+        "position": "sticky",
+        "top": "10px",
+    }
+    
+    return content, style
+
+
+@app.callback(
+    Output("moodboard-gallery", "children"),
+    [
+        Input("moodboard-store", "data"),
+        Input("selected-moodboard-image", "data"),
+    ],
+)
+def render_moodboard_gallery(moodboard, selected_path):
+    """Render clickable thumbnails in the moodboard gallery."""
+    moodboard = moodboard or []
+    if not moodboard:
+        return [html.Div("No images in moodboard. Use Search mode and click '+ Moodboard' to add images.", 
+                        style={"color": "#888", "fontStyle": "italic"})]
+    
+    thumbnails = []
+    for path in moodboard:
+        qpath = urllib.parse.quote(path)
+        is_selected = (path == selected_path)
+        border = "3px solid #00bcd4" if is_selected else "2px solid transparent"
+        thumbnails.append(
+            html.Div([
+                # Clickable image area
+                html.Div(
+                    html.Img(
+                        src=f"/thumb?p={qpath}",
+                        style={"width": "80px", "height": "80px", "objectFit": "cover", 
+                               "borderRadius": "4px", "border": border, "display": "block"},
+                    ),
+                    id={"type": "moodboard-thumb", "index": path},
+                    n_clicks=0,
+                    style={"cursor": "pointer"},
+                ),
+                # X button to remove
+                html.Button(
+                    "×",
+                    id={"type": "remove-from-moodboard", "index": path},
+                    n_clicks=0,
+                    style={
+                        "position": "absolute", "top": "-6px", "right": "-6px",
+                        "width": "18px", "height": "18px", "borderRadius": "50%",
+                        "backgroundColor": "#ff4444", "color": "white", "border": "none",
+                        "fontSize": "12px", "lineHeight": "1", "cursor": "pointer",
+                        "padding": "0", "fontWeight": "bold", "zIndex": "10",
+                    },
+                ),
+            ], style={"position": "relative", "display": "inline-block", "margin": "2px"})
+        )
+    return thumbnails
+
+
+@app.callback(
+    Output("selected-moodboard-image", "data"),
+    Input({"type": "moodboard-thumb", "index": ALL}, "n_clicks"),
+    State("moodboard-store", "data"),
+    prevent_initial_call=True,
+)
+def select_moodboard_image(clicks, moodboard):
+    """Select a moodboard image as the reference for similarity search."""
+    triggered = ctx.triggered_id
+    if isinstance(triggered, dict) and triggered.get("type") == "moodboard-thumb":
+        return triggered["index"]
+    return dash.no_update
+
+
+@app.callback(
+    Output("moodboard-save-confirmation", "children"),
+    Input("save-moodboard-btn", "n_clicks"),
+    [
+        State("moodboard-store", "data"),
+        State("moodboard-save-folder", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def save_moodboard_images(n_clicks, moodboard, folder_name):
+    """Save all moodboard reference images to a folder."""
+    if not n_clicks or not moodboard:
+        return dash.no_update
+    
+    if not folder_name or not folder_name.strip():
+        return html.Span("Please enter a folder name", style={"color": "#ffcc00"})
+    
+    folder_name = folder_name.strip()
+    # Create output path
+    output_dir = os.path.join(os.path.dirname(__file__), "output", "moodboards", folder_name)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    saved = 0
+    for path in moodboard:
+        if os.path.exists(path):
+            try:
+                dst = os.path.join(output_dir, os.path.basename(path))
+                import shutil
+                shutil.copy2(path, dst)
+                saved += 1
+            except Exception as e:
+                print(f"Failed to save {path}: {e}")
+    
+    return html.Span(f"Saved {saved} images to {output_dir}", style={"color": "#4CAF50"})
+
+
+@app.callback(
+    Output({"type": "select-image", "index": ALL}, "on", allow_duplicate=True),
+    [
+        Input("moodboard-select-all", "n_clicks"),
+        Input("moodboard-clear-all", "n_clicks"),
+    ],
+    State({"type": "select-image", "index": ALL}, "on"),
+    prevent_initial_call=True,
+)
+def moodboard_toggle_all_selections(select_clicks, clear_clicks, current_states):
+    """Select or clear all images in moodboard results."""
+    triggered = ctx.triggered_id
+    if triggered == "moodboard-select-all":
+        return [True] * len(current_states)
+    elif triggered == "moodboard-clear-all":
+        return [False] * len(current_states)
+    return dash.no_update
+
+
+@app.callback(
+    Output("moodboard-results-confirmation", "children"),
+    Input("moodboard-save-selected", "n_clicks"),
+    [
+        State({"type": "select-image", "index": ALL}, "on"),
+        State({"type": "select-image", "index": ALL}, "id"),
+        State("moodboard-results-folder", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def save_moodboard_selected_results(n_clicks, selections, ids, folder_name):
+    """Save selected result images from moodboard search."""
+    if not n_clicks:
+        return dash.no_update
+    
+    if not folder_name or not folder_name.strip():
+        return html.Span("Please enter a folder name", style={"color": "#ffcc00"})
+    
+    folder_name = folder_name.strip()
+    output_dir = os.path.join(os.path.dirname(__file__), "output", "selections", folder_name)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    saved = 0
+    for sel, id_obj in zip(selections, ids):
+        if sel and isinstance(id_obj, dict):
+            path = id_obj.get("index", "")
+            if path and os.path.exists(path) and not path.startswith("group::"):
+                try:
+                    dst = os.path.join(output_dir, os.path.basename(path))
+                    import shutil
+                    shutil.copy2(path, dst)
+                    saved += 1
+                except Exception as e:
+                    print(f"Failed to save {path}: {e}")
+    
+    if saved > 0:
+        return html.Span(f"Saved {saved} images to {output_dir}", style={"color": "#4CAF50"})
+    else:
+        return html.Span("No images selected", style={"color": "#ffcc00"})
+
+
+@app.callback(
+    [
+        Output("image-display", "children", allow_duplicate=True),
+        Output("grouped-results", "data", allow_duplicate=True),
+        Output("carousel-state", "data", allow_duplicate=True),
+        Output("carousel-order", "data", allow_duplicate=True),
+    ],
+    Input("moodboard-search-btn", "n_clicks"),
+    [
+        State("selected-moodboard-image", "data"),
+        State("moodboard-palette-check", "value"),
+        State("palette-method", "value"),
+        State("moodboard-style-check", "value"),
+        State("style-method", "value"),
+        State("palette-n-colors", "value"),
+        State("show-palette-swatches", "value"),
+        State("moodboard-prompt", "value"),
+        State("moodboard-num", "value"),
+        State("moodboard-img-size", "value"),
+        State("moodboard-columns", "value"),
+        State("dataset-dropdown", "value"),
+        State("group-similar", "on"),
+        State("sim-thresh", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def moodboard_similarity_search(n_clicks, ref_image, use_palette, palette_method, use_style, style_method, 
+                                 n_colors, show_swatches, prompt, num_results, img_size, columns, dataset_value, group_on, sim_thresh):
+    """Search for similar images using palette/style, optionally constrained by prompt."""
+    if not n_clicks or not ref_image or not dataset_value:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    if not PALETTE_STYLE_AVAILABLE:
+        return [html.Div("Palette/style features not available. Run build with --features palette,style", 
+                        style={"color": "#ff6666", "padding": "10px"})], [], {}, []
+    
+    if not use_palette and not use_style:
+        return [html.Div("Please enable at least one feature (Color Palette or Style/Texture)", 
+                        style={"color": "#ffcc00", "padding": "10px"})], [], {}, []
+    
+    # Parse dataset
+    try:
+        parts = dataset_value.split("::")
+        db_name = parts[0]
+        modality = parts[2] if len(parts) == 3 else "image"
+        
+        # Preload palette cache for this db (speeds up palette rendering)
+        if db_name not in _palette_cache:
+            with _palette_cache_lock:
+                if db_name not in _palette_cache:
+                    _palette_cache[db_name] = _load_palette_cache(db_name)
+    except:
+        return [html.Div("Invalid dataset", style={"color": "#ff6666"})], [], {}, []
+    
+    if modality != "image":
+        return [html.Div("Similarity search only available for images", style={"color": "#ff6666"})], [], {}, []
+    
+    # Load index
+    try:
+        index, idx2path = load_index(db_name, modality=modality)
+    except Exception as e:
+        return [html.Div(f"Failed to load index: {e}", style={"color": "#ff6666"})], [], {}, []
+    
+    num_results = num_results or 50
+    n_colors = n_colors or 16
+    palette_method = palette_method or "histogram"
+    style_method = style_method or "gram"
+    img_size = img_size or "medium"
+    columns = columns or 2
+    
+    # Image size settings
+    size_config = {
+        "small": {"w": 300, "srcset": False},
+        "medium": {"w": 600, "srcset": True},
+        "large": {"w": 900, "srcset": True},
+        "full": {"w": 1400, "srcset": True},
+    }
+    cfg = size_config.get(img_size, size_config["medium"])
+    
+    # Step 1: If prompt provided, first filter by CLIP similarity
+    candidate_paths = None
+    if prompt and prompt.strip():
+        # Use the local search function (CLIP-based)
+        clip_results = search(index, idx2path, prompt.strip(), min(num_results * 3, len(idx2path)), modality=modality)
+        candidate_paths = {r[1] for r in clip_results}  # Set of paths
+    
+    # Step 2: Compute palette/style similarity
+    try:
+        scores = {}  # path -> combined score
+        
+        if use_palette:
+            palette_results = search_by_palette(ref_image, db_name, idx2path, method=palette_method, top_k=len(idx2path))
+            for path, score in palette_results:
+                if candidate_paths is None or path in candidate_paths:
+                    scores[path] = scores.get(path, 0) + score * 0.5
+        
+        if use_style:
+            # Try specified method, fall back to edge
+            try:
+                style_results = search_by_style(ref_image, db_name, idx2path, method=style_method, top_k=len(idx2path))
+            except:
+                style_results = search_by_style(ref_image, db_name, idx2path, method="edge", top_k=len(idx2path))
+            
+            for path, score in style_results:
+                if candidate_paths is None or path in candidate_paths:
+                    weight = 0.5 if use_palette else 1.0
+                    scores[path] = scores.get(path, 0) + score * weight
+        
+        # Sort by combined score
+        results = sorted(scores.items(), key=lambda x: -x[1])[:num_results]
+        
+    except FileNotFoundError as e:
+        return [html.Div(f"Features not found: {e}. Run build with --features palette,style", 
+                        style={"color": "#ff6666", "padding": "10px"})], [], {}, []
+    except Exception as e:
+        return [html.Div(f"Search error: {e}", style={"color": "#ff6666", "padding": "10px"})], [], {}, []
+    
+    if not results:
+        return [html.Div("No results found", style={"color": "#ffcc00", "padding": "10px"})], [], {}, []
+    
+    show_palettes = show_swatches and "show" in show_swatches
+    
+    # Filter out reference image from results
+    filtered_results = [(p, s) for p, s in results if os.path.normpath(p) != os.path.normpath(ref_image)]
+    
+    # Group twins if enabled
+    if group_on and len(filtered_results) > 1:
+        # Build paths and scores dict
+        paths = [p for p, s in filtered_results]
+        score_map = {p: s for p, s in filtered_results}
+        
+        # Get keys from idx2path (reverse mapping)
+        path2key = {v: k for k, v in idx2path.items()}
+        keys = []
+        valid_paths = []
+        for p in paths:
+            if p in path2key:
+                keys.append(path2key[p])
+                valid_paths.append(p)
+        
+        if keys:
+            groups = _cosine_group(keys, valid_paths, index, float(sim_thresh or 0.08))
+        else:
+            groups = [{"gid": f"g{i}", "keys": [], "paths": [p]} for i, (p, s) in enumerate(filtered_results)]
+    else:
+        # No grouping - each result is its own group
+        groups = [{"gid": f"g{i}", "keys": [], "paths": [p]} for i, (p, s) in enumerate(filtered_results)]
+        score_map = {p: s for p, s in filtered_results}
+    
+    # Build result grid
+    result_items = []
+    rank = 0
+    
+    for g in groups:
+        n = len(g["paths"])
+        first = g["paths"][0]
+        first_score = score_map.get(first, 0)
+        qpath = urllib.parse.quote(first)
+        rank += 1
+        
+        if n == 1:
+            # Single image card
+            if cfg["srcset"]:
+                result_img = html.Img(
+                    src=f"/preview?p={qpath}&w={cfg['w']}",
+                    srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w",
+                    sizes="(max-width: 900px) 90vw, 50vw",
+                    style={"width": "100%", "borderRadius": "6px", "cursor": "pointer"},
+                )
+            else:
+                result_img = html.Img(
+                    src=f"/preview?p={qpath}&w={cfg['w']}",
+                    style={"width": "100%", "borderRadius": "6px", "cursor": "pointer"},
+                )
+            
+            result_elements = [
+                html.Div(
+                    f"#{rank} \u2022 {first_score:.2f}", 
+                    style={"color": "#888", "fontSize": "11px", "marginBottom": "6px"}
+                ),
+                result_img,
+            ]
+            if show_palettes:
+                result_elements.append(
+                    html.Img(
+                        src=f"/palette?p={qpath}&n={n_colors}&w={cfg['w']}&h=20&db={db_name}",
+                        style={"width": "100%", "marginTop": "6px", "borderRadius": "4px"},
+                    )
+                )
+            result_elements.append(
+                html.Div([
+                    daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
+                    html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                               n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": "#333", "border": "none", "borderRadius": "3px", "color": "#aaa", "cursor": "pointer"}),
+                ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"})
+            )
+            
+            result_items.append(
+                html.Div(result_elements, style={"padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "8px", "border": "1px solid #333"})
+            )
+        else:
+            # Carousel for twins
+            media_el = html.Img(
+                id={"type": "carousel-img", "gid": g["gid"]},
+                src=f"/preview?p={qpath}&w={cfg['w']}",
+                srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w" if cfg["srcset"] else "",
+                sizes="(max-width: 900px) 90vw, 50vw",
+                style={"width": "100%", "display": "block", "marginBottom": "10px", "borderRadius": "5px"},
+            )
+            
+            card_elements = [
+                html.Div(
+                    f"#{rank} \u2022 {first_score:.2f} \u2022 twins: {n}", 
+                    style={"color": "#888", "fontSize": "11px", "marginBottom": "6px"}
+                ),
+                html.Div(
+                    [
+                        media_el,
+                        html.Button("◀", id={"type": "left", "gid": g["gid"]}, n_clicks=0,
+                                    style={"position": "absolute", "left": "8px", "top": "50%",
+                                        "transform": "translateY(-50%)",
+                                        "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
+                                        "border": "none", "borderRadius": "9999px",
+                                        "width": "36px", "height": "36px", "zIndex": 2, "cursor": "pointer"}),
+                        html.Button("▶", id={"type": "right", "gid": g["gid"]}, n_clicks=0,
+                                    style={"position": "absolute", "right": "8px", "top": "50%",
+                                        "transform": "translateY(-50%)",
+                                        "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
+                                        "border": "none", "borderRadius": "9999px",
+                                        "width": "36px", "height": "36px", "zIndex": 2, "cursor": "pointer"}),
+                    ],
+                    style={"position": "relative", "overflow": "hidden"},
+                ),
+                html.Div(id={"type": "carousel-counter", "gid": g["gid"]}, children=f"1/{n}",
+                        style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8}),
+            ]
+            
+            if show_palettes:
+                card_elements.append(
+                    html.Img(
+                        src=f"/palette?p={qpath}&n={n_colors}&w={cfg['w']}&h=20&db={db_name}",
+                        style={"width": "100%", "marginTop": "6px", "borderRadius": "4px"},
+                    )
+                )
+            
+            card_elements.append(
+                html.Div([
+                    daq.BooleanSwitch(id={"type": "select-image", "index": f"group::{g['gid']}"}, on=False),
+                    html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                               n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": "#333", "border": "none", "borderRadius": "3px", "color": "#aaa", "cursor": "pointer"}),
+                ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"})
+            )
+            
+            result_items.append(
+                html.Div(card_elements, style={"padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "8px", "border": "1px solid #333"})
+            )
+    
+    # Grid wrapper
+    grid_style = {
+        "display": "grid",
+        "gridTemplateColumns": f"repeat({columns}, 1fr)",
+        "gap": "12px",
+    }
+    
+    # Build carousel state for groups with multiple items
+    car_state = {g["gid"]: 0 for g in groups}
+    carousel_order = [g["gid"] for g in groups if len(g.get("paths", [])) > 1]
+    
+    return [html.Div(result_items, style=grid_style)], groups, car_state, carousel_order
 
 
 @app.callback(
@@ -1234,7 +2254,11 @@ def update_images(
                     html.Div(
                         [
                             preview,
-                            daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
+                            html.Div([
+                                daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
+                                html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                                           n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
+                            ], style={"display": "flex", "alignItems": "center"}),
                             html.Span(" (no twins)", style={"marginLeft": "10px", "opacity": 0.7}),
                         ],
                         style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
@@ -1285,7 +2309,11 @@ def update_images(
                             *extra_player,
                             html.Div(id={"type": "carousel-counter", "gid": g["gid"]}, children=f"1/{n}",
                                     style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8}),
-                            daq.BooleanSwitch(id={"type": "select-image", "index": f"group::{g['gid']}"}, on=False),
+                            html.Div([
+                                daq.BooleanSwitch(id={"type": "select-image", "index": f"group::{g['gid']}"}, on=False),
+                                html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                                           n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
+                            ], style={"display": "flex", "alignItems": "center"}),
                             html.Span(f" twins: {n}", style={"marginLeft": "10px", "opacity": 0.7}),
                         ],
                         style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e",
@@ -1335,7 +2363,11 @@ def update_images(
             html.Div(
                 [
                     media,
-                    daq.BooleanSwitch(id={"type": "select-image", "index": media_path}, on=False),
+                    html.Div([
+                        daq.BooleanSwitch(id={"type": "select-image", "index": media_path}, on=False),
+                        html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": media_path}, 
+                                   n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
+                    ], style={"display": "flex", "alignItems": "center"}),
                 ],
                 style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
             )
@@ -1484,10 +2516,15 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
     Output("hover-thumb", "src"),
     Output("hover-thumb", "style"),
     Input("scatter-plot", "hoverData"),
+    Input("mode-select", "value"),
     State("dataset-dropdown", "value"),
     State("spec-toggle", "on"),
 )
-def update_hover_thumb(hoverData, dataset_value, spec_on):
+def update_hover_thumb(hoverData, mode, dataset_value, spec_on):
+    # Hide hover thumb in moodboard mode (scatter is hidden)
+    if mode == "moodboard":
+        return "", {"display": "none"}
+    
     try:
         parts = (dataset_value or "").split("::")
         modality = parts[2] if len(parts) == 3 else "image"

@@ -797,7 +797,7 @@ def search_by_palette(
         top_k: Number of results to return
         
     Returns:
-        List of (path, score) tuples, sorted by relevance
+        List of (path, similarity) tuples, sorted by relevance (higher = better)
     """
     try:
         from .palette import (
@@ -838,20 +838,34 @@ def search_by_palette(
         results.sort(key=lambda x: -x[1])  # Higher = better
         
     elif method == "moments":
-        # Euclidean distance - lower is better
+        # Euclidean distance - convert to similarity
         query_mom = query_feats['moments']
+        distances = []
         for i, db_mom in enumerate(features['moments']):
             dist = float(np.linalg.norm(query_mom - db_mom))
-            results.append((idx2path[ids[i]], dist))
-        results.sort(key=lambda x: x[1])  # Lower = better
+            distances.append((idx2path[ids[i]], dist))
+        
+        # Convert distances to similarities: sim = 1 / (1 + dist)
+        max_dist = max(d[1] for d in distances) if distances else 1.0
+        for path, dist in distances:
+            sim = 1.0 - (dist / (max_dist + 1e-8))  # Normalize to 0-1, higher = better
+            results.append((path, sim))
+        results.sort(key=lambda x: -x[1])  # Higher = better
         
     elif method == "emd":
-        # Earth Mover's Distance - lower is better
+        # Earth Mover's Distance - convert to similarity
         query_dom = query_feats['dominant']
+        distances = []
         for i, db_dom in enumerate(features['dominant']):
             dist = emd_palette_distance(query_dom, db_dom, n_colors=n_colors)
-            results.append((idx2path[ids[i]], float(dist)))
-        results.sort(key=lambda x: x[1])  # Lower = better
+            distances.append((idx2path[ids[i]], float(dist)))
+        
+        # Convert distances to similarities
+        max_dist = max(d[1] for d in distances) if distances else 1.0
+        for path, dist in distances:
+            sim = 1.0 - (dist / (max_dist + 1e-8))  # Normalize to 0-1, higher = better
+            results.append((path, sim))
+        results.sort(key=lambda x: -x[1])  # Higher = better
     else:
         raise ValueError(f"Unknown method: {method}")
     

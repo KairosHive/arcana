@@ -25,6 +25,7 @@ import urllib.parse
 from dash import ALL
 import hashlib
 import shutil  # <— add at top of file with other imports if not present
+import tempfile
 import librosa
 from matplotlib import pyplot as plt
 
@@ -727,8 +728,35 @@ app.layout = html.Div(
                 # Moodboard controls (hidden by default)
                 html.Div(
                     [
-                        # Header
-                        html.Div("Similarity Search", style={"fontSize": "16px", "fontWeight": "600", "color": "#00bcd4", "marginBottom": "12px"}),
+                        # Header Row with Upload Zone
+                        html.Div(
+                            [
+                                html.Div("Similarity Search", style={"fontSize": "16px", "fontWeight": "600", "color": "#00bcd4"}),
+                                dcc.Upload(
+                                    id="external-image-upload",
+                                    children=html.Div(
+                                        [
+                                            html.Span("📁 Drop image here", style={"marginRight": "8px"}),
+                                            html.Span("or click to browse", style={"color": "#888", "fontSize": "11px"}),
+                                        ],
+                                        style={"display": "flex", "alignItems": "center"},
+                                    ),
+                                    style={
+                                        "padding": "8px 16px",
+                                        "border": "2px dashed #444",
+                                        "borderRadius": "6px",
+                                        "backgroundColor": "#252525",
+                                        "cursor": "pointer",
+                                        "fontSize": "12px",
+                                        "transition": "border-color 0.2s",
+                                    },
+                                    style_active={"borderColor": "#00bcd4"},
+                                    accept="image/*",
+                                    multiple=False,
+                                ),
+                            ],
+                            style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "12px"},
+                        ),
                         
                         # Feature Cards Row
                         html.Div(
@@ -1386,15 +1414,54 @@ def render_moodboard_gallery(moodboard, selected_path):
 
 @app.callback(
     Output("selected-moodboard-image", "data"),
-    Input({"type": "moodboard-thumb", "index": ALL}, "n_clicks"),
-    State("moodboard-store", "data"),
+    [
+        Input({"type": "moodboard-thumb", "index": ALL}, "n_clicks"),
+        Input("external-image-upload", "contents"),
+    ],
+    [
+        State("moodboard-store", "data"),
+        State("external-image-upload", "filename"),
+    ],
     prevent_initial_call=True,
 )
-def select_moodboard_image(clicks, moodboard):
-    """Select a moodboard image as the reference for similarity search."""
+def select_moodboard_image(clicks, upload_contents, moodboard, upload_filename):
+    """Select a moodboard image as the reference for similarity search.
+    
+    Handles both:
+    - Clicking on a moodboard thumbnail
+    - Drag-and-drop upload of an external image
+    """
     triggered = ctx.triggered_id
+    
+    # Handle moodboard thumbnail click
     if isinstance(triggered, dict) and triggered.get("type") == "moodboard-thumb":
         return triggered["index"]
+    
+    # Handle external image upload
+    if triggered == "external-image-upload" and upload_contents:
+        # Decode base64 image data
+        content_type, content_string = upload_contents.split(',')
+        decoded = base64.b64decode(content_string)
+        
+        # Get file extension from filename
+        ext = os.path.splitext(upload_filename)[1] if upload_filename else ".jpg"
+        if not ext:
+            ext = ".jpg"
+        
+        # Save to temp file in arcana/output directory (so /preview endpoint can serve it)
+        output_dir = os.path.join(os.path.dirname(__file__), "output", "_external_refs")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Create unique filename using hash of content
+        content_hash = hashlib.md5(decoded).hexdigest()[:12]
+        temp_path = os.path.join(output_dir, f"ext_{content_hash}{ext}")
+        
+        # Write file
+        with open(temp_path, "wb") as f:
+            f.write(decoded)
+        
+        return temp_path
+    
     return dash.no_update
 
 
@@ -1585,10 +1652,11 @@ def moodboard_similarity_search(n_clicks, ref_image, use_palette, palette_method
         scores = {}  # path -> combined score
         
         if use_palette:
-            palette_results = search_by_palette(ref_image, db_name, idx2path, method=palette_method, top_k=len(idx2path))
+            palette_results = search_by_palette(ref_image, db_name, idx2path, method=palette_method, n_colors=n_colors, top_k=len(idx2path))
             for path, score in palette_results:
                 if candidate_paths is None or path in candidate_paths:
-                    scores[path] = scores.get(path, 0) + score * 0.5
+                    weight = 0.5 if use_style else 1.0  # Only split weight if using both features
+                    scores[path] = scores.get(path, 0) + score * weight
         
         if use_style:
             # Try specified method, fall back to edge

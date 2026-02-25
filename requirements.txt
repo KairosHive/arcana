@@ -37,3 +37,12 @@ numba>=0.56
 
 # --- Optimal Transport (for palette EMD) ---
 pot>=0.9
+
+# --- ModFlows Color Transfer ---
+einops>=0.8
+
+# --- CUDA PyTorch (optional, for GPU acceleration) ---
+# If you have an NVIDIA GPU, install CUDA-enabled PyTorch for 10-20x speedup:
+#   pip uninstall torch torchvision -y
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# Run: python -c "from arcana.color_transfer import check_cuda_installation; print(check_cuda_installation())"

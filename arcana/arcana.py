@@ -42,6 +42,30 @@ except ImportError:
         search_by_palette = search_by_style = search_combined = None
         load_palette_features = load_style_features = None
 
+# --- color transfer (ModFlows) ---
+try:
+    from .color_transfer import transfer_colors, get_device_info
+    COLOR_TRANSFER_AVAILABLE = True
+except ImportError:
+    try:
+        from color_transfer import transfer_colors, get_device_info
+        COLOR_TRANSFER_AVAILABLE = True
+    except ImportError:
+        COLOR_TRANSFER_AVAILABLE = False
+        transfer_colors = get_device_info = None
+
+# --- LAB color transfer (Reinhard) ---
+try:
+    from .lab_transfer import lab_color_transfer_pil
+    LAB_TRANSFER_AVAILABLE = True
+except ImportError:
+    try:
+        from lab_transfer import lab_color_transfer_pil
+        LAB_TRANSFER_AVAILABLE = True
+    except ImportError:
+        LAB_TRANSFER_AVAILABLE = False
+        lab_color_transfer_pil = None
+
 
 
 
@@ -692,7 +716,8 @@ app.layout = html.Div(
         dcc.Store(id="carousel-state", storage_type="memory"),
         dcc.Store(id="carousel-order", storage_type="memory"),
         dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
-        dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Currently selected reference image
+        dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Reference image (palette source for search/transfer)
+        dcc.Store(id="selected-target-image", storage_type="memory"),  # Target image (receives colors in transfer)
         html.Div(
             [
                 html.Div(
@@ -728,35 +753,40 @@ app.layout = html.Div(
                 # Moodboard controls (hidden by default)
                 html.Div(
                     [
-                        # Header Row with Upload Zone
+                        # ─────────────────────────────────────────────────────────
+                        # SIMILARITY SEARCH PANEL
+                        # ─────────────────────────────────────────────────────────
                         html.Div(
                             [
-                                html.Div("Similarity Search", style={"fontSize": "16px", "fontWeight": "600", "color": "#00bcd4"}),
-                                dcc.Upload(
-                                    id="external-image-upload",
-                                    children=html.Div(
-                                        [
-                                            html.Span("📁 Drop image here", style={"marginRight": "8px"}),
-                                            html.Span("or click to browse", style={"color": "#888", "fontSize": "11px"}),
-                                        ],
-                                        style={"display": "flex", "alignItems": "center"},
-                                    ),
-                                    style={
-                                        "padding": "8px 16px",
-                                        "border": "2px dashed #444",
-                                        "borderRadius": "6px",
-                                        "backgroundColor": "#252525",
-                                        "cursor": "pointer",
-                                        "fontSize": "12px",
-                                        "transition": "border-color 0.2s",
-                                    },
-                                    style_active={"borderColor": "#00bcd4"},
-                                    accept="image/*",
-                                    multiple=False,
+                                # Header Row with Upload Zone
+                                html.Div(
+                                    [
+                                        html.Div("🔍 Similarity Search", style={"fontSize": "14px", "fontWeight": "600", "color": "#00bcd4"}),
+                                        dcc.Upload(
+                                            id="external-image-upload",
+                                            children=html.Div(
+                                                [
+                                                    html.Span("📁 Drop image here", style={"marginRight": "8px"}),
+                                                    html.Span("or click to browse", style={"color": "#888", "fontSize": "11px"}),
+                                                ],
+                                                style={"display": "flex", "alignItems": "center"},
+                                            ),
+                                            style={
+                                                "padding": "8px 16px",
+                                                "border": "2px dashed #3a5a5a",
+                                                "borderRadius": "6px",
+                                                "backgroundColor": "#1a2525",
+                                                "cursor": "pointer",
+                                                "fontSize": "12px",
+                                                "transition": "border-color 0.2s",
+                                            },
+                                            style_active={"borderColor": "#00bcd4"},
+                                            accept="image/*",
+                                            multiple=False,
+                                        ),
+                                    ],
+                                    style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "12px"},
                                 ),
-                            ],
-                            style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "12px"},
-                        ),
                         
                         # Feature Cards Row
                         html.Div(
@@ -772,7 +802,8 @@ app.layout = html.Div(
                                                 inline=True,
                                                 style={"fontWeight": "500"},
                                             ),
-                                        ], style={"marginBottom": "8px"}),
+                                            html.Span(id="palette-db-status", style={"fontSize": "10px", "marginLeft": "8px"}),
+                                        ], style={"marginBottom": "8px", "display": "flex", "alignItems": "center"}),
                                         html.Div([
                                             html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
                                             dcc.Dropdown(
@@ -798,6 +829,7 @@ app.layout = html.Div(
                                             ),
                                         ], style={"display": "flex", "alignItems": "center", "marginTop": "6px"}),
                                     ],
+                                    id="palette-card",
                                     style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"},
                                 ),
                                 # Style Card
@@ -811,7 +843,8 @@ app.layout = html.Div(
                                                 inline=True,
                                                 style={"fontWeight": "500"},
                                             ),
-                                        ], style={"marginBottom": "8px"}),
+                                            html.Span(id="style-db-status", style={"fontSize": "10px", "marginLeft": "8px"}),
+                                        ], style={"marginBottom": "8px", "display": "flex", "alignItems": "center"}),
                                         html.Div([
                                             html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
                                             dcc.Dropdown(
@@ -827,6 +860,7 @@ app.layout = html.Div(
                                             ),
                                         ], style={"display": "flex", "alignItems": "center"}),
                                     ],
+                                    id="style-card",
                                     style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"},
                                 ),
                             ],
@@ -900,6 +934,82 @@ app.layout = html.Div(
                                 ),
                             ],
                             style={"display": "flex", "gap": "12px", "alignItems": "center", "flexWrap": "wrap"},
+                        ),
+                            ],
+                            style={"padding": "14px", "backgroundColor": "#0a1a1a", "borderRadius": "8px", "border": "1px solid #2a4a4a"},
+                        ),
+                        
+                        # ─────────────────────────────────────────────────────────
+                        # COLOR TRANSFER PANEL
+                        # ─────────────────────────────────────────────────────────
+                        html.Div(
+                            [
+                                html.Div("🎨 Color Transfer", style={"fontSize": "14px", "fontWeight": "600", "color": "#e040fb", "marginBottom": "10px"}),
+                                html.Div("Apply Reference palette to Target image", style={"fontSize": "11px", "color": "#888", "marginBottom": "12px"}),
+                                html.Div(
+                                    [
+                                        # Method dropdown
+                                        html.Div([
+                                            html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            dcc.Dropdown(
+                                                id="color-transfer-method",
+                                                options=[
+                                                    {"label": "ModFlows (Neural)", "value": "modflows"},
+                                                    {"label": "LAB (Reinhard)", "value": "lab"},
+                                                ],
+                                                value="modflows",
+                                                clearable=False,
+                                                style={"width": "140px", "color": "#000", "fontSize": "12px"},
+                                            ),
+                                        ], style={"display": "flex", "alignItems": "center"}),
+                                        # Strength slider
+                                        html.Div([
+                                            html.Span("Strength:", style={"fontSize": "11px", "color": "#888", "marginRight": "8px"}),
+                                            dcc.Slider(
+                                                id="color-transfer-strength",
+                                                min=0.0, max=1.0, step=0.1, value=1.0,
+                                                marks={0: "0", 0.5: "0.5", 1: "1"},
+                                                tooltip={"placement": "bottom", "always_visible": False},
+                                            ),
+                                        ], style={"flex": "1", "minWidth": "150px"}),
+                                        # Size dropdown (ModFlows only)
+                                        html.Div([
+                                            html.Span("Size:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            dcc.Dropdown(
+                                                id="color-transfer-size",
+                                                options=[
+                                                    {"label": "512px (fast)", "value": 512},
+                                                    {"label": "1024px", "value": 1024},
+                                                    {"label": "2048px (slow)", "value": 2048},
+                                                ],
+                                                value=1024,
+                                                clearable=False,
+                                                style={"width": "120px", "color": "#000", "fontSize": "12px"},
+                                            ),
+                                        ], id="color-transfer-size-wrapper", style={"display": "flex", "alignItems": "center"}),
+                                        # Full-res checkbox (ModFlows only)
+                                        html.Div(
+                                            dcc.Checklist(
+                                                id="color-transfer-fullres",
+                                                options=[{"label": "Full-res output", "value": "fullres"}],
+                                                value=[],
+                                                inline=True,
+                                                style={"fontSize": "11px"},
+                                            ),
+                                            id="color-transfer-fullres-wrapper",
+                                        ),
+                                        html.Button(
+                                            "Transfer Colors",
+                                            id="color-transfer-btn",
+                                            n_clicks=0,
+                                            style={"padding": "8px 20px", "backgroundColor": "#e040fb", "color": "#fff", "border": "none", "borderRadius": "4px", "fontWeight": "600", "cursor": "pointer"},
+                                        ),
+                                    ],
+                                    style={"display": "flex", "gap": "16px", "alignItems": "center", "flexWrap": "wrap"},
+                                ),
+                                html.Div(id="color-transfer-status", style={"marginTop": "10px", "fontSize": "12px"}),
+                            ],
+                            style={"marginTop": "16px", "padding": "14px", "backgroundColor": "#1a1a2a", "borderRadius": "8px", "border": "1px solid #4a3a5a"},
                         ),
                     ],
                     id="moodboard-controls",
@@ -1016,23 +1126,37 @@ html.Div(
                     },
                 ),
 
-                # Moodboard gallery (shown in moodboard mode)
+                # Moodboard gallery (shown in moodboard mode) - NEW DESIGN
                 html.Div(
                     [
+                        # Header with distinct styling
                         html.Div(
                             [
-                                html.Span("📌 Reference Images", style={"fontWeight": "600", "color": "#00bcd4"}),
-                                html.Span(" — click to select, then Find Similar", style={"fontSize": "12px", "color": "#888"}),
+                                html.Span("📁 MOODBOARD IMAGES", style={"fontWeight": "700", "color": "#fff", "fontSize": "13px", "letterSpacing": "1px"}),
+                                html.Span(" — [R] = Reference (palette source)  [T] = Target (receives colors)", style={"fontSize": "11px", "color": "#aaa", "marginLeft": "10px"}),
                             ],
-                            style={"marginBottom": "10px"},
+                            style={"marginBottom": "12px", "paddingBottom": "10px", "borderBottom": "1px solid #3a4a5a"},
                         ),
+                        # Drop zone for external images
+                        dcc.Upload(
+                            id="moodboard-external-upload",
+                            children=html.Div(
+                                [html.Span("📁 Drop external image", style={"marginRight": "8px"}), html.Span("or click to add", style={"color": "#7a8a9a", "fontSize": "11px"})],
+                                style={"display": "flex", "alignItems": "center", "justifyContent": "center"},
+                            ),
+                            style={"padding": "10px", "border": "2px dashed #3a4a5a", "borderRadius": "6px", "backgroundColor": "#1a2535", "cursor": "pointer", "fontSize": "12px", "marginBottom": "12px", "textAlign": "center"},
+                            style_active={"borderColor": "#00bcd4"},
+                            accept="image/*",
+                            multiple=False,
+                        ),
+                        # Gallery grid with toggle badges
                         html.Div(id="moodboard-gallery", style={
                             "display": "grid", 
-                            "gridTemplateColumns": "repeat(auto-fill, minmax(90px, 1fr))",
-                            "gap": "8px",
-                            "maxHeight": "300px",
+                            "gridTemplateColumns": "repeat(auto-fill, minmax(100px, 1fr))",
+                            "gap": "10px",
+                            "maxHeight": "280px",
                             "overflowY": "auto",
-                            "padding": "4px",
+                            "padding": "6px",
                         }),
                         html.Div(
                             [
@@ -1317,34 +1441,57 @@ def show_moodboard_added_notification(clicks):
     Output("moodboard-ref-display", "style"),
     [
         Input("selected-moodboard-image", "data"),
+        Input("selected-target-image", "data"),
         Input("palette-n-colors", "value"),
         Input("mode-select", "value"),
     ],
 )
-def update_moodboard_ref_display(ref_image, n_colors, mode):
-    """Update the reference image display in the left column."""
+def update_moodboard_ref_display(ref_image, target_image, n_colors, mode):
+    """Update the Reference and Target image display in the left column."""
     # Only show in moodboard mode
-    if mode != "moodboard" or not ref_image:
+    if mode != "moodboard" or (not ref_image and not target_image):
         return [], {"display": "none"}
     
     n_colors = n_colors or 16
-    qpath = urllib.parse.quote(ref_image)
+    
+    def make_image_card(image_path, label, color, is_ref=True):
+        if not image_path:
+            return html.Div(
+                [
+                    html.Div(label, style={"color": color, "fontWeight": "600", "fontSize": "11px", "marginBottom": "8px", "textTransform": "uppercase", "letterSpacing": "1px"}),
+                    html.Div("Not selected", style={"color": "#666", "fontStyle": "italic", "fontSize": "12px", "padding": "30px 0", "textAlign": "center", "border": f"2px dashed {color}40", "borderRadius": "6px"}),
+                ],
+                style={"flex": "1", "minWidth": "120px"},
+            )
+        
+        qpath = urllib.parse.quote(image_path)
+        return html.Div(
+            [
+                html.Div(label, style={"color": color, "fontWeight": "600", "fontSize": "11px", "marginBottom": "8px", "textTransform": "uppercase", "letterSpacing": "1px"}),
+                html.Img(
+                    src=f"/preview?p={qpath}&w=300",
+                    style={"width": "100%", "borderRadius": "6px", "border": f"2px solid {color}", "marginBottom": "6px"},
+                ),
+                html.Img(
+                    src=f"/palette?p={qpath}&n={n_colors}&w=200&h=16",
+                    style={"width": "100%", "borderRadius": "3px"},
+                ),
+                html.Div(
+                    os.path.basename(image_path),
+                    style={"color": "#888", "fontSize": "9px", "marginTop": "6px", "wordBreak": "break-all", "textAlign": "center"},
+                ),
+            ],
+            style={"flex": "1", "minWidth": "120px"},
+        )
     
     content = [
-        html.Div("REFERENCE IMAGE", style={"color": "#00bcd4", "fontWeight": "600", "fontSize": "11px", "marginBottom": "10px", "textTransform": "uppercase", "letterSpacing": "1px"}),
-        html.Img(
-            src=f"/preview?p={qpath}&w=600",
-            srcSet=f"/preview?p={qpath}&w=400 400w, /preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w",
-            sizes="25vw",
-            style={"width": "100%", "borderRadius": "6px", "border": "2px solid #00bcd4", "marginBottom": "8px"},
-        ),
-        html.Img(
-            src=f"/palette?p={qpath}&n={n_colors}&w=300&h=20",
-            style={"width": "100%", "borderRadius": "4px"},
-        ),
         html.Div(
-            os.path.basename(ref_image),
-            style={"color": "#888", "fontSize": "10px", "marginTop": "8px", "wordBreak": "break-all"},
+            [
+                make_image_card(ref_image, "🎨 REFERENCE", "#00bcd4", is_ref=True),
+                html.Div(style={"width": "12px"}),  # Spacer
+                make_image_card(target_image, "🎯 TARGET", "#e040fb", is_ref=False),
+            ],
+            style={"display": "flex", "gap": "0", "alignItems": "flex-start"},
         ),
     ]
     
@@ -1352,9 +1499,9 @@ def update_moodboard_ref_display(ref_image, n_colors, mode):
         "display": "block", 
         "marginTop": "12px", 
         "padding": "12px", 
-        "backgroundColor": "#1a1a1a", 
+        "backgroundColor": "#0a1520", 
         "borderRadius": "10px", 
-        "border": "1px solid #00bcd4",
+        "border": "1px solid #2a3a4a",
         "position": "sticky",
         "top": "10px",
     }
@@ -1367,47 +1514,94 @@ def update_moodboard_ref_display(ref_image, n_colors, mode):
     [
         Input("moodboard-store", "data"),
         Input("selected-moodboard-image", "data"),
+        Input("selected-target-image", "data"),
     ],
 )
-def render_moodboard_gallery(moodboard, selected_path):
-    """Render clickable thumbnails in the moodboard gallery."""
+def render_moodboard_gallery(moodboard, ref_path, target_path):
+    """Render clickable thumbnails in the moodboard gallery with [R] and [T] toggle badges."""
     moodboard = moodboard or []
     if not moodboard:
         return [html.Div("No images in moodboard. Use Search mode and click '+ Moodboard' to add images.", 
-                        style={"color": "#888", "fontStyle": "italic"})]
+                        style={"color": "#7a8a9a", "fontStyle": "italic", "padding": "20px", "textAlign": "center"})]
     
     thumbnails = []
     for path in moodboard:
         qpath = urllib.parse.quote(path)
-        is_selected = (path == selected_path)
-        border = "3px solid #00bcd4" if is_selected else "2px solid transparent"
+        is_ref = (path == ref_path)
+        is_target = (path == target_path)
+        
+        # Border style based on role
+        if is_ref and is_target:
+            border = "3px solid"
+            border_image = "linear-gradient(135deg, #00bcd4, #e040fb) 1"
+        elif is_ref:
+            border = "3px solid #00bcd4"
+            border_image = None
+        elif is_target:
+            border = "3px solid #e040fb"
+            border_image = None
+        else:
+            border = "2px solid #3a4a5a"
+            border_image = None
+        
+        img_style = {
+            "width": "90px", "height": "90px", "objectFit": "cover", 
+            "borderRadius": "6px", "border": border, "display": "block",
+        }
+        if border_image:
+            img_style["borderImage"] = border_image
+        
         thumbnails.append(
             html.Div([
-                # Clickable image area
-                html.Div(
-                    html.Img(
-                        src=f"/thumb?p={qpath}",
-                        style={"width": "80px", "height": "80px", "objectFit": "cover", 
-                               "borderRadius": "4px", "border": border, "display": "block"},
-                    ),
-                    id={"type": "moodboard-thumb", "index": path},
-                    n_clicks=0,
-                    style={"cursor": "pointer"},
+                # Image
+                html.Img(
+                    src=f"/thumb?p={qpath}",
+                    style=img_style,
                 ),
-                # X button to remove
+                # [R] badge - top left
+                html.Button(
+                    "R",
+                    id={"type": "set-ref-badge", "index": path},
+                    n_clicks=0,
+                    style={
+                        "position": "absolute", "top": "4px", "left": "4px",
+                        "width": "22px", "height": "22px", "borderRadius": "4px",
+                        "backgroundColor": "#00bcd4" if is_ref else "#2a3a4a",
+                        "color": "#fff" if is_ref else "#7a8a9a", 
+                        "border": "1px solid #00bcd4" if is_ref else "1px solid #4a5a6a",
+                        "fontSize": "11px", "fontWeight": "bold", "cursor": "pointer",
+                        "padding": "0", "lineHeight": "20px", "textAlign": "center",
+                    },
+                ),
+                # [T] badge - top right
+                html.Button(
+                    "T",
+                    id={"type": "set-target-badge", "index": path},
+                    n_clicks=0,
+                    style={
+                        "position": "absolute", "top": "4px", "right": "4px",
+                        "width": "22px", "height": "22px", "borderRadius": "4px",
+                        "backgroundColor": "#e040fb" if is_target else "#2a3a4a",
+                        "color": "#fff" if is_target else "#7a8a9a",
+                        "border": "1px solid #e040fb" if is_target else "1px solid #4a5a6a",
+                        "fontSize": "11px", "fontWeight": "bold", "cursor": "pointer",
+                        "padding": "0", "lineHeight": "20px", "textAlign": "center",
+                    },
+                ),
+                # X button to remove - bottom right
                 html.Button(
                     "×",
                     id={"type": "remove-from-moodboard", "index": path},
                     n_clicks=0,
                     style={
-                        "position": "absolute", "top": "-6px", "right": "-6px",
+                        "position": "absolute", "bottom": "4px", "right": "4px",
                         "width": "18px", "height": "18px", "borderRadius": "50%",
                         "backgroundColor": "#ff4444", "color": "white", "border": "none",
                         "fontSize": "12px", "lineHeight": "1", "cursor": "pointer",
-                        "padding": "0", "fontWeight": "bold", "zIndex": "10",
+                        "padding": "0", "fontWeight": "bold", "opacity": "0.7",
                     },
                 ),
-            ], style={"position": "relative", "display": "inline-block", "margin": "2px"})
+            ], style={"position": "relative", "display": "inline-block"})
         )
     return thumbnails
 
@@ -1415,52 +1609,99 @@ def render_moodboard_gallery(moodboard, selected_path):
 @app.callback(
     Output("selected-moodboard-image", "data"),
     [
-        Input({"type": "moodboard-thumb", "index": ALL}, "n_clicks"),
+        Input({"type": "set-ref-badge", "index": ALL}, "n_clicks"),
         Input("external-image-upload", "contents"),
+        Input("moodboard-external-upload", "contents"),
     ],
     [
         State("moodboard-store", "data"),
         State("external-image-upload", "filename"),
+        State("moodboard-external-upload", "filename"),
+        State("selected-moodboard-image", "data"),
     ],
     prevent_initial_call=True,
 )
-def select_moodboard_image(clicks, upload_contents, moodboard, upload_filename):
-    """Select a moodboard image as the reference for similarity search.
-    
-    Handles both:
-    - Clicking on a moodboard thumbnail
-    - Drag-and-drop upload of an external image
-    """
+def select_moodboard_ref(clicks, upload_contents, moodboard_upload, moodboard, upload_filename, moodboard_filename, current_ref):
+    """Set Reference image from badge click or external upload."""
     triggered = ctx.triggered_id
     
-    # Handle moodboard thumbnail click
-    if isinstance(triggered, dict) and triggered.get("type") == "moodboard-thumb":
-        return triggered["index"]
+    # When gallery re-renders, buttons are recreated with n_clicks=0, firing this callback
+    # Only proceed if an actual click happened (value > 0 in triggered)
+    if not ctx.triggered:
+        return dash.no_update
     
-    # Handle external image upload
+    # Check if this was a real click or just component recreation
+    triggered_prop = ctx.triggered[0].get("prop_id", "")
+    triggered_value = ctx.triggered[0].get("value")
+    
+    # Handle [R] badge click - toggle behavior
+    if isinstance(triggered, dict) and triggered.get("type") == "set-ref-badge":
+        # Only act on actual clicks (value > 0), not component recreation
+        if triggered_value is None or triggered_value == 0:
+            return dash.no_update
+        clicked_path = triggered["index"]
+        # Toggle: if already ref, unset it
+        if clicked_path == current_ref:
+            return None
+        return clicked_path
+    
+    # Handle external image upload (either component)
+    upload_data = None
+    filename = None
     if triggered == "external-image-upload" and upload_contents:
-        # Decode base64 image data
-        content_type, content_string = upload_contents.split(',')
+        upload_data = upload_contents
+        filename = upload_filename
+    elif triggered == "moodboard-external-upload" and moodboard_upload:
+        upload_data = moodboard_upload
+        filename = moodboard_filename
+    
+    if upload_data:
+        content_type, content_string = upload_data.split(',')
         decoded = base64.b64decode(content_string)
         
-        # Get file extension from filename
-        ext = os.path.splitext(upload_filename)[1] if upload_filename else ".jpg"
+        ext = os.path.splitext(filename)[1] if filename else ".jpg"
         if not ext:
             ext = ".jpg"
         
-        # Save to temp file in arcana/output directory (so /preview endpoint can serve it)
         output_dir = os.path.join(os.path.dirname(__file__), "output", "_external_refs")
         os.makedirs(output_dir, exist_ok=True)
         
-        # Create unique filename using hash of content
         content_hash = hashlib.md5(decoded).hexdigest()[:12]
         temp_path = os.path.join(output_dir, f"ext_{content_hash}{ext}")
         
-        # Write file
         with open(temp_path, "wb") as f:
             f.write(decoded)
         
         return temp_path
+    
+    return dash.no_update
+
+
+@app.callback(
+    Output("selected-target-image", "data"),
+    Input({"type": "set-target-badge", "index": ALL}, "n_clicks"),
+    State("selected-target-image", "data"),
+    prevent_initial_call=True,
+)
+def select_moodboard_target(clicks, current_target):
+    """Set Target image from [T] badge click."""
+    triggered = ctx.triggered_id
+    
+    # Only proceed if an actual click happened
+    if not ctx.triggered:
+        return dash.no_update
+    
+    triggered_value = ctx.triggered[0].get("value")
+    
+    if isinstance(triggered, dict) and triggered.get("type") == "set-target-badge":
+        # Only act on actual clicks (value > 0), not component recreation
+        if triggered_value is None or triggered_value == 0:
+            return dash.no_update
+        clicked_path = triggered["index"]
+        # Toggle: if already target, unset it
+        if clicked_path == current_target:
+            return None
+        return clicked_path
     
     return dash.no_update
 
@@ -1831,6 +2072,177 @@ def moodboard_similarity_search(n_clicks, ref_image, use_palette, palette_method
     carousel_order = [g["gid"] for g in groups if len(g.get("paths", [])) > 1]
     
     return [html.Div(result_items, style=grid_style)], groups, car_state, carousel_order
+
+
+# ─────────────────────────────────────────────────────────────────
+# Similarity Search Database Availability Callback
+# ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    [
+        Output("palette-card", "style"),
+        Output("style-card", "style"),
+        Output("palette-db-status", "children"),
+        Output("style-db-status", "children"),
+        Output("moodboard-palette-check", "value"),
+        Output("moodboard-style-check", "value"),
+    ],
+    Input("dataset-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def update_feature_availability(dataset_value):
+    """Check if palette/style databases exist for the selected dataset and update UI."""
+    enabled_style = {"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"}
+    disabled_style = {"padding": "10px", "backgroundColor": "#1a1a1a", "borderRadius": "8px", "border": "1px solid #222", "flex": "1", "minWidth": "140px", "opacity": "0.5", "pointerEvents": "none"}
+    
+    if not dataset_value:
+        return enabled_style, enabled_style, "", "", ["palette"], []
+    
+    # Parse dataset name
+    try:
+        parts = dataset_value.split("::")
+        db_name = parts[0]
+    except:
+        return enabled_style, enabled_style, "", "", ["palette"], []
+    
+    # Check for feature databases
+    palette_path = os.path.join(DB_DIR, f"features_{db_name}_palette.npz")
+    style_path = os.path.join(DB_DIR, f"features_{db_name}_style.npz")
+    
+    has_palette = os.path.exists(palette_path)
+    has_style = os.path.exists(style_path)
+    
+    # Build status indicators
+    palette_status = "" if has_palette else "⚠️ No DB"
+    style_status = "" if has_style else "⚠️ No DB"
+    
+    # Set default values - enable if available
+    palette_value = ["palette"] if has_palette else []
+    style_value = []  # Style unchecked by default
+    
+    return (
+        enabled_style if has_palette else disabled_style,
+        enabled_style if has_style else disabled_style,
+        palette_status,
+        style_status,
+        palette_value,
+        style_value,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────
+# Color Transfer Callbacks
+# ─────────────────────────────────────────────────────────────────
+
+# Disable ModFlows-only parameters when LAB method is selected
+@app.callback(
+    [
+        Output("color-transfer-size-wrapper", "style"),
+        Output("color-transfer-fullres-wrapper", "style"),
+    ],
+    Input("color-transfer-method", "value"),
+)
+def toggle_method_params(method):
+    """Disable Size and Full-res options when LAB method is selected."""
+    if method == "lab":
+        disabled_style = {"display": "flex", "alignItems": "center", "opacity": "0.4", "pointerEvents": "none"}
+        return disabled_style, {"opacity": "0.4", "pointerEvents": "none"}
+    else:
+        enabled_style = {"display": "flex", "alignItems": "center"}
+        return enabled_style, {}
+
+
+@app.callback(
+    Output("color-transfer-status", "children"),
+    Input("color-transfer-btn", "n_clicks"),
+    State("selected-moodboard-image", "data"),  # Reference (palette source)
+    State("selected-target-image", "data"),      # Target (receives colors)
+    State("color-transfer-method", "value"),
+    State("color-transfer-strength", "value"),
+    State("color-transfer-size", "value"),
+    State("color-transfer-fullres", "value"),
+    prevent_initial_call=True,
+)
+def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, max_size, fullres_opts):
+    """Transfer colors from reference image to target image."""
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    
+    # Validate inputs
+    if not ref_path:
+        return html.Div("⚠️ No Reference [R] image selected", style={"color": "#f39c12"})
+    if not target_path:
+        return html.Div("⚠️ No Target [T] image selected", style={"color": "#f39c12"})
+    
+    # Check method availability
+    if method == "modflows" and not COLOR_TRANSFER_AVAILABLE:
+        return html.Div("⚠️ ModFlows not available (check installation)", style={"color": "#e74c3c"})
+    if method == "lab" and not LAB_TRANSFER_AVAILABLE:
+        return html.Div("⚠️ LAB transfer not available", style={"color": "#e74c3c"})
+    
+    try:
+        import time
+        start_time = time.time()
+        
+        # Resolve paths
+        ref_resolved = resolve_path(ref_path)
+        target_resolved = resolve_path(target_path)
+        
+        if not os.path.exists(ref_resolved):
+            return html.Div(f"⚠️ Reference file not found", style={"color": "#e74c3c"})
+        if not os.path.exists(target_resolved):
+            return html.Div(f"⚠️ Target file not found", style={"color": "#e74c3c"})
+        
+        # Parse options
+        strength_val = float(strength) if strength else 1.0
+        
+        # Load images
+        content_img = Image.open(target_resolved).convert("RGB")
+        style_img = Image.open(ref_resolved).convert("RGB")
+        
+        # Perform transfer based on method
+        if method == "lab":
+            result_img = lab_color_transfer_pil(content_img, style_img, strength=strength_val)
+            method_label = "LAB (Reinhard)"
+            device_str = "CPU"
+        else:
+            # ModFlows
+            size_val = int(max_size) if max_size else 1024
+            use_fullres = fullres_opts and "fullres" in fullres_opts
+            result_img = transfer_colors(
+                content=content_img,
+                style=style_img,
+                strength=strength_val,
+                max_size=size_val,
+                full_res_output=use_fullres
+            )
+            method_label = "ModFlows"
+            device_info = get_device_info() if get_device_info else {"device": "unknown"}
+            device_str = device_info.get("device", "unknown")
+        
+        elapsed = time.time() - start_time
+        
+        # Generate output filename
+        target_name = os.path.splitext(os.path.basename(target_resolved))[0]
+        ref_name = os.path.splitext(os.path.basename(ref_resolved))[0]
+        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        method_suffix = "lab" if method == "lab" else "mf"
+        output_filename = f"{target_name}_from_{ref_name}_{method_suffix}_{timestamp}.png"
+        
+        # Save to output/color_transfer/
+        output_dir = os.path.join(APP_ROOT, "output", "color_transfer")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, output_filename)
+        result_img.save(output_path, "PNG")
+        
+        return html.Div([
+            html.Div(f"✓ Color transfer complete ({method_label})", style={"color": "#2ecc71", "fontWeight": "bold"}),
+            html.Div(f"Saved: {output_filename}", style={"color": "#888", "fontSize": "11px"}),
+            html.Div(f"Device: {device_str} | Time: {elapsed:.2f}s", style={"color": "#666", "fontSize": "10px"}),
+        ])
+        
+    except Exception as e:
+        return html.Div(f"✗ Error: {str(e)}", style={"color": "#e74c3c"})
 
 
 @app.callback(

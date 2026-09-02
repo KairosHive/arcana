@@ -10,6 +10,10 @@
 
 import numpy as np
 import cv2
+try:
+    from .cvio import imread_unicode
+except ImportError:
+    from cvio import imread_unicode
 from typing import Tuple, Optional, Union
 from functools import lru_cache
 
@@ -53,7 +57,7 @@ def _load_and_prepare_gray(image_or_path, resize_dim: int = DEFAULT_RESIZE_DIM) 
         Grayscale image as np.ndarray (H, W), dtype uint8
     """
     if isinstance(image_or_path, str):
-        img = cv2.imread(image_or_path)
+        img = imread_unicode(image_or_path)
         if img is None:
             raise ValueError(f"Could not load image: {image_or_path}")
     else:
@@ -83,7 +87,7 @@ def _load_and_prepare_rgb(image_or_path, resize_dim: int = DEFAULT_RESIZE_DIM) -
         RGB image as np.ndarray (H, W, 3), dtype uint8
     """
     if isinstance(image_or_path, str):
-        img = cv2.imread(image_or_path)
+        img = imread_unicode(image_or_path)
         if img is None:
             raise ValueError(f"Could not load image: {image_or_path}")
     else:

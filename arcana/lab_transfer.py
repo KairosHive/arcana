@@ -9,6 +9,10 @@ This applies the color palette from the style image to all images in content_dir
 
 import numpy as np
 import cv2
+try:
+    from .cvio import imread_unicode, imwrite_unicode
+except ImportError:
+    from cvio import imread_unicode, imwrite_unicode
 import os
 import argparse
 from pathlib import Path
@@ -88,7 +92,7 @@ def batch_transfer(style_path: str, content_dir: str, output_dir: str,
         max_images: Maximum number of images to process
     """
     # Load style image
-    style_img = cv2.imread(style_path)
+    style_img = imread_unicode(style_path)
     if style_img is None:
         raise ValueError(f"Could not load style image: {style_path}")
     
@@ -115,7 +119,7 @@ def batch_transfer(style_path: str, content_dir: str, output_dir: str,
         start = time.time()
         
         # Load content image
-        content_img = cv2.imread(str(img_path))
+        content_img = imread_unicode(str(img_path))
         if content_img is None:
             print(f"  [{i+1}/{len(image_files)}] Skipped (could not load): {img_path.name}")
             continue
@@ -125,7 +129,7 @@ def batch_transfer(style_path: str, content_dir: str, output_dir: str,
         
         # Save result
         output_path = Path(output_dir) / f"lab_{img_path.stem}{img_path.suffix}"
-        cv2.imwrite(str(output_path), result_img)
+        imwrite_unicode(str(output_path), result_img)
         
         elapsed = time.time() - start
         total_time += elapsed

@@ -26,6 +26,7 @@ Usage:
 
 import os
 import sys
+import importlib
 import subprocess
 from typing import Union, Optional, Tuple
 from pathlib import Path
@@ -134,17 +135,27 @@ def check_cuda_installation() -> dict:
 
 
 def _ensure_modflows_available():
-    """Ensure modflows source is in path."""
-    src_path = str(MODFLOWS_DIR / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, str(MODFLOWS_DIR))
-    
-    # Check if source exists
+    """Make `import src.encoder` work, or explain why it cannot."""
+    # Check the source exists before touching sys.path, so a missing checkout
+    # produces the readable message rather than a bare ImportError later.
     if not (MODFLOWS_DIR / "src" / "encoder.py").exists():
         raise ImportError(
-            f"ModFlows source not found at {MODFLOWS_DIR}/src/. "
-            "Please ensure the modflows directory exists with src/ subdirectory."
+            f"ModFlows source not found at {MODFLOWS_DIR / 'src'}. "
+            "Clone it next to the arcana package, or use the LAB (Reinhard) "
+            "method, which needs no extra download."
         )
+
+    root = str(MODFLOWS_DIR)
+    if root not in sys.path:
+        # The guard used to test for <modflows>/src while inserting <modflows>,
+        # so it never matched and sys.path grew on every failed attempt.
+        sys.path.insert(0, root)
+        # Python caches directory listings per sys.path entry. If this directory
+        # did not exist when it was first probed -- the usual case, because the
+        # user adds modflows/ while the app is already running -- the cached
+        # miss survives and `import src` keeps failing even though the files are
+        # now there. Drop the cache so the fresh contents are seen.
+        importlib.invalidate_caches()
 
 
 def _find_checkpoint() -> Path:
@@ -202,12 +213,16 @@ def _get_encoder():
     # Determine device
     _device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
     
-    # Load encoder
+    # Load encoder. Build it in a local first: assigning the module-level
+    # _encoder before load_state_dict lets a second concurrent request see a
+    # non-None encoder whose weights are still random, and silently colour an
+    # image with an untrained network.
     checkpoint_path = _find_checkpoint()
-    _encoder = Encoder(k_dim=8195, input_dim=4, hidden=1024, output_dim=3, device=_device)
-    _encoder.load_state_dict(_torch.load(str(checkpoint_path), map_location=_device, weights_only=True))
-    _encoder.eval()
-    
+    enc = Encoder(k_dim=8195, input_dim=4, hidden=1024, output_dim=3, device=_device)
+    enc.load_state_dict(_torch.load(str(checkpoint_path), map_location=_device, weights_only=True))
+    enc.eval()
+    _encoder = enc
+
     return _encoder, _device
 
 

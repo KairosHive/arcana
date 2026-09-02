@@ -37,13 +37,25 @@ cd arcana
 
 ### 2. **Install dependencies**
 
-We recommend [conda](https://docs.conda.io/en/latest/miniconda.html) or [virtualenv](https://docs.python.org/3/library/venv.html):
+This project uses [uv](https://docs.astral.sh/uv/):
 
 ```bash
-conda create -n arcana python=3.10
-conda activate arcana
-pip install -e .
+uv venv
+uv pip install -e .
 ```
+
+To reproduce the exact combination the project was last verified against:
+
+```bash
+uv pip install -r requirements-lock.txt --extra-index-url https://download.pytorch.org/whl/cu128
+uv pip install -e . --no-deps
+```
+
+`pyproject.toml` maps torch, torchvision and torchaudio to PyTorch's CUDA 12.8
+index, so `uv pip install -e .` gets GPU builds automatically. For a CPU-only
+install, point that index at `https://download.pytorch.org/whl/cpu` or remove the
+`[tool.uv.sources]` block. Searching never needs a GPU; only indexing and story
+mode benefit from one.
 
 ### 3. **Prepare your images**
 

@@ -3,6 +3,10 @@ from dash import dcc, html, Input, Output, State, ctx
 import plotly.express as px
 import pandas as pd
 import cv2
+try:
+    from .cvio import imread_unicode, imwrite_unicode
+except ImportError:
+    from cvio import imread_unicode, imwrite_unicode
 import base64
 import os
 import pickle
@@ -10,14 +14,14 @@ import torch
 import threading
 import json
 from usearch.index import Index
-from transformers import CLIPModel, CLIPProcessor
 from concurrent.futures import ThreadPoolExecutor
 import dash_daq as daq
 import numpy as np
 import plotly.graph_objects as go
 import re
 from PIL import Image
-from diffusers import StableDiffusionImg2ImgPipeline
+# diffusers is imported lazily inside the story-mode callback: it costs ~3 s at
+# import time and is only needed if someone actually generates images.
 from io import BytesIO
 from functools import lru_cache
 from flask import Response, request
@@ -76,25 +80,34 @@ try:
     import torchaudio
 except Exception:
     torchaudio = None
-from transformers import ClapModel, ClapProcessor
 
 
 
 torch.set_grad_enabled(False)
-APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-LATENTS_DIR = os.path.join(APP_ROOT, "latents")
-DB_DIR = os.path.join(APP_ROOT, "databases")
 
-IMAGES_ROOT = os.path.abspath(os.path.join(APP_ROOT, "..", "images"))
+try:
+    from . import paths as _paths
+except ImportError:
+    import paths as _paths
 
-OUTPUT_DIR = os.path.join(APP_ROOT, "output")
+# Every writable location comes from paths.py, which keeps data outside the
+# install directory. Nothing here creates a directory: a packaged app installs
+# read-only, so an os.makedirs at import time is a crash on launch.
+APP_ROOT = _paths.APP_ROOT
+LATENTS_DIR = _paths.subdir("latents")
+DB_DIR = _paths.subdir("databases")
+BUNDLES_DIR = _paths.subdir("bundles")
+
+MEDIA_ROOTS = _paths.media_roots()
+IMAGES_ROOT = (MEDIA_ROOTS or [os.path.abspath(os.path.join(APP_ROOT, "..", "images"))])[0]
+
+OUTPUT_DIR = _paths.subdir("output")
 STORIES_DIR = os.path.join(OUTPUT_DIR, "stories")
 SELECTIONS_DIR = os.path.join(OUTPUT_DIR, "selections")
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
 # ---- FAST SPEC CONFIG + CACHE ----
-SPEC_CACHE_DIR = os.path.join(APP_ROOT, "cache_specs")
-os.makedirs(SPEC_CACHE_DIR, exist_ok=True)
+SPEC_CACHE_DIR = os.path.join(_paths.subdir("cache"), "specs")
 
 # small but good-looking preview defaults (tweak if you want)
 SPEC_PREVIEW_SR = 16000
@@ -113,8 +126,7 @@ SPEC_EXEC = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4)//2))
 
 
 
-os.makedirs(STORIES_DIR, exist_ok=True)
-os.makedirs(SELECTIONS_DIR, exist_ok=True)
+# (output directories are created on first save, not at import -- see save_images)
 
 
 # ------------- FILE DISCOVERY HELPERS -------------
@@ -140,12 +152,36 @@ def _win_longpath(p: str) -> str:
     return p
 
 
+class _MediaUnavailable(Exception):
+    """Raised inside the cached media builders so a failure is NOT memoised.
+
+    functools.lru_cache stores return values but never exceptions, so raising
+    here (and translating back to None at the boundary) keeps successes cached
+    while letting a file that was briefly unreadable -- half-written, on a
+    network drive, still uploading -- succeed on the next request instead of
+    404ing for the rest of the session.
+    """
+
+
+def _uncached_none(fn):
+    """Adapt a cached builder that raises _MediaUnavailable back to returning None."""
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except _MediaUnavailable:
+            return None
+    wrapper.__name__ = getattr(fn, "__name__", "wrapper")
+    wrapper.cache_clear = getattr(fn, "cache_clear", lambda: None)
+    wrapper.cache_info = getattr(fn, "cache_info", lambda: None)
+    return wrapper
+
+
 @lru_cache(maxsize=50000)
 def make_thumbnail_bytes(path: str, max_side: int = 192) -> bytes | None:
     full_path = resolve_path(path)
-    img = cv2.imread(full_path)
+    img = imread_unicode(full_path)
     if img is None:
-        return None
+        raise _MediaUnavailable(path)
     h, w = img.shape[:2]
     scale = max_side / max(h, w)
     new_w, new_h = int(w * scale), int(h * scale)
@@ -161,12 +197,15 @@ def make_thumbnail_bytes(path: str, max_side: int = 192) -> bytes | None:
 from functools import lru_cache
 
 
+make_thumbnail_bytes = _uncached_none(make_thumbnail_bytes)
+
+
 @lru_cache(maxsize=2000)  # cache a few thousand medium previews
 def make_resized_bytes(path: str, max_w: int = 900, q: int = 72) -> bytes | None:
     full_path = resolve_path(path)
-    img = cv2.imread(full_path)
+    img = imread_unicode(full_path)
     if img is None:
-        return None
+        raise _MediaUnavailable(path)
     h, w = img.shape[:2]
     if w > max_w:
         new_w = max_w
@@ -174,6 +213,9 @@ def make_resized_bytes(path: str, max_w: int = 900, q: int = 72) -> bytes | None
         img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
     ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), q])
     return buf.tobytes() if ok else None
+
+
+make_resized_bytes = _uncached_none(make_resized_bytes)
 
 
 @lru_cache(maxsize=50000)  # 13k fits
@@ -226,7 +268,10 @@ def make_waveform_png(path: str, width=900, height=160) -> bytes | None:
         return buf.tobytes() if ok else None
     except Exception as e:
         print("[waveform] error:", e)
-        return None
+        raise _MediaUnavailable(path)
+
+
+make_waveform_png = _uncached_none(make_waveform_png)
 
 
 def _cosine_group(keys, paths, index: Index, thresh: float = 0.08):
@@ -282,7 +327,7 @@ def _cosine_group(keys, paths, index: Index, thresh: float = 0.08):
 def get_latent_options(latent_dir=LATENTS_DIR, n_dim=2):
     pattern = re.compile(rf"latent_space_(.+)_{n_dim}d\.pkl$")
     options = []
-    for fname in os.listdir(latent_dir):
+    for fname in _paths.listdir_safe(latent_dir):
         m = pattern.match(fname)
         if m:
             options.append({"label": m.group(1), "value": m.group(1)})
@@ -294,10 +339,185 @@ def resolve_path(p):
     return p if os.path.isabs(p) else os.path.join(IMAGES_ROOT, p)
 
 
+def _parse_dataset_value(dataset_value: str):
+    """Split "<name>::<dim>::<modality>" (older values omit the modality)."""
+    parts = (dataset_value or "").split("::")
+    if len(parts) == 3:
+        return parts[0], int(parts[1]), parts[2]
+    return parts[0], int(parts[1]), "image"
+
+
+def _safe_output_dir(*parts) -> str:
+    """
+    Build a path under OUTPUT_DIR from components, some of which come from a
+    text box the user types into. Anything that would escape OUTPUT_DIR --
+    "../../..", an absolute path, a drive letter -- is rejected rather than
+    silently writing outside the output tree. The directory is created here,
+    which is also the only place output directories get created at all.
+    """
+    cleaned = [str(p) for p in parts if p not in (None, "")]
+    if not cleaned:
+        cleaned = ["untitled"]
+    target = _paths.safe_join(OUTPUT_DIR, *cleaned)
+    if target is None:
+        raise ValueError(
+            "That folder name is not allowed - use a plain name without "
+            "slashes, drive letters, or '..'."
+        )
+    return _paths.ensure_dir(target)
+
+
+# ------------- SERVABLE MEDIA ALLOWLIST -------------
+# The media endpoints take a path straight from the query string. Without a
+# boundary that is an arbitrary file read: /audio?p=C:\...\secrets.env returns
+# the file. The server therefore decides what is servable, from the roots it has
+# been configured with plus the roots of datasets it has actually loaded --
+# never from what the request asks for.
+_ALLOWED_ROOTS: set[str] = set()
+# The exact files a loaded dataset names. Membership is the grant -- not the
+# folder they sit in, and never a prefix. See register_dataset_files().
+_ALLOWED_FILES: set[str] = set()
+_ALLOWED_ROOTS_LOCK = threading.Lock()
+
+
+def _seed_allowed_roots() -> None:
+    for r in MEDIA_ROOTS:
+        if os.path.isdir(r):
+            _ALLOWED_ROOTS.add(os.path.realpath(os.path.abspath(r)))
+    # Arcana's own output tree: uploaded reference images, colour-transfer
+    # results, saved selections. Produced by the app, so serving it back is not
+    # arbitrary filesystem access. It may not exist yet on a fresh install,
+    # which is why writers also call register_media_root() after creating it.
+    if os.path.isdir(OUTPUT_DIR):
+        _ALLOWED_ROOTS.add(os.path.realpath(os.path.abspath(OUTPUT_DIR)))
+
+
+_seed_allowed_roots()
+
+
+def _is_too_broad(real: str) -> bool:
+    """
+    Would allowing this directory as a PREFIX root expose most of the machine?
+
+    A drive root, the filesystem root, the user's home, or the directory holding
+    all users are never acceptable as prefix roots: everything the user owns
+    lives under them.
+    """
+    if os.path.dirname(real) == real:          # C:\  or  /
+        return True
+    try:
+        home = os.path.realpath(os.path.expanduser("~"))
+    except OSError:
+        return False
+    if real == home or real == os.path.dirname(home):   # ~ , C:\Users , /home
+        return True
+    return False
+
+
+def register_media_root(path: str) -> None:
+    """
+    Mark a directory tree as servable.
+
+    This grants PREFIX access -- everything beneath `path` becomes readable --
+    so it is only for directories the user or the configuration named directly
+    (the images/ folder, the app's own output tree, a relocation target). Paths
+    derived from dataset contents must go through register_dataset_dirs().
+    """
+    if not path:
+        return
+    try:
+        real = os.path.realpath(os.path.abspath(path))
+    except OSError:
+        return
+    if not os.path.isdir(real):
+        return
+    if _is_too_broad(real):
+        print(f"[media] refusing to serve all of {real!r}: too broad to be a media root")
+        return
+    with _ALLOWED_ROOTS_LOCK:
+        _ALLOWED_ROOTS.add(real)
+
+
+_REGISTERED_DATASETS: set[str] = set()
+
+
+def register_dataset_files(idx2path: dict, cache_key: str | None = None) -> None:
+    """
+    Allow exactly the files a dataset names. Not their folders. Never a prefix.
+
+    This used to register os.path.commonpath() of the containing directories as
+    a prefix root, which is a whole-drive arbitrary file read the moment a
+    dataset spans two top-level folders: [C:\\media\\img\\a.png, C:\\scratch.png]
+    collapses to 'C:\\' and /audio then returns any file on the drive. Two
+    folders under the home directory collapse to the home directory, which is
+    just as bad. Granting the parent directories instead is narrower, but still
+    hands over every sibling of every indexed file.
+
+    So the grant is the file itself: a dataset can only ever expose what it
+    actually indexes.
+
+    `cache_key` skips the work for a dataset already seen -- this runs from
+    load_data(), called on every scatter update, and the largest dataset has 82k
+    paths.
+    """
+    if cache_key is not None:
+        with _ALLOWED_ROOTS_LOCK:
+            if cache_key in _REGISTERED_DATASETS:
+                return
+            _REGISTERED_DATASETS.add(cache_key)
+    files = set()
+    for v in idx2path.values():
+        try:
+            files.add(os.path.normcase(os.path.abspath(str(v))))
+        except Exception:
+            continue
+    if files:
+        with _ALLOWED_ROOTS_LOCK:
+            _ALLOWED_FILES.update(files)
+
+
+# Older call sites named these "roots"/"dirs"; they were always dataset file lists.
+register_dataset_roots = register_dataset_files
+register_dataset_dirs = register_dataset_files
+
+
+def resolve_media_request(p: str) -> str | None:
+    """
+    Turn a client-supplied media path into a real path, or None if this server
+    is not willing to serve it.
+
+    Two independent grants, deliberately different in shape:
+      - _ALLOWED_ROOTS  prefix match, for directories named by the user or config
+      - _ALLOWED_FILES  exact file match, for the contents of a loaded dataset
+    """
+    if not p:
+        return None
+    full = resolve_path(p)
+    try:
+        real = os.path.realpath(os.path.abspath(full))
+    except OSError:
+        return None
+
+    with _ALLOWED_ROOTS_LOCK:
+        roots = list(_ALLOWED_ROOTS)
+        files = _ALLOWED_FILES
+
+    allowed = _paths.is_within(real, roots)
+    if not allowed:
+        with _ALLOWED_ROOTS_LOCK:
+            allowed = (os.path.normcase(os.path.abspath(full)) in files
+                       or os.path.normcase(real) in files)
+    if not allowed:
+        return None
+    if not os.path.isfile(real):
+        return None
+    return full
+
+
 def get_db_options(db_dir=DB_DIR):
     pattern = re.compile(r"index_(.+)\.pkl$")
     options = []
-    for fname in os.listdir(db_dir):
+    for fname in _paths.listdir_safe(db_dir):
         m = pattern.match(fname)
         if m:
             options.append({"label": m.group(1), "value": m.group(1)})
@@ -309,12 +529,12 @@ def get_matching_datasets(latent_dir=LATENTS_DIR, db_dir=DB_DIR):
     lat_pat = re.compile(r"latent_space_(.+)_(image|audio)_(\d+)d\.pkl$")
     db_pat  = re.compile(r"index_(.+)_(image|audio)\.pkl$")
     lat_map = {}
-    for fname in os.listdir(latent_dir):
+    for fname in _paths.listdir_safe(latent_dir):
         m = lat_pat.match(fname)
         if m:
             name, mod, dim = m.group(1), m.group(2), m.group(3)
             lat_map.setdefault((name, mod), []).append(dim)
-    db_keys = {(m.group(1), m.group(2)) for fname in os.listdir(db_dir) if (m := db_pat.match(fname))}
+    db_keys = {(m.group(1), m.group(2)) for fname in _paths.listdir_safe(db_dir) if (m := db_pat.match(fname))}
     options = []
     for (name, mod), dims in lat_map.items():
         if (name, mod) in db_keys:
@@ -334,7 +554,7 @@ default_dataset = dataset_options[0]["value"] if dataset_options else None
 # ------------- DATA LOADING HELPERS -------------
 def encode_image(image_path, max_width=1024):
     full_path = resolve_path(image_path)  # CHANGED
-    image = cv2.imread(full_path)
+    image = imread_unicode(full_path)
     if image is None:
         print(f"[ERROR] Could not load image: {full_path}")
         return None
@@ -349,7 +569,7 @@ def encode_image(image_path, max_width=1024):
 
 def encode_thumbnail(path, max_side=128):
     full_path = resolve_path(path)  # CHANGED
-    img = cv2.imread(full_path)
+    img = imread_unicode(full_path)
     if img is None:
         print(f"[ERROR] Could not load image: {full_path}")
         return None
@@ -374,6 +594,12 @@ def load_data(name, n_dim=2, modality="image"):
         df["label"] = df["label"].astype(str)
     if "path" in df.columns:
         df["path"] = df["path"].astype(str)
+        # Thumbnails are requested straight from this frame, before any search
+        # has loaded the index -- so the dataset's directories have to become
+        # servable here too, or a dataset stored outside the media roots renders
+        # as a grid of 404s until you happen to run a prompt search.
+        register_dataset_roots(dict(enumerate(df["path"].tolist())),
+                               cache_key=f"latent:{name}:{modality}")
     for col in ("x", "y", "z"):
         if col in df.columns:
             df[col] = df[col].astype("float32")
@@ -383,31 +609,58 @@ def load_index(name, modality="image"):
     index_name = os.path.join(DB_DIR, f"index_{name}_{modality}.pkl")
     with open(index_name, "rb") as f:
         idx_blob, idx2path = pickle.load(f)
+    register_dataset_roots(idx2path, cache_key=f"index:{name}:{modality}")
     return Index.restore(idx_blob), idx2path
 
 
 
-# ------------- CLIP MODEL LOAD ONCE -------------
-model = CLIPModel.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K", torch_dtype=torch.float16)
-# model.eval().to("cuda")
-model.eval().to("cpu")
-processor = CLIPProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+# ------------- CLIP TEXT ENCODER (lazy) -------------
+# Searching only ever encodes the prompt, so only the text tower is needed:
+# 354M parameters instead of the full model's 986M, and ~0.9 s to load instead
+# of ~25 s. Loading it lazily also means the app starts (and can show an error)
+# without a 4 GB download having to succeed first.
+CLIP_MODEL_ID = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+
+_CLIP_TEXT = {"model": None, "tokenizer": None}
+_MODEL_LOAD_LOCK = threading.Lock()
+
+
+def load_clip_text(device: str = "cpu"):
+    """Load the CLIP text tower on first use. Raises with something actionable."""
+    with _MODEL_LOAD_LOCK:
+        if _CLIP_TEXT["model"] is None:
+            try:
+                from transformers import CLIPTextModelWithProjection, CLIPTokenizerFast
+                m = CLIPTextModelWithProjection.from_pretrained(CLIP_MODEL_ID, dtype=torch.float32)
+                m.eval().to(device)
+                tok = CLIPTokenizerFast.from_pretrained(CLIP_MODEL_ID)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Could not load the text encoder '{CLIP_MODEL_ID}': {e}. "
+                    f"The first run needs to download it, so check your internet connection. "
+                    f"Set HF_HOME to choose where models are cached."
+                ) from e
+            _CLIP_TEXT.update(model=m, tokenizer=tok)
+    return _CLIP_TEXT["model"], _CLIP_TEXT["tokenizer"]
 
 # --- lazy CLAP (keep FP32 to avoid BN/dtype issues) ---
 _CLAP = {"model": None, "proc": None}
 def load_clap(device="cpu"):
-    if _CLAP["model"] is None:
-        m = ClapModel.from_pretrained("laion/clap-htsat-fused")
-        m.eval().to(device)
-        p = ClapProcessor.from_pretrained("laion/clap-htsat-fused")
-        _CLAP.update(model=m, proc=p)
+    with _MODEL_LOAD_LOCK:
+        if _CLAP["model"] is None:
+            from transformers import ClapModel, ClapProcessor
+            m = ClapModel.from_pretrained("laion/clap-htsat-fused")
+            m.eval().to(device)
+            p = ClapProcessor.from_pretrained("laion/clap-htsat-fused")
+            _CLAP.update(model=m, proc=p)
     return _CLAP["model"], _CLAP["proc"]
 
 
 def search(index, idx2path, query, n, modality="image"):
     if modality == "image":
-        inputs = processor.tokenizer(query, return_tensors="pt")
-        vec = model.get_text_features(**inputs).detach().cpu().numpy().flatten()
+        clip_model, clip_tok = load_clip_text()
+        inputs = clip_tok(query, return_tensors="pt")
+        vec = clip_model(**inputs).text_embeds.detach().cpu().numpy().flatten()
     else:
         clap_model, clap_proc = load_clap(device="cpu")
         inputs = clap_proc(text=[query], return_tensors="pt", padding=True)
@@ -442,20 +695,23 @@ def _load_palette_cache(db_name: str) -> dict:
         ids = data['ids']
         dominant = data['dominant']  # (n_images, n_colors, 4)
         
-        # Build path -> dominant mapping
-        # We need idx2path to map ids to paths
-        index_path = os.path.join(DB_DIR, f"{db_name}_image.json")
+        # Build path -> dominant mapping. This used to read
+        # databases/<name>_image.json, which db.py has never written -- so the
+        # cache was always empty and /palette re-ran k-means on every request
+        # (~2.5 s per uncached image). The mapping it needs is the idx2path that
+        # already sits in the index pickle.
+        index_path = os.path.join(DB_DIR, f"index_{db_name}_image.pkl")
         if not os.path.exists(index_path):
             return {}
-        
-        with open(index_path) as f:
-            idx2path = json.load(f)
-        idx2path = {int(k): v for k, v in idx2path.items()}
-        
+
+        with open(index_path, "rb") as f:
+            _blob, idx2path = pickle.load(f)
+        idx2path = {int(k): str(v) for k, v in idx2path.items()}
+
         cache = {}
         for i, img_id in enumerate(ids):
-            if img_id in idx2path:
-                path = idx2path[img_id]
+            path = idx2path.get(int(img_id))
+            if path is not None:
                 # Normalize path for consistent lookup
                 cache[os.path.normpath(path)] = dominant[i]
         return cache
@@ -502,7 +758,13 @@ def thumb_endpoint():
     p = request.args.get("p")
     if not p:
         return Response("missing p", status=400)
-    path = urllib.parse.unquote(p)
+    # Validate against the servable allowlist before touching the filesystem.
+    # 404 rather than 403 so this cannot be used to probe for files.
+    # request.args is already percent-decoded by Flask; decoding again here
+    # corrupted any filename containing a literal '%'.
+    path = resolve_media_request(p)
+    if path is None:
+        return Response(status=404)
     data = make_thumbnail_bytes(path)
     if data is None:
         return Response(status=404)
@@ -514,7 +776,13 @@ def preview_endpoint():
     p = request.args.get("p")
     if not p:
         return Response("missing p", status=400)
-    path = urllib.parse.unquote(p)
+    # Validate against the servable allowlist before touching the filesystem.
+    # 404 rather than 403 so this cannot be used to probe for files.
+    # request.args is already percent-decoded by Flask; decoding again here
+    # corrupted any filename containing a literal '%'.
+    path = resolve_media_request(p)
+    if path is None:
+        return Response(status=404)
 
     # optional query params: width (w) and jpeg quality (q)
     try:
@@ -543,7 +811,13 @@ def palette_endpoint():
     p = request.args.get("p")
     if not p:
         return Response("missing p", status=400)
-    path = urllib.parse.unquote(p)
+    # Validate against the servable allowlist before touching the filesystem.
+    # 404 rather than 403 so this cannot be used to probe for files.
+    # request.args is already percent-decoded by Flask; decoding again here
+    # corrupted any filename containing a literal '%'.
+    path = resolve_media_request(p)
+    if path is None:
+        return Response(status=404)
     
     # Number of colors
     try:
@@ -632,7 +906,13 @@ def audio_endpoint():
     p = request.args.get("p")
     if not p:
         return Response("missing p", status=400)
-    path = urllib.parse.unquote(p)
+    # Validate against the servable allowlist before touching the filesystem.
+    # 404 rather than 403 so this cannot be used to probe for files.
+    # request.args is already percent-decoded by Flask; decoding again here
+    # corrupted any filename containing a literal '%'.
+    path = resolve_media_request(p)
+    if path is None:
+        return Response(status=404)
     full = resolve_path(path)
     if not os.path.exists(full):
         return Response(status=404)
@@ -647,7 +927,13 @@ def awave_endpoint():
     p = request.args.get("p")
     if not p:
         return Response("missing p", status=400)
-    path = urllib.parse.unquote(p)
+    # Validate against the servable allowlist before touching the filesystem.
+    # 404 rather than 403 so this cannot be used to probe for files.
+    # request.args is already percent-decoded by Flask; decoding again here
+    # corrupted any filename containing a literal '%'.
+    path = resolve_media_request(p)
+    if path is None:
+        return Response(status=404)
     data = make_waveform_png(path)
     if data is None:
         return Response(status=404)
@@ -658,7 +944,13 @@ def aspec_endpoint():
     p = request.args.get("p")
     if not p:
         return Response("missing p", status=400)
-    path = urllib.parse.unquote(p)
+    # Validate against the servable allowlist before touching the filesystem.
+    # 404 rather than 403 so this cannot be used to probe for files.
+    # request.args is already percent-decoded by Flask; decoding again here
+    # corrupted any filename containing a literal '%'.
+    path = resolve_media_request(p)
+    if path is None:
+        return Response(status=404)
     data = make_melspec_png(path)
     if data is None:
         return Response(status=404)
@@ -698,7 +990,12 @@ app.layout = html.Div(
                         {"label": "Moodboard", "value": "moodboard"},
                     ],
                     value="prompt",
-                    labelStyle={"display": "inline-block", "marginRight": "25px", "fontWeight": "bold"},
+                    # Dash 4 gives labels its own dark design-token colour, which is
+                    # invisible on this dark ground. Set it explicitly so the app does
+                    # not depend on any external or default stylesheet.
+                    labelStyle={"display": "inline-block", "marginRight": "25px",
+                                "fontWeight": "bold", "color": "#fff", "cursor": "pointer"},
+                    inputStyle={"marginRight": "6px", "accentColor": "#00bcd4"},
                 ),
                 html.Label("Dataset:", style={"marginLeft": "40px", "marginRight": "6px"}),
                 dcc.Dropdown(
@@ -711,10 +1008,49 @@ app.layout = html.Div(
             ],
             style={"display": "flex", "alignItems": "center", "marginBottom": "20px"},
         ),
+
+        # ── Relocation panel ────────────────────────────────────────────────
+        # Appears only when the selected dataset's files are not where its index
+        # says they are -- an external drive that is not plugged in, a folder
+        # that moved, a library copied to another machine. Nothing is re-encoded:
+        # items are matched by content, so this is seconds, not hours.
+        html.Div(
+            [
+                html.Div(id="relocate-message",
+                         style={"fontSize": "13px", "color": "#e0a44a", "marginBottom": "8px"}),
+                html.Div(
+                    [
+                        dcc.Input(
+                            id="relocate-root",
+                            type="text",
+                            placeholder="Paste the folder where these files live now...",
+                            debounce=True,
+                            style={"flex": "1", "marginRight": "8px", "minWidth": "260px"},
+                        ),
+                        html.Button("Check", id="relocate-check-btn", n_clicks=0,
+                                    style={"padding": "7px 16px", "marginRight": "6px",
+                                           "backgroundColor": "#2a2a2a", "color": "#fff",
+                                           "border": "1px solid #555", "borderRadius": "4px",
+                                           "cursor": "pointer", "fontSize": "12px"}),
+                        html.Button("Relocate", id="relocate-apply-btn", n_clicks=0,
+                                    style={"padding": "7px 16px", "backgroundColor": "#00796b",
+                                           "color": "#fff", "border": "none", "borderRadius": "4px",
+                                           "cursor": "pointer", "fontWeight": "600", "fontSize": "12px"}),
+                    ],
+                    style={"display": "flex", "alignItems": "center"},
+                ),
+                html.Div(id="relocate-status",
+                         style={"fontSize": "12px", "marginTop": "8px", "color": "#888"}),
+            ],
+            id="relocate-panel",
+            style={"display": "none"},
+        ),
+
         dcc.Store(id="story-cache", storage_type="memory"),
         dcc.Store(id="grouped-results", storage_type="memory"),
         dcc.Store(id="carousel-state", storage_type="memory"),
         dcc.Store(id="carousel-order", storage_type="memory"),
+        dcc.Store(id="results-owner", storage_type="memory"),  # which mode filled image-display
         dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
         dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Reference image (palette source for search/transfer)
         dcc.Store(id="selected-target-image", storage_type="memory"),  # Target image (receives colors in transfer)
@@ -987,6 +1323,23 @@ app.layout = html.Div(
                                                 style={"width": "120px", "color": "#000", "fontSize": "12px"},
                                             ),
                                         ], id="color-transfer-size-wrapper", style={"display": "flex", "alignItems": "center"}),
+                                        # Steps: the flow's integration steps. Was fixed
+                                        # at the library default of 8 and never exposed.
+                                        html.Div([
+                                            html.Span("Steps:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            dcc.Dropdown(
+                                                id="color-transfer-steps",
+                                                options=[
+                                                    {"label": "4 (fastest)", "value": 4},
+                                                    {"label": "8 (default)", "value": 8},
+                                                    {"label": "16", "value": 16},
+                                                    {"label": "32 (smoothest)", "value": 32},
+                                                ],
+                                                value=8,
+                                                clearable=False,
+                                                style={"width": "120px", "color": "#000", "fontSize": "12px"},
+                                            ),
+                                        ], id="color-transfer-steps-wrapper", style={"display": "flex", "alignItems": "center"}),
                                         # Full-res checkbox (ModFlows only)
                                         html.Div(
                                             dcc.Checklist(
@@ -1663,8 +2016,10 @@ def select_moodboard_ref(clicks, upload_contents, moodboard_upload, moodboard, u
         if not ext:
             ext = ".jpg"
         
-        output_dir = os.path.join(os.path.dirname(__file__), "output", "_external_refs")
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir = _paths.ensure_dir(os.path.join(OUTPUT_DIR, "_external_refs"))
+        # The media endpoints only serve allowlisted roots; without this an
+        # uploaded reference renders as a broken image.
+        register_media_root(OUTPUT_DIR)
         
         content_hash = hashlib.md5(decoded).hexdigest()[:12]
         temp_path = os.path.join(output_dir, f"ext_{content_hash}{ext}")
@@ -1725,7 +2080,7 @@ def save_moodboard_images(n_clicks, moodboard, folder_name):
     
     folder_name = folder_name.strip()
     # Create output path
-    output_dir = os.path.join(os.path.dirname(__file__), "output", "moodboards", folder_name)
+    output_dir = _safe_output_dir("moodboards", folder_name)
     os.makedirs(output_dir, exist_ok=True)
     
     saved = 0
@@ -1780,7 +2135,7 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name):
         return html.Span("Please enter a folder name", style={"color": "#ffcc00"})
     
     folder_name = folder_name.strip()
-    output_dir = os.path.join(os.path.dirname(__file__), "output", "selections", folder_name)
+    output_dir = _safe_output_dir("selections", folder_name)
     os.makedirs(output_dir, exist_ok=True)
     
     saved = 0
@@ -2138,18 +2493,25 @@ def update_feature_availability(dataset_value):
 @app.callback(
     [
         Output("color-transfer-size-wrapper", "style"),
+        Output("color-transfer-steps-wrapper", "style"),
         Output("color-transfer-fullres-wrapper", "style"),
     ],
     Input("color-transfer-method", "value"),
 )
 def toggle_method_params(method):
-    """Disable Size and Full-res options when LAB method is selected."""
+    """
+    Grey out the ModFlows-only controls when LAB is selected.
+
+    LAB (Reinhard) matches per-channel mean and standard deviation in LAB space
+    in one shot: there is no working resolution, no integration steps and no
+    full-res pass to configure. Strength is its only parameter.
+    """
     if method == "lab":
-        disabled_style = {"display": "flex", "alignItems": "center", "opacity": "0.4", "pointerEvents": "none"}
-        return disabled_style, {"opacity": "0.4", "pointerEvents": "none"}
-    else:
-        enabled_style = {"display": "flex", "alignItems": "center"}
-        return enabled_style, {}
+        off_row = {"display": "flex", "alignItems": "center", "opacity": "0.4",
+                   "pointerEvents": "none"}
+        return off_row, off_row, {"opacity": "0.4", "pointerEvents": "none"}
+    on_row = {"display": "flex", "alignItems": "center"}
+    return on_row, on_row, {}
 
 
 @app.callback(
@@ -2160,10 +2522,11 @@ def toggle_method_params(method):
     State("color-transfer-method", "value"),
     State("color-transfer-strength", "value"),
     State("color-transfer-size", "value"),
+    State("color-transfer-steps", "value"),
     State("color-transfer-fullres", "value"),
     prevent_initial_call=True,
 )
-def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, max_size, fullres_opts):
+def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, max_size, steps, fullres_opts):
     """Transfer colors from reference image to target image."""
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
@@ -2213,36 +2576,69 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, ma
                 content=content_img,
                 style=style_img,
                 strength=strength_val,
+                steps=int(steps) if steps else 8,
                 max_size=size_val,
                 full_res_output=use_fullres
             )
-            method_label = "ModFlows"
+            method_label = f"ModFlows, {int(steps) if steps else 8} steps"
             device_info = get_device_info() if get_device_info else {"device": "unknown"}
             device_str = device_info.get("device", "unknown")
         
         elapsed = time.time() - start_time
         
-        # Generate output filename
+        # Save to output/color_transfer/
+        output_dir = _paths.ensure_dir(os.path.join(OUTPUT_DIR, "color_transfer"))
+
         target_name = os.path.splitext(os.path.basename(target_resolved))[0]
         ref_name = os.path.splitext(os.path.basename(ref_resolved))[0]
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         method_suffix = "lab" if method == "lab" else "mf"
-        output_filename = f"{target_name}_from_{ref_name}_{method_suffix}_{timestamp}.png"
-        
-        # Save to output/color_transfer/
-        output_dir = os.path.join(APP_ROOT, "output", "color_transfer")
-        os.makedirs(output_dir, exist_ok=True)
+        output_filename = _paths.fit_filename(
+            output_dir, target_name, ref_name, f"{method_suffix}_{timestamp}", ".png"
+        )
         output_path = os.path.join(output_dir, output_filename)
-        result_img.save(output_path, "PNG")
+        # The filename has to be truncated to fit the filesystem, which loses
+        # which images this actually came from. Keep the full provenance inside
+        # the PNG so a result is always traceable back to its inputs.
+        from PIL import PngImagePlugin
+        meta = PngImagePlugin.PngInfo()
+        meta.add_text("arcana:target", str(target_resolved))
+        meta.add_text("arcana:reference", str(ref_resolved))
+        meta.add_text("arcana:method", method_label)
+        meta.add_text("arcana:strength", str(strength_val))
+        meta.add_text("arcana:device", str(device_str))
+        result_img.save(output_path, "PNG", pnginfo=meta)
         
+        # Show the result, not just a filename. Embedded as a downscaled JPEG
+        # data URI rather than a /preview URL: the output directory is not a
+        # media root, and one preview does not justify making it servable.
+        preview = result_img.copy()
+        preview.thumbnail((640, 640), Image.LANCZOS)
+        buf = BytesIO()
+        preview.convert("RGB").save(buf, "JPEG", quality=88)
+        preview_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
         return html.Div([
-            html.Div(f"✓ Color transfer complete ({method_label})", style={"color": "#2ecc71", "fontWeight": "bold"}),
-            html.Div(f"Saved: {output_filename}", style={"color": "#888", "fontSize": "11px"}),
-            html.Div(f"Device: {device_str} | Time: {elapsed:.2f}s", style={"color": "#666", "fontSize": "10px"}),
+            html.Div(f"✓ Color transfer complete ({method_label})",
+                     style={"color": "#2ecc71", "fontWeight": "bold", "marginBottom": "8px"}),
+            html.Img(
+                src=preview_uri,
+                title=output_filename,
+                style={"width": "100%", "display": "block", "borderRadius": "6px",
+                       "border": "1px solid #444"},
+            ),
+            html.Div(f"{result_img.size[0]}×{result_img.size[1]} · {device_str} · {elapsed:.2f}s",
+                     style={"color": "#888", "fontSize": "11px", "marginTop": "6px"}),
+            html.Div(f"Saved to {os.path.join('output', 'color_transfer')}",
+                     style={"color": "#666", "fontSize": "10px"}),
+            html.Div(output_filename,
+                     style={"color": "#555", "fontSize": "9px", "wordBreak": "break-all",
+                            "marginTop": "2px"}),
         ])
-        
+
     except Exception as e:
-        return html.Div(f"✗ Error: {str(e)}", style={"color": "#e74c3c"})
+        return html.Div(f"✗ Error: {str(e)}",
+                        style={"color": "#e74c3c", "wordBreak": "break-word"})
 
 
 @app.callback(
@@ -2263,15 +2659,28 @@ def inject_poetry(n_clicks, story_cache, folder, strength_val):
         return "No story data available.", dash.no_update, dash.no_update
 
     subfolder = folder or "story"
-    output_dir = os.path.join(STORIES_DIR, subfolder, "poetry_injected")
+    output_dir = _safe_output_dir("stories", subfolder, "poetry_injected")
     os.makedirs(output_dir, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    pipe = StableDiffusionImg2ImgPipeline.from_pretrained("stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16").to(
-        device
-    )
+    from diffusers import StableDiffusionImg2ImgPipeline
+    # fp16 is a CUDA thing: on CPU most fp16 kernels are unimplemented, so asking
+    # for the fp16 variant here made story mode raise on every machine without an
+    # NVIDIA GPU rather than merely being slow.
+    if device == "cuda":
+        pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+            "stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16"
+        ).to(device)
+    else:
+        pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+            "stabilityai/sd-turbo", torch_dtype=torch.float32
+        ).to(device)
 
-    pipe.enable_xformers_memory_efficient_attention()
+    # xformers is CUDA-only and optional; it raises when unavailable.
+    try:
+        pipe.enable_xformers_memory_efficient_attention()
+    except Exception as e:
+        print(f"[INFO] xformers attention unavailable, continuing without it: {e}")
     pipe.enable_vae_slicing()
     pipe.safety_checker = None
     pipe.watermark = None
@@ -2369,6 +2778,7 @@ def _read_cached_spec(key: str) -> bytes | None:
         return None
 
 def _write_cached_spec(key: str, data: bytes) -> None:
+    _paths.ensure_dir(SPEC_CACHE_DIR)
     f = os.path.join(SPEC_CACHE_DIR, f"{key}.png")
     try:
         with open(f, "wb") as fh:
@@ -2477,6 +2887,13 @@ def make_melspec_png(
 def update_images(
     n_action, clickData, mode, dataset_value, search_value, num_images, relayoutData, story_value, group_on, sim_thresh, spec_on
 ):
+    # Switching tabs must not throw away what you already found. mode-select is
+    # an Input here only so the callback knows which branch to run when the
+    # action button is pressed; on a bare mode change there is nothing to
+    # recompute, so leave every output exactly as it is. Which panels are
+    # visible is handled separately by toggle_inputs().
+    if ctx.triggered_id == "mode-select":
+        return (dash.no_update,) * 7
 
     # Nothing selected yet
     if not dataset_value:
@@ -2589,13 +3006,16 @@ def update_images(
             else:
                 xs, ys = zip(*coords)
                 fig.data = tuple(t for t in fig.data if getattr(t, "name", None) != "Story Path")
+                # Scattergl for the same reason as Search Results: an SVG line
+                # would be drawn underneath the WebGL point cloud.
                 fig.add_trace(
-                    go.Scatter(
+                    go.Scattergl(
                         x=xs,
                         y=ys,
                         mode="lines+markers",
                         line=dict(color="gold", width=4),
-                        marker=dict(size=14, color="gold"),
+                        marker=dict(size=14, color="gold",
+                                    line=dict(width=1, color="#ffffff")),
                         text=story_texts,
                         hovertemplate="%{text}<extra></extra>",
                         name="Story Path",
@@ -2652,10 +3072,19 @@ def update_images(
 
         print(f"[DEBUG] Search results: {results}")
         if len(results):
-            highlighted_df = df.loc[[r[0] for r in results]]
+            # A usearch key is NOT a DataFrame row label. The latent frame is built
+            # by walking idx2path in insertion order and is then reset to a 0..N-1
+            # RangeIndex, so key -> row must go through that same ordering. They
+            # only coincide when no file failed to read during indexing; when one
+            # did, .loc silently highlighted the wrong points or raised KeyError.
+            key_to_row = {k: i for i, k in enumerate(idx2path.keys())}
+            rows = [key_to_row[r[0]] for r in results if r[0] in key_to_row]
+            dropped = len(results) - len(rows)
+            if dropped:
+                print(f"[WARN] {dropped} search result(s) have no row in the latent space; "
+                      f"the index and latent file are out of sync for '{db_name}'.")
+            highlighted_df = df.iloc[rows]
             print(f"[DEBUG] Highlighted DataFrame: {highlighted_df.shape[0]} rows")
-            # ...inside update_images(), in the PROMPT block, after highlighted_df = ...
-            # after: highlighted_df = df.loc[[r[0] for r in results]]
 
             if is_3d:
                 fig.add_trace(
@@ -2673,21 +3102,23 @@ def update_images(
                 xs = highlighted_df["x"].to_list()
                 ys = highlighted_df["y"].to_list()
 
-                # NOTE: use go.Scatter (SVG) so it sits above the scattergl canvas
+                # The base scatter is WebGL. Plotly draws the GL canvas ABOVE the
+                # SVG trace layer, so an SVG go.Scatter overlay ends up hidden
+                # behind the dots. Use Scattergl so the highlight lives in the
+                # same GL layer, where trace order decides what is on top.
                 fig.add_trace(
-                    go.Scatter(
+                    go.Scattergl(
                         x=xs, y=ys,
                         mode="markers",
                         marker=dict(
-                            symbol="x",          # or "x-thin-open"
+                            symbol="x",
                             size=20,
                             color="#33C3F0",
-                            line=dict(width=2),
+                            line=dict(width=2, color="#ffffff"),
                         ),
                         name="Search Results",
                         hoverinfo="skip",
                         showlegend=True,
-                        cliponaxis=False,       # keeps the X strokes visible at edges
                         opacity=1.0,
                     )
                 )
@@ -3037,6 +3468,168 @@ def update_hover_thumb(hoverData, mode, dataset_value, spec_on):
 
 
 
+@app.callback(
+    [
+        Output("relocate-panel", "style"),
+        Output("relocate-message", "children"),
+        Output("relocate-root", "value"),
+        Output("relocate-status", "children", allow_duplicate=True),
+    ],
+    Input("dataset-dropdown", "value"),
+    prevent_initial_call="initial_duplicate",
+)
+def detect_moved_dataset(dataset_value):
+    """
+    Notice when a dataset's media is no longer where its index says.
+
+    Samples a couple of hundred paths rather than stat-ing all 82k, because this
+    runs on every dataset change.
+    """
+    hidden = {"display": "none"}
+    if not dataset_value:
+        return hidden, "", "", ""
+    try:
+        name, _dim, modality = _parse_dataset_value(dataset_value)
+    except Exception:
+        return hidden, "", "", ""
+
+    try:
+        from .relocate import dataset_health
+    except ImportError:
+        from relocate import dataset_health
+    try:
+        h = dataset_health(name, modality)
+    except Exception as e:
+        return hidden, "", "", f"Could not check this dataset: {e}"
+
+    if h["ok"] and not h["error"]:
+        return hidden, "", "", ""
+
+    shown = {"display": "block", "marginBottom": "18px", "padding": "12px 14px",
+             "backgroundColor": "#2a2318", "border": "1px solid #5a4a22",
+             "borderRadius": "8px"}
+    if h["error"]:
+        return shown, f"⚠ {h['error']}", "", ""
+
+    frac = f"{h['missing']} of {h['checked']} sampled"
+    if h["checked"] < h["total"]:
+        frac += f" (dataset has {h['total']:,} items)"
+    msg = html.Div([
+        html.Div(f"⚠ This dataset's files are missing — {frac}.",
+                 style={"fontWeight": "600", "marginBottom": "3px"}),
+        html.Div(["Indexed from ", html.Code(h["root"] or "an unknown folder",
+                                             style={"color": "#d0c0a0"}),
+                  ". If that folder moved or lives on a drive that is not connected, "
+                  "point Arcana at its new location below — files are matched by "
+                  "content, so nothing is re-indexed."],
+                 style={"color": "#b8a88a", "fontSize": "12px", "lineHeight": "1.5"}),
+    ])
+    return shown, msg, (h["root"] or ""), ""
+
+
+@app.callback(
+    Output("relocate-status", "children", allow_duplicate=True),
+    [Input("relocate-check-btn", "n_clicks"), Input("relocate-apply-btn", "n_clicks")],
+    [State("relocate-root", "value"), State("dataset-dropdown", "value")],
+    prevent_initial_call=True,
+)
+def do_relocate(_check, _apply, new_root, dataset_value):
+    """Dry-run or apply a relocation for the selected dataset."""
+    if not dataset_value:
+        return "Select a dataset first."
+    if not new_root or not str(new_root).strip():
+        return html.Span("Enter the folder the files live in now.", style={"color": "#e0a44a"})
+    new_root = os.path.expanduser(str(new_root).strip().strip('"'))
+    if not os.path.isdir(new_root):
+        return html.Span(f"Not a folder: {new_root}", style={"color": "#e74c3c"})
+
+    apply_it = ctx.triggered_id == "relocate-apply-btn"
+    try:
+        name, _dim, modality = _parse_dataset_value(dataset_value)
+        from .relocate import relocate_legacy
+        from .legacy import discover
+    except ImportError:
+        from relocate import relocate_legacy
+        from legacy import discover
+    except Exception as e:
+        return html.Span(f"Could not parse the dataset: {e}", style={"color": "#e74c3c"})
+
+    matches = [d for d in discover() if d.name == name and d.modality == modality]
+    if not matches:
+        return html.Span(f"No dataset named {name}.", style={"color": "#e74c3c"})
+
+    try:
+        r = relocate_legacy(matches[0], new_root, dry_run=not apply_it)
+    except Exception as e:
+        return html.Span(f"Relocation failed: {type(e).__name__}: {e}",
+                         style={"color": "#e74c3c"})
+
+    if r["found"] == 0:
+        return html.Span(
+            f"Found none of the {r['total']:,} files under {new_root}. "
+            f"Point at the folder that directly contains them (or their subfolders).",
+            style={"color": "#e74c3c"})
+
+    if not apply_it:
+        extra = f" — {r['missing']} would still be missing." if r["missing"] else ""
+        return html.Span(
+            f"Would match {r['found']:,} of {r['total']:,} files here{extra} "
+            f"Press Relocate to apply.", style={"color": "#4caf50"})
+
+    # Applied: stale absolute paths are cached all over the place.
+    make_thumbnail_bytes.cache_clear()
+    make_resized_bytes.cache_clear()
+    thumb_b64_for.cache_clear()
+    with _ALLOWED_ROOTS_LOCK:
+        _REGISTERED_DATASETS.clear()
+    register_media_root(new_root)
+
+    tail = f" {r['missing']} still missing." if r["missing"] else ""
+    return html.Span(
+        f"✓ Relocated {r['found']:,} of {r['total']:,} files.{tail} "
+        f"Re-select the dataset to reload it. Backups were written next to the "
+        f"originals as .bak.", style={"color": "#4caf50"})
+
+
+@app.callback(
+    Output("results-owner", "data"),
+    [
+        Input("main-action-btn", "n_clicks"),
+        Input("moodboard-search-btn", "n_clicks"),
+        Input("scatter-plot", "clickData"),
+    ],
+    State("mode-select", "value"),
+    prevent_initial_call=True,
+)
+def track_results_owner(_action, _moodboard, _click, mode):
+    """
+    Record which mode last filled the shared results panel.
+
+    image-display is written by both update_images() and the moodboard
+    similarity search, so without this the panel shows one mode's results while
+    you are looking at another.
+    """
+    if ctx.triggered_id == "moodboard-search-btn":
+        return "moodboard"
+    return mode
+
+
+@app.callback(
+    Output("image-display", "style"),
+    [Input("mode-select", "value"), Input("results-owner", "data")],
+)
+def toggle_results_visibility(mode, owner):
+    """
+    Keep results across tab switches, but only show them in the tab that made
+    them. Switching away hides the panel without discarding it, so coming back
+    restores what was there.
+    """
+    base = {"overflowY": "scroll", "overflowX": "hidden", "maxHeight": "80vh"}
+    if owner is None or owner == mode:
+        return {**base, "display": "block"}
+    return {**base, "display": "none"}
+
+
 @app.callback(Output("save-button", "style"), Input("mode-select", "value"))
 def toggle_save_selected_button(mode):
     if mode == "prompt":
@@ -3096,7 +3689,7 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
 
     if triggered == "save-button":
         subfolder = folder or "session"
-        save_dir = os.path.join(SELECTIONS_DIR, subfolder)
+        save_dir = _safe_output_dir("selections", subfolder)
         os.makedirs(save_dir, exist_ok=True)
 
         selections = selections or []
@@ -3133,9 +3726,9 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
                     print(f"[ERROR] Could not copy audio: {full_path} ({e})")
             else:
                 # try image write
-                img = cv2.imread(full_path)
+                img = imread_unicode(full_path)
                 if img is not None:
-                    cv2.imwrite(os.path.join(save_dir, safe_name), img)
+                    imwrite_unicode(os.path.join(save_dir, safe_name), img)
                     n_saved += 1
                 else:
                     # fallback: copy raw file if not an image
@@ -3149,7 +3742,7 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
 
     elif triggered == "save-story-btn":
         subfolder = folder or "story"
-        save_dir = os.path.join(STORIES_DIR, subfolder)
+        save_dir = _safe_output_dir("stories", subfolder)
         poetry_dir = os.path.join(save_dir, "poetry_injected")
         original_dir = os.path.join(save_dir, "original")
         os.makedirs(poetry_dir, exist_ok=True)
@@ -3159,15 +3752,15 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
         if story_cache and "story" in story_cache:
             for i, item in enumerate(story_cache["story"]):
                 full_img_path = resolve_path(item["path"])
-                original_img = cv2.imread(full_img_path)
+                original_img = imread_unicode(full_img_path)
                 if original_img is not None:
-                    cv2.imwrite(os.path.join(original_dir, f"{i:02d}_original.jpg"), original_img)
+                    imwrite_unicode(os.path.join(original_dir, f"{i:02d}_original.jpg"), original_img)
                     n_saved += 1
                 poetry_img_path = item.get("poetry_img_path")
                 if poetry_img_path and os.path.exists(poetry_img_path):
-                    poetry_img = cv2.imread(poetry_img_path)
+                    poetry_img = imread_unicode(poetry_img_path)
                     if poetry_img is not None:
-                        cv2.imwrite(os.path.join(poetry_dir, f"{i:02d}_poetry.jpg"), poetry_img)
+                        imwrite_unicode(os.path.join(poetry_dir, f"{i:02d}_poetry.jpg"), poetry_img)
                         n_saved += 1
 
             with open(os.path.join(save_dir, "story.txt"), "w", encoding="utf-8") as f:

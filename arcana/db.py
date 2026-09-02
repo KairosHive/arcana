@@ -8,6 +8,10 @@
 
 import os
 import cv2
+try:
+    from .cvio import imread_unicode, imwrite_unicode
+except ImportError:
+    from cvio import imread_unicode, imwrite_unicode
 import math
 import pickle
 import argparse
@@ -26,7 +30,8 @@ from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
 
 from usearch.index import Index
-from transformers import CLIPModel, CLIPProcessor, ClapModel, ClapProcessor
+# transformers is imported inside load_clip/load_clap: importing it costs ~5 s and
+# is pure waste for anything that only reads an existing index.
 
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 import random
@@ -67,19 +72,23 @@ torch.set_grad_enabled(False)
 # --------------------------------------------------------------------------------------
 # Paths
 # --------------------------------------------------------------------------------------
-script_root = os.path.dirname(os.path.abspath(__file__))
-IMAGES_ROOT = os.path.abspath(os.path.join(script_root, "..", "images"))
-ASSETS_DIR = os.path.join(script_root, "assets")
+try:
+    from . import paths as _paths
+except ImportError:  # running as a loose script
+    import paths as _paths
+
+script_root = _paths.APP_ROOT
+ASSETS_DIR = _paths.ASSETS_DIR
 DEFAULT_LABELS = {
     "image": os.path.join(ASSETS_DIR, "labels_image.txt"),
     "audio": os.path.join(ASSETS_DIR, "labels_audio.txt"),
 }
 
-
-db_dir = os.path.join(script_root, "databases")
-latents_dir = os.path.join(script_root, "latents")
-os.makedirs(db_dir, exist_ok=True)
-os.makedirs(latents_dir, exist_ok=True)
+# Resolved through paths.py so a read-only install still imports. Directories are
+# created at first write (see main()), never at import time.
+db_dir = _paths.subdir("databases")
+latents_dir = _paths.subdir("latents")
+IMAGES_ROOT = (_paths.media_roots() or [os.path.abspath(os.path.join(script_root, "..", "images"))])[0]
 
 # --------------------------------------------------------------------------------------
 # File types
@@ -393,6 +402,7 @@ def _device() -> str:
 def load_clip(device: str | None = None):
     device = device or _device()
     if _CLIP["model"] is None:
+        from transformers import CLIPModel, CLIPProcessor
         m = CLIPModel.from_pretrained(CLIP_MODEL_ID)
         if device == "cuda":
             m = m.to("cuda").half()
@@ -406,6 +416,7 @@ def load_clip(device: str | None = None):
 def load_clap(device: str | None = None):
     device = device or _device()
     if _CLAP["model"] is None:
+        from transformers import ClapModel, ClapProcessor
         m = ClapModel.from_pretrained(CLAP_MODEL_ID)
         # Keep CLAP in FP32 (BN layers are happier; avoids dtype mismatch)
         if device == "cuda":
@@ -515,7 +526,7 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
 
     # probe ndim from first vector
     if modality == "image":
-        probe = cv2.imread(paths[0])
+        probe = imread_unicode(paths[0])
         if probe is None:
             raise SystemExit(f"Failed to read first image: {paths[0]}")
         v0 = img2vec_clip(probe)
@@ -526,8 +537,16 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
 
 
     ndim = int(v0.shape[-1])
-    index = Index(ndim=ndim, metric="cos")
+    # usearch defaults to bf16, which silently quantises every embedding (~1e-2
+    # absolute error) and makes the index the only, lossy, copy of the vectors.
+    # Ask for f32 explicitly so precision is a decision rather than a default.
+    index = Index(ndim=ndim, metric="cos", dtype="f32")
     idx2path: dict[int, str] = {}
+
+    # Keys must stay contiguous. They are used downstream as positional row
+    # indices into the latent DataFrame, so a gap left by an unreadable file
+    # silently shifts every later item onto the wrong point.
+    next_key = 0
 
     if modality == "image":
         for batch_start in tqdm(range(0, len(paths), batch_size), desc="Indexing images"):
@@ -535,7 +554,7 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
             imgs = []
             ok_paths = []
             for p in batch_paths:
-                im = cv2.imread(p)
+                im = imread_unicode(p)
                 if im is None:
                     print(f"[WARN] bad image, skipping: {p}")
                     continue
@@ -550,22 +569,30 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
             with torch.no_grad():
                 vecs = model.get_image_features(px).detach().cpu().float().numpy()
             for i, vec in enumerate(vecs):
-                gid = batch_start + i
-                index.add(gid, vec)
-                idx2path[gid] = os.path.abspath(ok_paths[i])
+                index.add(next_key, vec)
+                idx2path[next_key] = os.path.abspath(ok_paths[i])
+                next_key += 1
 
     else:  # audio
         # MAIN LOOP
-        for i, p in enumerate(tqdm(paths, desc="Indexing audio")):
+        for p in tqdm(paths, desc="Indexing audio"):
             try:
                 a, sr = read_audio_mono(p, target_sr=48000, seconds=None, pad=False)
                 vec = aud2vec_clap(a, sr)
-                index.add(i, vec)
-                idx2path[i] = os.path.abspath(p)
             except Exception as e:
                 print(f"[WARN] failed on {p}: {e}")
+                continue
+            index.add(next_key, vec)
+            idx2path[next_key] = os.path.abspath(p)
+            next_key += 1
 
+    if not idx2path:
+        raise SystemExit(f"No {modality} files could be read; nothing to index.")
+    skipped = len(paths) - len(idx2path)
+    if skipped:
+        print(f"[INFO] Indexed {len(idx2path)} of {len(paths)} files ({skipped} unreadable).")
 
+    _paths.ensure_dir(os.path.dirname(os.path.abspath(index_path)))
     with open(index_path, "wb") as f:
         pickle.dump((index.save(), idx2path), f)
 
@@ -701,13 +728,21 @@ def extract_additional_features(
             for idx, path in zip(tqdm(sorted_ids, desc="Style features"), paths):
                 try:
                     feats = extract_all_style_features(path, include_gram=include_gram, compact_gram=compact_gram)
-                    edge_histograms.append(feats['edge_histogram'])
-                    lbp_textures.append(feats['texture_lbp'])
-                    if include_gram and feats.get('gram') is not None:
-                        gram_features.append(feats['gram'])
-                    valid_ids.append(idx)
                 except Exception as e:
                     print(f"[WARN] Style failed on {path}: {e}")
+                    continue
+                # Every list here is joined by position to `valid_ids`, so an item
+                # that cannot supply all of them has to be skipped entirely --
+                # appending some but not others silently shifts every later row
+                # onto the wrong image.
+                if include_gram and feats.get('gram') is None:
+                    print(f"[WARN] Style: no Gram for {path}; skipping (would desync feature rows)")
+                    continue
+                edge_histograms.append(feats['edge_histogram'])
+                lbp_textures.append(feats['texture_lbp'])
+                if include_gram:
+                    gram_features.append(feats['gram'])
+                valid_ids.append(idx)
             
             if valid_ids:
                 style_path = os.path.join(db_dir, f"features_{name}_style.npz")
@@ -944,6 +979,31 @@ def search_by_style(
             raise ValueError("Gram features not available in index (was --no_gram used?)")
         query_vec = query_feats['gram'].reshape(1, -1)
         db_vecs = features['gram']
+
+        # Stored Gram vectors were compressed with PCA at index time (db.py fits a
+        # PCA and saves its basis). The query's raw Gram is full-width, so it must
+        # go through the same basis before any comparison -- without this the
+        # matmul is a shape error and gram search never works at all.
+        if 'gram_pca_components' in features and query_vec.shape[1] != db_vecs.shape[1]:
+            comps = features['gram_pca_components']          # (n_out, n_in)
+            mean = features.get('gram_pca_mean')
+            if query_vec.shape[1] != comps.shape[1]:
+                raise ValueError(
+                    f"Query Gram is {query_vec.shape[1]}-d but this index's PCA expects "
+                    f"{comps.shape[1]}-d. The index was built with a different Gram "
+                    f"setting (--full_gram vs the default compact); rebuild it or query "
+                    f"with matching settings."
+                )
+            if mean is not None:
+                query_vec = query_vec - mean.reshape(1, -1)
+            query_vec = query_vec @ comps.T                  # -> (1, n_out)
+
+        if query_vec.shape[1] != db_vecs.shape[1]:
+            raise ValueError(
+                f"Gram dimensionality mismatch: query is {query_vec.shape[1]}-d, index is "
+                f"{db_vecs.shape[1]}-d, and the index stores no PCA basis to reconcile them."
+            )
+
         # Cosine similarity
         query_norm = query_vec / (np.linalg.norm(query_vec) + 1e-8)
         db_norm = db_vecs / (np.linalg.norm(db_vecs, axis=1, keepdims=True) + 1e-8)
@@ -1115,10 +1175,135 @@ def parse_args():
         help="Compress Gram features to N dims via PCA (0=no compression). Default: 512.")
     parser.add_argument("--reuse_index", action="store_true",
         help="Skip CLIP extraction if index already exists. Only extract palette/style features.")
+    parser.add_argument("--thumbnails", action="store_true",
+        help="Embed 192px previews in the portable bundle, so it can be browsed "
+             "without the original files.")
     parser.add_argument("--workers", type=int, default=0,
         help="Number of parallel workers for palette/style extraction (0=auto, uses CPU count).")
 
     return parser.parse_args()
+
+
+# --------------------------------------------------------------------------------------
+# Portable bundle output
+# --------------------------------------------------------------------------------------
+def write_bundle(name: str, modality: str, media_root: str, index, idx2path: dict,
+                 coords, cluster_ids, labels, model_id: str,
+                 feature_paths: dict | None = None, n_components: int = 2,
+                 thumbnails: bool = False) -> str:
+    """
+    Write a self-describing .arcana bundle beside the legacy pickles.
+
+    The legacy index stores absolute paths, so a dataset dies the moment its
+    folder moves. A bundle stores a content fingerprint per item plus a path
+    relative to `media_root`, so relocating is a rescan (see arcana-relocate)
+    rather than a rebuild.
+    """
+    try:
+        from .bundle import Bundle, BundleWriter, Item, ModelSpec, SUFFIX
+    except ImportError:
+        from bundle import Bundle, BundleWriter, Item, ModelSpec, SUFFIX
+
+    keys = sorted(int(k) for k in idx2path.keys())
+    vecs = np.asarray([index.get(k) for k in keys], dtype=np.float32)
+    if vecs.ndim == 3 and vecs.shape[1] == 1:
+        vecs = vecs[:, 0, :]
+
+    root = os.path.abspath(media_root)
+    if not os.path.isdir(root):
+        root = os.path.dirname(root)
+
+    items, keep = [], []
+    for row, k in enumerate(keys):
+        src = str(idx2path[k])
+        try:
+            it = Item.for_file(src, root)
+        except OSError:
+            print(f"[WARN] bundle: could not fingerprint {src}; skipping")
+            continue
+        it.cluster_id = int(cluster_ids[row]) if cluster_ids is not None else -1
+        it.label = str(labels[row]) if labels is not None else ""
+        items.append(it)
+        keep.append(row)
+
+    if not items:
+        raise RuntimeError("no items could be fingerprinted")
+
+    seen, uniq_items, uniq_keep = set(), [], []
+    for it, row in zip(items, keep):
+        if it.id in seen:
+            continue
+        seen.add(it.id)
+        uniq_items.append(it)
+        uniq_keep.append(row)
+    if len(uniq_items) != len(items):
+        print(f"[INFO] bundle: collapsed {len(items) - len(uniq_items)} byte-identical duplicate(s)")
+    items, keep = uniq_items, uniq_keep
+
+    vecs = vecs[keep]
+    lay = np.asarray(coords, dtype=np.float32)[keep] if coords is not None else None
+
+    out_dir = _paths.ensure_dir(_paths.subdir("bundles"))
+    out_path = os.path.join(out_dir, f"{name}_{modality}{SUFFIX}")
+
+    with BundleWriter(out_path, name=name,
+                      model=ModelSpec(id=model_id, dim=int(vecs.shape[1]), modality=modality),
+                      root=root, source=f"built by arcana-build-latent from {media_root}",
+                      tool_version="arcana.db/1") as w:
+        w.set_items(items)
+        w.set_vectors(vecs, precision="f32")
+        if lay is not None:
+            w.set_layout(lay, algo="tsne", params={"n_components": int(n_components)})
+        for block, path in (feature_paths or {}).items():
+            if block not in ("palette", "style") or not os.path.exists(path):
+                continue
+            with np.load(path) as z:
+                arrays = {k: z[k] for k in z.files}
+            ids = arrays.get("ids")
+            if ids is not None:
+                key_to_row = {keys[old]: new for new, old in enumerate(keep)}
+                rows, sel = [], []
+                for pos, oid in enumerate(np.asarray(ids).astype(int)):
+                    nr = key_to_row.get(int(oid))
+                    if nr is not None:
+                        rows.append(nr)
+                        sel.append(pos)
+                if rows:
+                    sel_arr = np.asarray(sel, dtype=int)
+                    remapped = {"ids": np.asarray(rows, dtype=np.int32)}
+                    for kk, arr in arrays.items():
+                        if kk == "ids":
+                            continue
+                        remapped[kk] = arr[sel_arr] if arr.shape[:1] == np.asarray(ids).shape else arr
+                    arrays = remapped
+            w.add_feature_block(block, arrays)
+        if thumbnails and modality == "image":
+            made = 0
+            for it in items:
+                src = os.path.join(root, *it.rel_path.split("/"))
+                data = _thumb_bytes(src)
+                if data:
+                    w.add_thumbnail(it.id, data)
+                    made += 1
+            print(f"[INFO] bundle: embedded {made} thumbnails")
+
+    return out_path
+
+
+def _thumb_bytes(path: str, max_side: int = 192) -> bytes | None:
+    try:
+        from PIL import Image
+        import io
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_side, max_side), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "WEBP", quality=80, method=4)
+            return buf.getvalue()
+    except Exception:
+        return None
+
+
 
 def main():
     args = parse_args()
@@ -1169,6 +1354,10 @@ def main():
         index, idx2path = build(glob_arg, index_name, modality=args.modality)
     
     # --- Extract additional features (palette, style) ---
+    # Bound unconditionally: the branch below is skipped for the default
+    # --features clip and for every audio dataset, but write_bundle() reads this
+    # on every run.
+    feature_paths: dict = {}
     feature_list = [f.strip().lower() for f in args.features.split(",")]
     if args.modality == "image" and any(f in feature_list for f in ["palette", "style"]):
         print(f"\n[INFO] Features requested: {feature_list}")
@@ -1212,6 +1401,26 @@ def main():
 
     df.to_pickle(latent_name)
     print(f"[OK] Saved latent DataFrame to {latent_name}")
+
+    # A portable copy that survives the media folder being moved.
+    try:
+        bundle_path = write_bundle(
+            name=args.name, modality=args.modality, media_root=media_path,
+            index=index, idx2path=idx2path, coords=coords, cluster_ids=cluster_ids,
+            labels=df["label"].tolist(),
+            model_id=(CLIP_MODEL_ID if args.modality == "image" else CLAP_MODEL_ID),
+            feature_paths=feature_paths, n_components=args.n_components,
+            thumbnails=args.thumbnails,
+        )
+        print(f"[OK] Saved portable bundle to {bundle_path}")
+    except (NameError, AttributeError, TypeError, KeyError, IndexError):
+        # A bug in our own code. Do not downgrade it to a warning -- that is
+        # exactly how the unbound `feature_paths` above went unnoticed, silently
+        # skipping the bundle on every default build.
+        raise
+    except Exception as e:
+        print(f"[WARN] Could not write the portable bundle: {type(e).__name__}: {e}")
+        print("       The legacy .pkl files were written and remain usable.")
 
 if __name__ == "__main__":
     main()

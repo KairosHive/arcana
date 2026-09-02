@@ -1,28 +1,43 @@
+# Arcana runtime dependencies.
+#
+# Lower bounds only; for the exact combination this branch was tested against,
+# see requirements-lock.txt.
+#
+# Optional extras live in pyproject.toml:
+#   pip install -e .[gpu]     xformers, for faster attention on NVIDIA hardware
+#   pip install -e .[dev]     test runner
+#
 # --- Core scientific stack ---
 numpy>=1.23
 pandas>=1.4
 matplotlib>=3.5
 scikit-learn>=1.2
 scipy>=1.9
-opencv-python-headless>=4.7
+opencv-python>=4.7
 
 # --- Deep Learning & Transformers ---
+# CPU wheels are the default and are enough to run and search. For NVIDIA
+# acceleration during indexing, install the CUDA build separately:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# and check it with:
+#   python -c "from arcana.color_transfer import check_cuda_installation; print(check_cuda_installation())"
 torch>=2.0
 torchvision>=0.15
 torchaudio
 transformers>=4.41
 
-
-# --- Stable Diffusion Pipeline & PIL ---
-xformers>=0.0.27
+# --- Stable Diffusion pipeline & PIL (story mode) ---
 diffusers>=0.27
 Pillow>=9.5
 
-# --- Approximate Nearest Neighbor Search ---
+# --- Approximate nearest neighbour search ---
 usearch>=2.8
 
 # --- Dash and Plotly stack ---
-dash>=2.16
+# Pinned to the 4.x line: Dash 4 restructured dcc.Input (the `style` prop lands
+# on a wrapper, not the control) and ships a light-theme component stylesheet.
+# assets/custom.css targets those class names, so a major bump needs a re-check.
+dash>=4.4,<5
 dash-daq>=0.5
 plotly>=5.19
 flask>=2.2
@@ -35,14 +50,8 @@ soundfile
 librosa
 numba>=0.56
 
-# --- Optimal Transport (for palette EMD) ---
+# --- Optimal transport (palette EMD) ---
 pot>=0.9
 
-# --- ModFlows Color Transfer ---
+# --- ModFlows colour transfer ---
 einops>=0.8
-
-# --- CUDA PyTorch (optional, for GPU acceleration) ---
-# If you have an NVIDIA GPU, install CUDA-enabled PyTorch for 10-20x speedup:
-#   pip uninstall torch torchvision -y
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-# Run: python -c "from arcana.color_transfer import check_cuda_installation; print(check_cuda_installation())"

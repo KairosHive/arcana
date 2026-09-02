@@ -22,6 +22,10 @@ images/*
 arcana/databases/
 arcana/latents/
 arcana/output/
+# Portable dataset bundles (generated; can be large)
+arcana/bundles/
+arcana/cache_specs/
+arcana/cache/
 
 # If you have big assets
 *.h5
@@ -35,3 +39,16 @@ arcana/output/
 # Mac OS / Windows noise
 .DS_Store
 Thumbs.db
+
+# ModFlows colour-transfer source + its 240 MB checkpoint.
+#
+# NOT a decision that this stays out of the repo -- it is untracked upstream too,
+# and a packaged build WILL ship a broken colour-transfer feature until this is
+# resolved (vendor it via git-lfs, or fetch it at build time from a recorded URL).
+# Ignored here only so a junction/symlink used for local testing cannot be
+# committed by accident. See docs/hardening-audit.md.
+modflows/
+
+# setuptools / uv build artefacts
+build/
+dist/

@@ -21,3 +21,107 @@ body {
     width: 100vw !important;
     /* this ensures you don’t get scroll from body being too wide, but usually not strictly needed */
 }
+
+/* ==========================================================================
+   Dark-theme overrides for Dash 4 components.
+
+   Dash 4 ships its own component stylesheet built for a light background, and
+   it reaches places a component's `style` prop cannot:
+
+     - dcc.Input/Textarea put `style` on a WRAPPER div; the real control is
+       `.dash-input-element` and Dash sets `color: inherit; background: inherit`
+       on it, so it picks up the layout's white text on a white field.
+     - dcc.RadioItems/Checklist ignore `labelStyle` entirely and colour their
+       labels with a dark navy design token, invisible on #121212.
+
+   So these have to be styled here rather than in the layout. Everything below
+   is theming only -- no layout or sizing -- so component `style` props keep
+   controlling width and spacing.
+   ========================================================================== */
+
+/* ---- text fields, number fields, textareas ---- */
+.dash-input-element,
+input.dash-input-element,
+.dash-textarea,
+textarea.dash-textarea {
+    background-color: #2a2a2a !important;
+    background: #2a2a2a !important;
+    color: #f5f5f5 !important;
+    border: 1px solid #444 !important;
+    border-radius: 4px !important;
+    caret-color: #00bcd4;
+}
+
+.dash-input-container,
+.dash-input-container.dash-input {
+    background: transparent !important;
+    border: none !important;
+}
+
+.dash-input-element::placeholder,
+.dash-textarea::placeholder {
+    color: #8a8a8a !important;
+    opacity: 1;                 /* Firefox dims placeholders by default */
+}
+
+.dash-input-element:focus,
+.dash-textarea:focus,
+.dash-input-element:focus-visible,
+.dash-textarea:focus-visible {
+    outline: none !important;
+    border-color: #00bcd4 !important;
+    box-shadow: 0 0 0 2px rgba(0, 188, 212, 0.25) !important;
+}
+
+/* Chrome paints autofilled fields a hard-coded pale yellow; the huge inset
+   shadow is the only way to repaint it. */
+.dash-input-element:-webkit-autofill {
+    -webkit-text-fill-color: #f5f5f5 !important;
+    -webkit-box-shadow: 0 0 0 1000px #2a2a2a inset !important;
+}
+
+/* ---- radio buttons and checklists ----
+   Scoped to .dash-radioitems / .dash-checklist on purpose: dropdown options
+   reuse .dash-options-list-option but sit on a WHITE popup, so an unscoped
+   rule here turns the dataset picker into white-on-white. */
+.dash-radioitems .dash-options-list-option,
+.dash-radioitems .dash-options-list-option-text,
+.dash-radioitems .dash-options-list-option span,
+.dash-checklist .dash-options-list-option,
+.dash-checklist .dash-options-list-option-text,
+.dash-checklist .dash-options-list-option span {
+    color: #f5f5f5 !important;
+}
+
+.dash-radioitems .dash-options-list-option.selected,
+.dash-radioitems .dash-options-list-option.selected .dash-options-list-option-text,
+.dash-checklist .dash-options-list-option.selected,
+.dash-checklist .dash-options-list-option.selected .dash-options-list-option-text {
+    color: #ffffff !important;
+}
+
+.dash-radioitems .dash-options-list-option,
+.dash-checklist .dash-options-list-option {
+    cursor: pointer;
+}
+
+.dash-radioitems .dash-options-list-option-checkbox,
+.dash-checklist .dash-options-list-option-checkbox {
+    accent-color: #00bcd4;
+}
+
+/* ---- dropdowns ----
+   The trigger and its popup stay light, so their text must stay dark. */
+.dash-dropdown-value,
+.dash-dropdown-placeholder,
+.dash-dropdown-option,
+.dash-dropdown-option .dash-options-list-option-text,
+.dash-dropdown-options .dash-options-list-option,
+.dash-dropdown-options .dash-options-list-option-text,
+.dash-dropdown-options .dash-options-list-option span {
+    color: #111 !important;
+}
+
+.dash-dropdown-placeholder {
+    color: #666 !important;
+}

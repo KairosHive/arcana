@@ -5,6 +5,13 @@ requires = ["setuptools"]
 [tool.setuptools.packages.find]
 include = ["arcana*"]
 
+# Without this the built wheel contains ONLY .py files: Dash would lose
+# assets/custom.css (the dark-theme overrides, so every input renders white on
+# white) and db.py would lose assets/labels_*.txt, which DEFAULT_LABELS points
+# at for cluster naming. Verified by inspecting `uv build --wheel` output.
+[tool.setuptools.package-data]
+arcana = ["assets/*"]
+
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 
@@ -18,16 +25,44 @@ description = "Latent space navigation for large-scale image databases using AI.
 dynamic = ["dependencies"]
 readme = {file = "README.md", content-type = "text/markdown"}
 keywords = ["latent space", "CLIP", "image retrieval", "generative", "dash", "exploration"]
-requires-python = ">=3.8"
+# arcana.py and db.py use PEP 604 ("X | None") and PEP 585 ("dict[int, str]")
+# annotations at runtime without `from __future__ import annotations`, so they
+# raise TypeError on import below 3.10. The previous ">=3.8" was never true.
+requires-python = ">=3.10"
 classifiers = [
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Operating System :: OS Independent",
 ]
 
+[project.optional-dependencies]
+# NVIDIA-only; the app runs without it and falls back automatically.
+gpu = ["xformers>=0.0.27"]
+dev = ["pytest>=7.0"]
+
 [project.scripts]
 arcana = "arcana.arcana:main"
 arcana-build-latent = "arcana.db:main"
+arcana-migrate = "arcana.legacy:main"
+arcana-relocate = "arcana.relocate:main"
+
+# --------------------------------------------------------------------------------------
+# uv configuration
+# --------------------------------------------------------------------------------------
+# torch, torchvision and torchaudio are pulled from PyTorch's own index so a CUDA
+# build is installed on machines that have an NVIDIA GPU. `explicit = true` means
+# only the packages mapped below use it; everything else still comes from PyPI.
+#
+# For a CPU-only install (what a packaged app should ship), point these at
+# https://download.pytorch.org/whl/cpu instead, or drop the [tool.uv.sources]
+# block entirely and let PyPI serve the default CPU wheels.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }

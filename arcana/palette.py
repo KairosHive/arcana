@@ -8,6 +8,10 @@
 
 import numpy as np
 import cv2
+try:
+    from .cvio import imread_unicode
+except ImportError:
+    from cvio import imread_unicode
 from sklearn.cluster import KMeans
 from typing import Tuple, Optional
 from functools import lru_cache
@@ -49,7 +53,7 @@ def _load_and_prepare(image_or_path, resize_dim: int = DEFAULT_RESIZE_DIM) -> np
         LAB image as np.ndarray (H, W, 3), dtype float32, L in [0,100], A/B in [-128,127]
     """
     if isinstance(image_or_path, str):
-        img = cv2.imread(image_or_path)
+        img = imread_unicode(image_or_path)
         if img is None:
             raise ValueError(f"Could not load image: {image_or_path}")
     else:

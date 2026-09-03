@@ -271,6 +271,72 @@ def test_envcheck_honours_environment_markers(tmp):
     assert envcheck.drift(lock) == []
 
 
+
+# ─────────────── datasets panel: answering step 2 from the folder ───────────
+def test_suggest_name_slugifies_the_folder(tmp):
+    from arcana.ui_datasets import suggest_name
+    assert suggest_name(r"C:\Users\me\Pictures\Holiday Photos 2026") == "holiday-photos-2026"
+    assert suggest_name("/home/a/japan") == "japan"
+    assert suggest_name("/home/a/my_pics") == "my_pics"
+    # trailing separator must not produce an empty name
+    assert suggest_name("/home/a/trip/") == "trip"
+
+
+def test_suggest_name_collapses_punctuation_runs(tmp):
+    from arcana.ui_datasets import suggest_name
+    assert suggest_name("/x/a  b -- c") == "a-b-c"
+
+
+def test_next_name_fills_an_empty_field(tmp):
+    from arcana.ui_datasets import next_name
+    assert next_name("/x/japan", "", None) == "japan"
+    assert next_name("/x/japan", None, None) == "japan"
+
+
+def test_next_name_replaces_its_own_previous_guess(tmp):
+    # Pointing at a second folder must not leave the first folder's name behind:
+    # a stale name looks deliberate, which is worse than an empty box.
+    from arcana.ui_datasets import next_name
+    assert next_name("/x/japan", "audio_dataset", "audio_dataset") == "japan"
+
+
+def test_next_name_never_overwrites_what_the_user_typed(tmp):
+    from arcana.ui_datasets import next_name
+    assert next_name("/x/japan", "my careful name", "audio_dataset") is None
+
+
+def test_next_name_declines_when_the_folder_yields_nothing(tmp):
+    from arcana.ui_datasets import next_name
+    assert next_name("/", "", None) is None
+
+
+def test_scan_both_counts_each_kind_in_one_walk(tmp):
+    import os
+    from arcana.ui_datasets import scan_both
+    os.makedirs(os.path.join(tmp, "sub"), exist_ok=True)
+    for i in range(3):
+        open(os.path.join(tmp, f"a{i}.jpg"), "wb").close()
+    for i in range(2):
+        open(os.path.join(tmp, "sub", f"b{i}.wav"), "wb").close()
+    open(os.path.join(tmp, "notes.txt"), "wb").close()
+
+    got = scan_both(tmp)
+    assert got["image"] == 3, got
+    assert got["audio"] == 2, got
+    assert len(got["sample_image"]) == 3
+    assert len(got["sample_audio"]) == 2
+
+
+def test_scan_both_recurses_and_ignores_other_files(tmp):
+    import os
+    from arcana.ui_datasets import scan_both
+    deep = os.path.join(tmp, "a", "b", "c")
+    os.makedirs(deep, exist_ok=True)
+    open(os.path.join(deep, "deep.png"), "wb").close()
+    open(os.path.join(tmp, "readme.md"), "wb").close()
+    got = scan_both(tmp)
+    assert got["image"] == 1 and got["audio"] == 0, got
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

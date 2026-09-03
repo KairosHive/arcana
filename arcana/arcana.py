@@ -1042,13 +1042,18 @@ app.layout = html.Div(
             [
                 dcc.RadioItems(
                     id="mode-select",
+                    # Datasets first, and selected by default. It is the only
+                    # tab that does anything useful with no dataset indexed --
+                    # the other three open on an empty plot and an empty
+                    # dropdown, which is a poor first thing to see and gives no
+                    # hint that indexing is the missing step.
                     options=[
+                        {"label": "Datasets", "value": "datasets"},
                         {"label": "Prompt Search", "value": "prompt"},
                         {"label": "Generate Story", "value": "story"},
                         {"label": "Moodboard", "value": "moodboard"},
-                        {"label": "Datasets", "value": "datasets"},
                     ],
-                    value="prompt",
+                    value="datasets",
                     # Dash 4 gives labels its own dark design-token colour, which is
                     # invisible on this dark ground. Set it explicitly so the app does
                     # not depend on any external or default stylesheet.

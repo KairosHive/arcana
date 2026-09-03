@@ -113,6 +113,36 @@ def _model_options(modality: str, n_items: int = 0, decode_ms: float | None = No
 # ──────────────────────────────────────────────────────────────────────────────
 # layout
 # ──────────────────────────────────────────────────────────────────────────────
+def _step(n, title, hint, body, **extra):
+    """
+    One numbered step.
+
+    Indexing is a sequence -- point at a folder, say what it is, press go -- but
+    the panel used to present it as one undifferentiated form with eight
+    controls and no indication of what depended on what. Numbering turns "which
+    of these do I have to fill in?" into "do this, then this".
+    """
+    return html.Div(
+        style={"display": "flex", "gap": "14px", "padding": "16px 0",
+               "borderTop": "1px solid " + LINE} | extra,
+        children=[
+            html.Div(str(n), style={
+                "flex": "0 0 24px", "height": "24px", "borderRadius": "100px",
+                "backgroundColor": SURFACE_2, "color": INK_DIM,
+                "border": "1px solid " + LINE, "fontSize": "12px",
+                "fontWeight": "700", "display": "flex", "alignItems": "center",
+                "justifyContent": "center", "marginTop": "1px"}),
+            html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                html.Div(title, style={"fontSize": "13px", "fontWeight": "600",
+                                       "color": INK, "marginBottom": "2px"}),
+                html.Div(hint, style={"fontSize": "12px", "color": INK_DIM,
+                                      "lineHeight": "1.5", "marginBottom": "12px",
+                                      "maxWidth": "68ch"}),
+                body,
+            ]),
+        ])
+
+
 def layout() -> html.Div:
     default_model = _models.default_for("image")
 
@@ -126,7 +156,7 @@ def layout() -> html.Div:
             # the progress timer.
             dcc.Store(id="dm-refresh", data=0, storage_type="memory"),
 
-            # ── running job ──────────────────────────────────────────────
+            # -- running job -------------------------------------------------
             html.Div(id="dm-job-card", style={**CARD, "display": "none"}, children=[
                 html.Div(style={"display": "flex", "alignItems": "baseline",
                                 "gap": "10px", "marginBottom": "10px"}, children=[
@@ -148,91 +178,120 @@ def layout() -> html.Div:
                          style={"marginTop": "12px"}),
             ]),
 
-            # ── add a dataset ────────────────────────────────────────────
+            # -- add a dataset, as numbered steps ----------------------------
             html.Div(style=CARD, children=[
-                html.Div("Add a dataset", style=SECTION_TITLE),
-                html.Div("Point Arcana at a folder. Everything inside it, including "
-                         "subfolders, is indexed in place \u2014 nothing is copied or moved.",
-                         style=SECTION_HINT),
+                html.Div("Add a dataset", style={**SECTION_TITLE, "fontSize": "15px"}),
+                html.Div("Arcana reads your files where they are. Nothing is copied, "
+                         "moved or uploaded \u2014 it builds a searchable index beside "
+                         "them and leaves the originals alone.",
+                         style={**SECTION_HINT, "marginBottom": "4px"}),
 
-                html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap",
-                                "alignItems": "flex-end", "marginBottom": "6px"}, children=[
-                    _field("Folder", html.Div(style={"display": "flex", "gap": "8px"}, children=[
-                        dcc.Input(id="dm-folder", type="text", debounce=True,
-                                  placeholder="/path/to/your/photos",
-                                  style={**INPUT, "flex": "1"}),
-                        html.Button("Browse\u2026", id="dm-browse", n_clicks=0,
-                                    style=BTN_QUIET),
-                    ]), grow="1", min_width="320px"),
-                    _field("Name", dcc.Input(id="dm-name", type="text", debounce=True,
-                                             placeholder="summer-trip", style=INPUT),
-                           grow="0", min_width="170px"),
-                ]),
-                html.Div(id="dm-folder-scan",
-                         style={"fontSize": "12px", "minHeight": "18px",
-                                "marginBottom": "14px"}),
+                _step(1, "Point at a folder",
+                      "Everything inside it, including subfolders, gets indexed.",
+                      html.Div([
+                          html.Div(style={"display": "flex", "gap": "8px",
+                                          "flexWrap": "wrap"}, children=[
+                              dcc.Input(id="dm-folder", type="text", debounce=True,
+                                        placeholder="paste a path, or use Browse",
+                                        style={**INPUT, "flex": "1",
+                                               "minWidth": "260px"}),
+                              html.Button("Browse\u2026", id="dm-browse", n_clicks=0,
+                                          style=BTN_QUIET),
+                          ]),
+                          html.Div(id="dm-folder-scan",
+                                   style={"fontSize": "12.5px", "minHeight": "20px",
+                                          "marginTop": "10px"}),
+                      ]),
+                      borderTop="none", paddingTop="10px"),
 
-                html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap",
-                                "alignItems": "flex-end", "marginBottom": "12px"}, children=[
-                    _field("Media type",
-                           dcc.Dropdown(id="dm-modality", clearable=False, value="image",
-                                        options=[{"label": "Images", "value": "image"},
-                                                 {"label": "Audio", "value": "audio"}],
-                                        style={"color": "#111", "fontSize": "12.5px"}),
-                           grow="0", min_width="150px"),
-                    _field("Encoder",
-                           dcc.Dropdown(id="dm-model", clearable=False,
-                                        value=default_model.id,
-                                        options=_model_options("image"),
-                                        style={"color": "#111", "fontSize": "12.5px"}),
-                           grow="1", min_width="330px"),
-                ]),
-                html.Div(id="dm-model-note",
-                         style={"fontSize": "12px", "color": INK_DIM, "lineHeight": "1.5",
-                                "marginBottom": "16px", "maxWidth": "70ch"}),
+                _step(2, "Check what it found",
+                      "The media type is detected from the folder -- change it if the "
+                      "guess is wrong. The name is what you will pick from the Dataset "
+                      "menu later.",
+                      html.Div(style={"display": "flex", "gap": "18px",
+                                      "flexWrap": "wrap", "alignItems": "flex-end"},
+                               children=[
+                          _field("Media type",
+                                 dcc.RadioItems(
+                                     id="dm-modality", value="image",
+                                     options=[{"label": "Images", "value": "image"},
+                                              {"label": "Audio", "value": "audio"}],
+                                     inline=True,
+                                     inputStyle={"marginRight": "6px",
+                                                 "accentColor": ACCENT},
+                                     labelStyle={"marginRight": "18px", "color": INK,
+                                                 "fontSize": "13px",
+                                                 "cursor": "pointer"}),
+                                 grow="0", min_width="190px"),
+                          _field("Name",
+                                 dcc.Input(id="dm-name", type="text", debounce=True,
+                                           placeholder="taken from the folder",
+                                           style=INPUT),
+                                 grow="1", min_width="200px"),
+                      ])),
 
-                html.Div(style={"borderTop": f"1px solid {LINE}", "paddingTop": "14px",
-                                "display": "flex", "gap": "16px", "flexWrap": "wrap",
-                                "alignItems": "center"}, children=[
-                    html.Div([
-                        html.Div("Also extract", style=FIELD_LABEL),
-                        dcc.Checklist(id="dm-features", inline=True,
-                                      inputStyle={"marginRight": "5px",
-                                                  "accentColor": ACCENT},
-                                      labelStyle={"marginRight": "16px", "color": INK,
-                                                  "fontSize": "12.5px"},
-                                      options=[
-                                          {"label": "Colour palette", "value": "palette"},
-                                          {"label": "Style / texture", "value": "style"},
-                                          {"label": "Thumbnails", "value": "thumbnails"},
-                                      ], value=[]),
-                    ], style={"flex": "1", "minWidth": "300px"}),
-                    html.Button("Start indexing", id="dm-start", n_clicks=0, style=BTN),
-                ]),
-                html.Div("Palette and style power the moodboard's similarity search. "
-                         "They cost time now and cannot be added later without "
-                         "re-reading every file.",
-                         style={"fontSize": "11px", "color": INK_FAINT,
-                                "marginTop": "10px", "maxWidth": "70ch"}),
-                html.Div(id="dm-start-status",
-                         style={"fontSize": "12px", "marginTop": "10px"}),
+                _step(3, "Choose the quality",
+                      "A stronger encoder understands your prompts better but takes "
+                      "longer to index. You can change your mind later by re-indexing.",
+                      html.Div([
+                          dcc.Dropdown(id="dm-model", clearable=False,
+                                       value=default_model.id,
+                                       options=_model_options("image"),
+                                       style={"color": "#111", "fontSize": "12.5px"}),
+                          html.Div(id="dm-model-note",
+                                   style={"fontSize": "12px", "color": INK_DIM,
+                                          "lineHeight": "1.5", "marginTop": "10px",
+                                          "maxWidth": "70ch", "minHeight": "18px"}),
+                      ])),
+
+                _step(4, "Extras, then go",
+                      "Palette and style power the moodboard's similarity search. They "
+                      "cost time now and cannot be added later without re-reading every "
+                      "file, so tick them if you think you might want them.",
+                      html.Div([
+                          dcc.Checklist(id="dm-features", inline=True,
+                                        inputStyle={"marginRight": "5px",
+                                                    "accentColor": ACCENT},
+                                        labelStyle={"marginRight": "18px", "color": INK,
+                                                    "fontSize": "12.5px"},
+                                        options=[
+                                            {"label": "Colour palette", "value": "palette"},
+                                            {"label": "Style / texture", "value": "style"},
+                                            {"label": "Thumbnails", "value": "thumbnails"},
+                                        ], value=[]),
+                          html.Div(style={"display": "flex", "gap": "14px",
+                                          "alignItems": "center", "flexWrap": "wrap",
+                                          "marginTop": "18px"}, children=[
+                              html.Button("Start indexing", id="dm-start", n_clicks=0,
+                                          style=BTN),
+                              html.Div(id="dm-start-status",
+                                       style={"fontSize": "12.5px", "flex": "1",
+                                              "minWidth": "200px"}),
+                          ]),
+                      ])),
             ]),
 
-            # ── existing datasets ────────────────────────────────────────
+            # -- existing datasets -------------------------------------------
             html.Div(style=CARD, children=[
                 html.Div("Your datasets", style=SECTION_TITLE),
-                html.Div("Green means every file is where the index expects it, and shows what each dataset carries.",
+                html.Div("Green means every file is still where the index expects it. "
+                         "The tags show what each dataset can do.",
                          style=SECTION_HINT),
                 html.Div(id="dm-list"),
             ]),
 
-            # ── encoders ─────────────────────────────────────────────────
-            html.Div(style=CARD, children=[
-                html.Div("Encoders", style=SECTION_TITLE),
+            # -- encoders, folded away ---------------------------------------
+            # Secondary: most people never open this. It matters when a model
+            # needs downloading or labels preparing, and step 3's note says so
+            # at the moment that is relevant.
+            html.Details(style={**CARD, "marginBottom": "4px"}, children=[
+                html.Summary("Encoders and labels", style={
+                    **SECTION_TITLE, "cursor": "pointer", "marginBottom": "0",
+                    "userSelect": "none"}),
                 html.Div("Downloaded once each. A dataset can only be searched with "
                          "the encoder that built it, which is why changing encoder "
                          "means re-indexing.",
-                         style=SECTION_HINT),
+                         style={**SECTION_HINT, "marginTop": "10px"}),
                 html.Div(id="dm-model-job",
                          style={"fontSize": "12px", "color": ACCENT,
                                 "minHeight": "17px", "marginTop": "4px"}),
@@ -247,6 +306,74 @@ def layout() -> html.Div:
 # ──────────────────────────────────────────────────────────────────────────────
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+
+
+def next_name(folder: str, current_name: str | None, last_suggested: str | None) -> str | None:
+    """
+    What the Name field should become when the folder changes, or None to leave
+    it alone.
+
+    Three cases, and the third is the one that is easy to get wrong:
+
+      empty field                 -> suggest from the folder
+      field holds our last guess  -> replace it; the user never chose it, and
+                                     leaving the previous folder's name behind
+                                     is worse than an empty box because it
+                                     looks deliberate
+      field holds anything else   -> the user typed it; never touch it
+    """
+    suggested = suggest_name(folder)
+    if not suggested:
+        return None
+    current = (current_name or "").strip()
+    if not current or current == (last_suggested or ""):
+        return suggested
+    return None
+
+
+def scan_both(folder: str, cap: int = 200_000, keep: int = 40) -> dict:
+    """
+    Count images and audio in one walk, keeping a sample of each.
+
+    Two separate scan_media() calls would walk the tree twice, and on a network
+    drive or a 80k-file library that is the slowest thing the panel does. The
+    counts are what let the media type be detected instead of asked for: a
+    folder of .wav files is not ambiguous, and making someone tell the app what
+    they just pointed it at is a question with a knowable answer.
+    """
+    n_img = n_aud = 0
+    s_img: list[str] = []
+    s_aud: list[str] = []
+    for root, _dirs, files in os.walk(folder):
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in IMAGE_EXTS:
+                n_img += 1
+                if len(s_img) < keep:
+                    s_img.append(os.path.join(root, f))
+            elif ext in AUDIO_EXTS:
+                n_aud += 1
+                if len(s_aud) < keep:
+                    s_aud.append(os.path.join(root, f))
+            if n_img + n_aud >= cap:
+                return {"image": n_img, "audio": n_aud,
+                        "sample_image": s_img, "sample_audio": s_aud}
+    return {"image": n_img, "audio": n_aud,
+            "sample_image": s_img, "sample_audio": s_aud}
+
+
+def suggest_name(folder: str) -> str:
+    """
+    A dataset name from the folder, so the field does not start empty.
+
+    Lowercased, spaces and punctuation to hyphens, because the name ends up in
+    filenames (index_<name>_<modality>.pkl).
+    """
+    base = os.path.basename(os.path.normpath(folder or ""))
+    cleaned = "".join(c if (c.isalnum() or c in "-_") else "-" for c in base).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned.lower()[:48]
 
 
 def scan_media(folder: str, modality: str, cap: int = 200_000,
@@ -349,9 +476,16 @@ def dataset_rows() -> list:
 
     found = discover()
     if not found:
-        return [html.Div("Nothing indexed yet.",
-                         style={"fontSize": "12.5px", "color": INK_FAINT,
-                                "padding": "6px 0"})]
+        return [html.Div(style={"padding": "10px 0"}, children=[
+            html.Div("No datasets yet.",
+                     style={"fontSize": "13px", "color": INK, "fontWeight": "600",
+                            "marginBottom": "4px"}),
+            html.Div("Use the steps above to point Arcana at a folder of images or "
+                     "audio. Once it has indexed one, it appears here and in the "
+                     "Dataset menu at the top of every tab.",
+                     style={"fontSize": "12px", "color": INK_DIM,
+                            "lineHeight": "1.5", "maxWidth": "62ch"}),
+        ])]
 
     rows = []
     for i, d in enumerate(found):
@@ -549,6 +683,46 @@ def register(app) -> None:
 
 
     @app.callback(
+        [Output("dm-modality", "value"), Output("dm-name", "value")],
+        Input("dm-folder", "value"),
+        State("dm-name", "value"),
+        prevent_initial_call=True,
+    )
+    def _detect(folder, current_name):
+        """
+        Answer step 2 on the user's behalf where the answer is knowable.
+
+        The media type and the name were both required fields with an obvious
+        default sitting right there in the folder they had just chosen. Asking
+        for them made a four-field form out of a one-field decision.
+
+        The name is only filled while the user has not typed one, so this never
+        overwrites a deliberate choice.
+        """
+        if not folder:
+            return no_update, no_update
+        path = os.path.expanduser(str(folder).strip().strip('"'))
+        if not os.path.isdir(path):
+            return no_update, no_update
+
+        counts = scan_both(path)
+        _last_seen["counts"] = counts
+        modality = "audio" if counts["audio"] > counts["image"] else "image"
+
+        # Replace the name when it is empty, or when it is still the suggestion
+        # we made for the previous folder -- otherwise pointing at a second
+        # folder leaves the first folder's name behind, which is worse than an
+        # empty field because it looks deliberate. A name the user actually
+        # typed is never touched.
+        chosen = next_name(path, current_name, _last_seen.get("suggested"))
+        name = no_update
+        if chosen is not None:
+            name = chosen
+            _last_seen["suggested"] = chosen
+        return modality, name
+
+
+    @app.callback(
         Output("dm-folder-scan", "children"),
         [Input("dm-folder", "value"), Input("dm-modality", "value")],
     )
@@ -564,11 +738,24 @@ def register(app) -> None:
         # Measure this folder rather than assuming a constant.
         _scanned_count["decode_ms"] = (
             _models.measure_decode_ms(sample) if (modality or "image") == "image" else None)
+        counts = _last_seen.get("counts") or {}
+        other = "audio" if (modality or "image") == "image" else "image"
+        n_other = counts.get(other, 0)
+
         if not n:
             kind = "images" if (modality or "image") == "image" else "audio files"
-            return html.Span("No " + kind + " found in that folder.",
-                             style={"color": "#e0a44a"})
-        return html.Span(f"Found {n:,} files.", style={"color": "#4caf50"})
+            msg = "No " + kind + " in that folder"
+            if n_other:
+                msg += f", but {n_other:,} {other} files are. Switch the media type above."
+            else:
+                msg += "."
+            return html.Span(msg, style={"color": WARN})
+
+        noun = "images" if (modality or "image") == "image" else "audio files"
+        msg = f"Found {n:,} {noun}."
+        if n_other:
+            msg += f" ({n_other:,} {other} files here too \u2014 index those separately.)"
+        return html.Span(msg, style={"color": OK})
 
     @app.callback(
         Output("dm-model-note", "children"),

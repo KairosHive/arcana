@@ -53,3 +53,7 @@ modflows/
 # setuptools / uv build artefacts
 build/
 dist/
+
+# Compiled installers. Arcana-Setup-*.exe is ~226 MB; build artefacts belong in
+# a release, not in git history.
+installer/out/

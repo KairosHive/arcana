@@ -44,45 +44,87 @@ def _run(cmd: list[str], **kw) -> str:
     return (out.stdout or "").strip()
 
 
+# The dialog script, passed via -EncodedCommand rather than -Command so it can
+# be written as readable multi-line PowerShell instead of one long
+# semicolon-separated string with nested quoting.
+#
+# Two things had to be got right, in order of discovery:
+#
+#   1. The owner form must be SHOWN. The first version created one, set TopMost
+#      and passed it to ShowDialog() without ever calling Show(). An unshown
+#      form owns nothing, so with the console hidden the dialog opened behind
+#      everything with no taskbar button -- the app said "Updating..." until it
+#      timed out, and each further click stacked another invisible dialog.
+#
+#   2. TopMost alone is not enough. Windows refuses to let a background process
+#      steal the foreground, so the dialog appeared above the terminal that
+#      spawned it but still below the browser the user was actually looking at.
+#      The documented way around the foreground lock is to attach this thread's
+#      input queue to the current foreground window's thread, which makes the
+#      two threads share focus state, and only then call SetForegroundWindow.
+#      The attachment is released immediately afterwards.
+_WIN_SCRIPT = r'''
+Add-Type -AssemblyName System.Windows.Forms | Out-Null
+Add-Type -AssemblyName System.Drawing | Out-Null
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Fg {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+  public static void Steal(IntPtr target) {
+    uint other = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
+    uint mine  = GetCurrentThreadId();
+    if (other != mine) AttachThreadInput(other, mine, true);
+    BringWindowToTop(target);
+    SetForegroundWindow(target);
+    if (other != mine) AttachThreadInput(other, mine, false);
+  }
+}
+"@
+
+$t = New-Object System.Windows.Forms.Form
+$t.StartPosition = 'Manual'
+$t.Location = New-Object System.Drawing.Point(-32000, -32000)
+$t.Size = New-Object System.Drawing.Size(1, 1)
+$t.ShowInTaskbar = $false
+$t.TopMost = $true
+$t.Show()
+$t.Activate()
+[System.Windows.Forms.Application]::DoEvents()
+[Fg]::Steal($t.Handle)
+
+$d = New-Object System.Windows.Forms.FolderBrowserDialog
+$d.Description = 'Choose the folder to index'
+$d.ShowNewFolderButton = $false
+__SELECTED__
+if ($d.ShowDialog($t) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }
+$d.Dispose()
+$t.Close()
+$t.Dispose()
+'''
+
+
 def _pick_windows(initial: str | None) -> str:
     # PowerShell + WinForms: present on every supported Windows, and needs no
     # Python, so it works from a frozen build.
-    #
-    # The owner form has to be SHOWN. The first version created one, set
-    # TopMost on it and passed it to ShowDialog() without ever calling Show().
-    # An unshown form owns nothing and cannot take the foreground, and because
-    # the host console is hidden (-WindowStyle Hidden, CREATE_NO_WINDOW) the
-    # dialog opened behind the browser with no taskbar button -- invisible and
-    # unreachable. The app just said "Updating..." until the timeout, and every
-    # further click stacked another invisible dialog.
-    #
-    # So: show a 1x1 owner off-screen, keep it out of the taskbar, activate it,
-    # and let it drag the dialog to the front.
-    start = (initial or "").replace("'", "''")
-    script = (
-        "Add-Type -AssemblyName System.Windows.Forms | Out-Null;"
-        "Add-Type -AssemblyName System.Drawing | Out-Null;"
-        "$t = New-Object System.Windows.Forms.Form;"
-        "$t.StartPosition = 'Manual';"
-        "$t.Location = New-Object System.Drawing.Point(-32000, -32000);"
-        "$t.Size = New-Object System.Drawing.Size(1, 1);"
-        "$t.ShowInTaskbar = $false;"
-        "$t.TopMost = $true;"
-        "$t.Show();"
-        "$t.Activate();"
-        "[System.Windows.Forms.Application]::DoEvents();"
-        "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
-        "$d.Description = 'Choose the folder to index';"
-        "$d.ShowNewFolderButton = $false;"
-        f"if ('{start}' -ne '' -and (Test-Path '{start}')) {{ $d.SelectedPath = '{start}' }};"
-        "if ($d.ShowDialog($t) -eq [System.Windows.Forms.DialogResult]::OK) "
-        "{ Write-Output $d.SelectedPath };"
-        "$d.Dispose();"
-        "$t.Close();"
-        "$t.Dispose()"
-    )
+    import base64
+
+    if initial:
+        start = initial.replace("'", "''")
+        seed = (f"if (Test-Path '{start}') {{ $d.SelectedPath = '{start}' }}")
+    else:
+        seed = ""
+    script = _WIN_SCRIPT.replace("__SELECTED__", seed)
+    # -EncodedCommand takes UTF-16LE base64, which sidesteps every quoting and
+    # newline question between here and PowerShell's parser.
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     return _run(["powershell", "-NoProfile", "-STA", "-NonInteractive",
-                 "-WindowStyle", "Hidden", "-Command", script])
+                 "-WindowStyle", "Hidden", "-EncodedCommand", encoded])
 
 
 def _pick_macos(initial: str | None) -> str:

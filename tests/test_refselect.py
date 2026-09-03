@@ -193,7 +193,15 @@ def test_dominant_colours_are_deterministic(tmp):
     bgr = np.asarray(im.convert("RGB"))[:, :, ::-1].copy()
     a = extract_dominant_colors(bgr, n_colors=3)
     b = extract_dominant_colors(bgr, n_colors=3)
-    assert np.allclose(a, b), (a, b)
+    # atol rather than np.allclose's defaults. sklearn's KMeans sums over
+    # chunks in parallel, so the order of floating-point reductions varies with
+    # thread scheduling and successive runs differ by ~1e-5 in LAB units --
+    # about 2e-5 of an 8-bit channel, which rounding to a hex swatch absorbs
+    # completely. The default rtol=1e-5/atol=1e-8 fails on the a* and b*
+    # channels of a neutral colour, which sit near zero, so this test was flaky
+    # in roughly one full run out of three. What it needs to pin is that the
+    # palette is stable, not that two float sums are bit-identical.
+    assert np.allclose(a, b, atol=0.01), (a, b)
 
 
 def test_unfiltered_strip_equals_the_palette_endpoint(tmp):

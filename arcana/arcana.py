@@ -1813,6 +1813,26 @@ html.Div(
 
 
 @app.callback(
+    Output("dataset-dropdown", "options"),
+    [Input("dm-refresh", "data"), Input("mode-select", "value")],
+)
+def refresh_dataset_options(_token, _mode):
+    """
+    Keep the dataset picker in step with what is actually indexed.
+
+    The options were computed once, while the layout was being built, and never
+    again -- so a dataset you had just finished indexing did not appear in the
+    dropdown until the app was restarted. It showed up under "Your datasets" in
+    the manager, which made it look as though indexing had half-failed.
+
+    dm-refresh is bumped by the datasets panel whenever a job finishes, which is
+    exactly when the set of datasets can have changed; the mode input covers
+    switching back from the manager after a relocation.
+    """
+    return get_matching_datasets()
+
+
+@app.callback(
     [
         Output("search-box", "style"),
         Output("num-images", "style"),

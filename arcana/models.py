@@ -45,16 +45,16 @@ MODELS: tuple[ModelInfo, ...] = (
         id="laion/CLIP-ViT-B-32-laion2B-s34B-b79K",
         label="CLIP ViT-B/32 — fast",
         modality=IMAGE, dim=512, download_mb=605,
-        cpu_ms=27.6, gpu_ms=0.6,
+        cpu_ms=21.9, gpu_ms=0.2,
         quality="good",
-        blurb="Indexes about 10,000 photos in five minutes without a graphics card. "
+        blurb="Indexes about 10,000 photos in seven minutes without a graphics card. "
               "The right choice unless you have a GPU or a small library.",
     ),
     ModelInfo(
         id="laion/CLIP-ViT-L-14-laion2B-s32B-b82K",
         label="CLIP ViT-L/14 — balanced",
         modality=IMAGE, dim=768, download_mb=1711,
-        cpu_ms=436.0, gpu_ms=3.8,
+        cpu_ms=378.5, gpu_ms=3.3,
         quality="better",
         blurb="Noticeably better at specific prompts. Comfortable with a GPU; "
               "over an hour per 10,000 photos without one.",
@@ -63,7 +63,7 @@ MODELS: tuple[ModelInfo, ...] = (
         id="laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
         label="CLIP ViT-H/14 — best quality",
         modality=IMAGE, dim=1024, download_mb=3945,
-        cpu_ms=877.0, gpu_ms=8.4,
+        cpu_ms=715.7, gpu_ms=7.1,
         quality="best",
         blurb="The strongest retrieval, and what existing Arcana datasets were "
               "built with. Needs a GPU to be practical.",
@@ -124,12 +124,24 @@ def gpu_available() -> bool:
 # --------------------------------------------------------------------------------------
 # estimates
 # --------------------------------------------------------------------------------------
-# Decoding one 24 MP JPEG costs ~143 ms on a single core. db.py decodes inside
-# the batch loop, one file at a time, so this is NOT divided by core count --
-# an earlier version did divide, and quoted 79 seconds for a job that took eight
-# minutes. Parallelising the decode is a worthwhile change; when it lands, this
-# is the constant to revisit.
-DECODE_MS_DEFAULT = 143.0
+# Everything an image costs before the model sees it, measured per image on 24 MP
+# JPEGs with the decode pool running:
+#
+#     decode, 1/4 scale, parallel     4.5 ms   <- DECODE_MS_DEFAULT
+#     cvtColor + CLIP image processor 13.6 ms  <- PREPROCESS_MS
+#
+# This used to be a single 143 ms constant, because every photograph was decoded
+# at full resolution and then resized from 24 megapixels down to 224x224 -- a
+# step that alone was 83% of indexing. cvio.imread_for_encoder decodes at
+# reduced scale now. Leaving 143 here would have made every estimate in the
+# panel about eight times too pessimistic for a GPU run.
+#
+# They are separate constants because measure_decode_ms() can measure the first
+# against the user's actual folder -- a 2 MP PNG and a 24 MP JPEG differ by an
+# order of magnitude -- while the second is fixed by the encoder's input size
+# and does not vary with the original.
+DECODE_MS_DEFAULT = 4.5
+PREPROCESS_MS = 13.6
 
 
 def estimate_seconds(model: ModelInfo, n_items: int, has_gpu: bool | None = None,
@@ -146,7 +158,7 @@ def estimate_seconds(model: ModelInfo, n_items: int, has_gpu: bool | None = None
         has_gpu = gpu_available()
     decode = DECODE_MS_DEFAULT if decode_ms is None else decode_ms
     model_ms = model.gpu_ms if has_gpu else model.cpu_ms
-    return ((decode + model_ms) * n_items) / 1000.0
+    return ((decode + PREPROCESS_MS + model_ms) * n_items) / 1000.0
 
 
 def humanize(seconds: float) -> str:
@@ -172,6 +184,14 @@ def measure_decode_ms(paths: list[str], sample: int = 6) -> float | None:
     """
     Time decoding a few real files so an estimate reflects this folder.
 
+    Times imread_for_encoder, which is what build() calls -- timing a
+    full-resolution imread_unicode would report roughly four times the cost
+    that indexing will actually pay, and the panel would quote a number nobody
+    could reproduce.
+
+    The result covers decode only; estimate_seconds adds the fixed
+    colour-conversion and processor cost on top.
+
     Returns None if nothing could be read; callers then fall back to the
     default constant.
     """
@@ -180,10 +200,10 @@ def measure_decode_ms(paths: list[str], sample: int = 6) -> float | None:
     if not paths:
         return None
     try:
-        from .cvio import imread_unicode
+        from .cvio import imread_for_encoder
     except ImportError:
         try:
-            from cvio import imread_unicode
+            from cvio import imread_for_encoder
         except ImportError:
             return None
     picks = random.Random(0).sample(paths, min(sample, len(paths)))
@@ -191,7 +211,7 @@ def measure_decode_ms(paths: list[str], sample: int = 6) -> float | None:
     for p in picks:
         t0 = time.perf_counter()
         try:
-            img = imread_unicode(p)
+            img = imread_for_encoder(p)
         except Exception:
             continue
         if img is None:

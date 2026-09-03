@@ -51,39 +51,54 @@ def test_default_depends_on_whether_there_is_a_gpu(tmp):
     assert M.default_for(M.AUDIO, has_gpu=False).modality == M.AUDIO
 
 
-def test_estimates_include_serial_decode(tmp):
+def test_estimates_add_preprocessing_to_model_time(tmp):
     """
-    db.py decodes each file inside the batch loop, one at a time, so decode is
-    ADDED to model time rather than hidden behind it.
+    Preprocessing is ADDED to model time, not hidden behind it.
 
-    An earlier version divided decode by core count, as though it were
-    parallel. That quoted 79 seconds for a midjourney run that actually took
-    eight minutes, and 4.6 minutes for a 10k CPU job that is really closer to
-    half an hour. These bounds exist so that optimism cannot creep back.
+    Two earlier versions got this wrong in opposite directions. The first
+    divided decode by core count as though it were parallel, and quoted 79
+    seconds for a job that took eight minutes. The second kept a single 143 ms
+    constant after cvio.imread_for_encoder made decoding ~8x cheaper, which
+    made every GPU estimate about eight times too pessimistic. Both bounds are
+    pinned here.
     """
     b, h = M.get(VIT_B), M.get(VIT_H)
-    d = M.DECODE_MS_DEFAULT
+    fixed = M.DECODE_MS_DEFAULT + M.PREPROCESS_MS
 
     sec_b = M.estimate_seconds(b, 10_000, has_gpu=False)
     sec_h = M.estimate_seconds(h, 10_000, has_gpu=False)
-    assert sec_b == (d + b.cpu_ms) * 10        # decode + model, per item
-    assert sec_h == (d + h.cpu_ms) * 10
-    assert sec_b > 1_200, "decode must not be divided away"
+    assert sec_b == (fixed + b.cpu_ms) * 10
+    assert sec_h == (fixed + h.cpu_ms) * 10
 
-    # A GPU makes the model nearly free, but decode still has to happen, so the
-    # two models converge rather than the job becoming instant.
+    # On the CPU the model dominates, so the two encoders are far apart.
+    assert sec_h > sec_b * 5, (sec_b, sec_h)
+
     gpu_b = M.estimate_seconds(b, 10_000, has_gpu=True)
     gpu_h = M.estimate_seconds(h, 10_000, has_gpu=True)
     assert gpu_b < sec_b and gpu_h < sec_h
-    assert abs(gpu_b - gpu_h) / gpu_b < 0.10, "on a GPU, decode should dominate"
+
+    # On a GPU preprocessing is what is left, so the heavy model is no longer
+    # an order of magnitude worse -- but it is not free either. Measured:
+    # 18.3 ms/image for B/32 against 25.2 for H/14.
+    assert 1.1 < gpu_h / gpu_b < 2.0, (gpu_b, gpu_h)
 
 
-def test_a_measured_decode_cost_beats_the_default(tmp):
-    """Midjourney PNGs decode in ~31 ms, not the 143 ms of a 24 MP JPEG."""
+def test_a_measured_decode_cost_changes_the_answer(tmp):
+    """
+    A folder of slow-to-decode files must produce a slower estimate.
+
+    decode_ms is now the decode term only -- reduced-scale decoding put the
+    default at 4.5 ms, so a folder that really costs 30 ms per file should push
+    the estimate up, where the old 143 ms default meant every measurement
+    pushed it down.
+    """
     b = M.get(VIT_B)
-    slow = M.estimate_seconds(b, 1_000, has_gpu=True)
-    fast = M.estimate_seconds(b, 1_000, has_gpu=True, decode_ms=31.0)
-    assert fast < slow / 3, "a measured cost should change the answer materially"
+    default = M.estimate_seconds(b, 1_000, has_gpu=True)
+    slow_folder = M.estimate_seconds(b, 1_000, has_gpu=True, decode_ms=30.0)
+    fast_folder = M.estimate_seconds(b, 1_000, has_gpu=True, decode_ms=1.0)
+    assert slow_folder > default > fast_folder, (fast_folder, default, slow_folder)
+    # and it must be a material difference, not a rounding one
+    assert slow_folder > default * 1.5, (default, slow_folder)
 
 
 def test_humanize_reads_like_a_person_wrote_it(tmp):

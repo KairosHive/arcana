@@ -39,13 +39,142 @@ _torch = None
 _encoder = None
 _device = None
 
-# Path to modflows directory (sibling to arcana/)
-MODFLOWS_DIR = Path(__file__).parent.parent / "modflows"
-CHECKPOINT_DIR = MODFLOWS_DIR / "modflows_color_encoder"
+# ── where ModFlows lives ─────────────────────────────────────────────────────
+# Two different things with two different lifetimes, and a frozen build puts
+# them in two different places:
+#
+#   the source (src/encoder.py, ~120 KB)  read-only, ships inside the app
+#   the checkpoint (~229 MB .pt)          too big to ship, downloaded once into
+#                                         the user's writable data directory
+#
+# In a dev checkout both sit under <repo>/modflows, which is what the original
+# single MODFLOWS_DIR assumed. That assumption breaks when frozen: __file__ is
+# then inside the PyInstaller bundle, which is read-only and wiped on
+# reinstall, so a checkpoint downloaded there would be lost and a checkpoint
+# shipped there would put 229 MB in every download.
+try:
+    from . import paths as _paths
+except ImportError:                                          # loose script
+    import paths as _paths
+
+ENV_MODFLOWS_DIR = "ARCANA_MODFLOWS_DIR"
+
 CHECKPOINT_NAMES = [
     "modflows_color_encoder_B6_dim_8195_iter_700000.pt",
     "modflows_color_encoder_B6_dim_8195_iter_751001.pt",
 ]
+CHECKPOINT_URL = ("https://huggingface.co/MariaLarchenko/modflows_color_encoder"
+                  "/resolve/main/{name}?download=true")
+
+
+def _candidate_dirs() -> list[Path]:
+    """Every place ModFlows might be, most specific first."""
+    out = []
+    env = os.environ.get(ENV_MODFLOWS_DIR)
+    if env:
+        out.append(Path(os.path.expanduser(env)))
+    # Dev checkout: modflows/ beside the arcana package.
+    out.append(Path(__file__).parent.parent / "modflows")
+    if getattr(sys, "frozen", False):
+        # Frozen build. PyInstaller 6 unpacks bundled data into an _internal/
+        # directory rather than beside the executable, and sys._MEIPASS is the
+        # only reliable way to name it (it is also the temp extraction dir for
+        # a onefile build). Checking the executable's own directory as well
+        # costs nothing and lets a user drop a modflows/ folder next to the app
+        # by hand.
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            out.append(Path(meipass) / "modflows")
+        out.append(Path(sys.executable).parent / "modflows")
+    # ...and anything downloaded, in the writable data directory.
+    out.append(Path(_paths.data_dir()) / "modflows")
+    seen, uniq = set(), []
+    for p in out:
+        s = str(p)
+        if s not in seen:
+            seen.add(s)
+            uniq.append(p)
+    return uniq
+
+
+def modflows_source_dir() -> Path | None:
+    """The directory holding src/encoder.py, or None if it is not installed."""
+    for d in _candidate_dirs():
+        if (d / "src" / "encoder.py").exists():
+            return d
+    return None
+
+
+def checkpoint_dir() -> Path:
+    """Where a checkpoint is, or where one should be downloaded to."""
+    for d in _candidate_dirs():
+        cd = d / "modflows_color_encoder"
+        if any((cd / n).exists() for n in CHECKPOINT_NAMES):
+            return cd
+    # Nothing found: downloads go to the writable data directory, never into
+    # the bundle.
+    return Path(_paths.data_dir()) / "modflows" / "modflows_color_encoder"
+
+
+def checkpoint_path() -> Path | None:
+    cd = checkpoint_dir()
+    for n in CHECKPOINT_NAMES:
+        if (cd / n).exists():
+            return cd / n
+    return None
+
+
+def status() -> dict:
+    """What the UI needs to explain the state of ModFlows in one line."""
+    src = modflows_source_dir()
+    ckpt = checkpoint_path()
+    return {
+        "source": str(src) if src else None,
+        "checkpoint": str(ckpt) if ckpt else None,
+        "ready": bool(src and ckpt),
+        "download_to": str(checkpoint_dir()),
+        "download_mb": 229,
+    }
+
+
+def download_checkpoint(progress=None) -> Path:
+    """
+    Fetch the ModFlows checkpoint over HTTPS.
+
+    This used to shell out to `git lfs install` and `git clone`, which assumes
+    both git and git-lfs are on PATH -- true on a developer's machine and false
+    on essentially every machine that would run a packaged build. It also
+    cloned the whole repository, which carries two 229 MB checkpoints plus LFS
+    history: 958 MB on disk for one file that is actually loaded.
+
+    `progress` is called as progress(fraction, message).
+    """
+    import urllib.request
+
+    name = CHECKPOINT_NAMES[0]
+    dest_dir = checkpoint_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / name
+    # Download beside the target and rename, so an interrupted download can
+    # never be mistaken for a usable checkpoint on the next run.
+    tmp = dest.with_suffix(".part")
+
+    req = urllib.request.Request(CHECKPOINT_URL.format(name=name),
+                                 headers={"User-Agent": "arcana"})
+    with urllib.request.urlopen(req) as resp, open(tmp, "wb") as fh:
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = resp.read(1 << 20)
+            if not chunk:
+                break
+            fh.write(chunk)
+            done += len(chunk)
+            if progress and total:
+                progress(done / total,
+                         f"Downloading colour model ({done >> 20} of {total >> 20} MB)")
+    os.replace(tmp, dest)
+    return dest
 
 
 def get_device_info() -> dict:
@@ -136,16 +265,15 @@ def check_cuda_installation() -> dict:
 
 def _ensure_modflows_available():
     """Make `import src.encoder` work, or explain why it cannot."""
-    # Check the source exists before touching sys.path, so a missing checkout
-    # produces the readable message rather than a bare ImportError later.
-    if not (MODFLOWS_DIR / "src" / "encoder.py").exists():
+    root = modflows_source_dir()
+    if root is None:
+        looked = "\n  ".join(str(d) for d in _candidate_dirs())
         raise ImportError(
-            f"ModFlows source not found at {MODFLOWS_DIR / 'src'}. "
-            "Clone it next to the arcana package, or use the LAB (Reinhard) "
-            "method, which needs no extra download."
+            "ModFlows source not found. Looked in:\n  " + looked +
+            "\nUse the LAB (Reinhard) method, which needs no extra download."
         )
 
-    root = str(MODFLOWS_DIR)
+    root = str(root)
     if root not in sys.path:
         # The guard used to test for <modflows>/src while inserting <modflows>,
         # so it never matched and sys.path grew on every failed attempt.
@@ -158,41 +286,22 @@ def _ensure_modflows_available():
         importlib.invalidate_caches()
 
 
-def _find_checkpoint() -> Path:
-    """Find the checkpoint file, downloading if necessary."""
-    # Check existing checkpoints
-    for name in CHECKPOINT_NAMES:
-        path = CHECKPOINT_DIR / name
-        if path.exists():
-            return path
-    
-    # Try to download from HuggingFace
-    if not CHECKPOINT_DIR.exists():
-        print("ModFlows checkpoint not found. Downloading from HuggingFace...")
-        try:
-            subprocess.run(["git", "lfs", "install"], cwd=str(MODFLOWS_DIR), check=True)
-            subprocess.run(
-                ["git", "clone", "https://huggingface.co/MariaLarchenko/modflows_color_encoder"],
-                cwd=str(MODFLOWS_DIR), check=True
-            )
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Failed to download checkpoint: {e}\n"
-                "Please download manually:\n"
-                "  cd modflows\n"
-                "  git lfs install\n"
-                "  git clone https://huggingface.co/MariaLarchenko/modflows_color_encoder"
-            )
-    
-    # Check again after download
-    for name in CHECKPOINT_NAMES:
-        path = CHECKPOINT_DIR / name
-        if path.exists():
-            return path
-    
-    raise FileNotFoundError(
-        f"No checkpoint found in {CHECKPOINT_DIR}. Expected one of: {CHECKPOINT_NAMES}"
-    )
+def _find_checkpoint(progress=None) -> Path:
+    """Find the checkpoint, downloading it once if it is not here yet."""
+    found = checkpoint_path()
+    if found is not None:
+        return found
+
+    dest = checkpoint_dir()
+    try:
+        return download_checkpoint(progress=progress)
+    except Exception as e:
+        raise FileNotFoundError(
+            f"The ModFlows colour model is not installed and could not be "
+            f"downloaded ({type(e).__name__}: {e}).\n"
+            f"Put {CHECKPOINT_NAMES[0]} in {dest}, or use the LAB (Reinhard) "
+            f"method, which needs no download."
+        ) from e
 
 
 def _get_encoder():

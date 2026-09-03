@@ -33,6 +33,13 @@ import tempfile
 import librosa
 from matplotlib import pyplot as plt
 
+try:
+    from . import ui_datasets as _ui_datasets
+    from . import ui_style as _ui
+except ImportError:
+    import ui_datasets as _ui_datasets
+    import ui_style as _ui
+
 # --- palette/style search ---
 try:
     from .db import search_by_palette, search_by_style, search_combined, load_palette_features, load_style_features
@@ -223,33 +230,24 @@ def thumb_b64_for(path: str) -> str | None:
     return encode_thumbnail(path)  # uses resolve_path inside
 
 
-# --- replace current signature + body ---
 def read_audio_mono(path, target_sr=24000, seconds=None, pad=False):
-    full = resolve_path(path)
-    if torchaudio is not None:
-        wav, sr = torchaudio.load(full)  # (ch, n)
-        wav = wav.mean(dim=0).numpy()
-    else:
-        wav, sr = sf.read(full, always_2d=False)
-        if wav.ndim == 2:
-            wav = wav.mean(axis=1)
+    """
+    Decode an audio file to mono float32 at target_sr.
 
-    # resample
-    if sr != target_sr:
-        if torchaudio is not None:
-            wav = torchaudio.functional.resample(torch.from_numpy(wav), sr, target_sr).numpy()
-        else:
-            import librosa
-            wav = librosa.resample(wav, orig_sr=sr, target_sr=target_sr)
-
-    # crop (no right-pad unless pad=True)
-    if seconds is not None:
-        max_len = int(target_sr * seconds)
-        if wav.shape[0] > max_len:
-            wav = wav[:max_len]
-        elif pad:
-            wav = np.pad(wav, (0, max_len - wav.shape[0]))
-    return wav.astype(np.float32), target_sr
+    This used to be a second, independent copy of db.read_audio_mono. The two
+    drifted: db's was fixed to try soundfile before torchaudio (torchaudio 2.9
+    dropped its own decoding backends and now raises ImportError unless
+    TorchCodec is installed), and this one was not -- so indexing audio worked
+    while every waveform and spectrogram in the UI 404'd. There is now one
+    implementation, and the import is deferred so app start-up does not pay for
+    db's model imports.
+    """
+    try:
+        from .db import read_audio_mono as _decode
+    except ImportError:                      # running as a loose script
+        from db import read_audio_mono as _decode
+    return _decode(resolve_path(path), target_sr=target_sr,
+                   seconds=seconds, pad=pad)
 
 
 @lru_cache(maxsize=20000)
@@ -977,8 +975,68 @@ def bulk_select(n_all, n_clear, current_states):
     return dash.no_update
 
 
+# The hover preview's geometry lives here so the layout and the callback cannot
+# disagree. The callback used to return its own position:fixed/top:100px/left:100px,
+# which pinned the preview over the mode menu regardless of what the layout said.
+HOVER_THUMB_STYLE = {
+    "position": "absolute",
+    "top": "6px",
+    # Left, not right: the plot's top-right corner already holds both the
+    # Plotly modebar and the cluster legend, and the preview covered the
+    # legend. The top-left is the only uncontested corner -- and because this
+    # is absolute inside #scatter-wrapper rather than fixed to the window, it
+    # still cannot reach the mode menu above the plot.
+    "left": "6px",
+    "zIndex": 20,
+    "maxWidth": "170px",
+    "maxHeight": "130px",
+    "borderRadius": "6px",
+    "border": "1px solid #ffffff55",
+    "boxShadow": "0 6px 20px #000c",
+    "backgroundColor": "#000",
+    "objectFit": "contain",
+    "pointerEvents": "none",
+}
+HOVER_THUMB_HIDDEN = {**HOVER_THUMB_STYLE, "display": "none"}
+HOVER_THUMB_SHOWN = {**HOVER_THUMB_STYLE, "display": "block"}
+
+
+
+def _blank_fig(message="Choose a dataset above to begin."):
+    """
+    The figure shown before a dataset is picked, and whenever one cannot be
+    loaded.
+
+    A bare go.Figure() renders with Plotly's default white paper, which on this
+    dark page is a large white rectangle -- the first thing you see on launch.
+    This matches the loaded plot's colours and says what to do next instead of
+    showing empty axes with meaningless 0..6 ticks.
+    """
+    fig = go.Figure()
+    fig.update_layout(
+        plot_bgcolor="#121212",
+        paper_bgcolor="#121212",
+        font=dict(color="#9a9aa2"),
+        margin=dict(l=0, r=0, t=0, b=0),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        annotations=[dict(
+            text=message, showarrow=False, xref="paper", yref="paper",
+            x=0.5, y=0.5, font=dict(size=13, color="#6c6c74"),
+        )],
+    )
+    return fig
+
+
 app.layout = html.Div(
-    style={"backgroundColor": "#121212", "color": "white", "padding": "20px", "height": "100vh"},
+    # A fixed-height flex column, so the app fills the window exactly instead
+    # of overflowing it by the height of the header. The plot flexes; the
+    # controls under it are pinned; only the side panel scrolls, and only
+    # when its own content needs it.
+    style={"backgroundColor": "#121212", "color": "white",
+           "padding": "14px 18px 10px", "height": "100vh",
+           "boxSizing": "border-box", "overflow": "hidden",
+           "display": "flex", "flexDirection": "column", "gap": "8px"},
     children=[
         html.Div(
             [
@@ -988,6 +1046,7 @@ app.layout = html.Div(
                         {"label": "Prompt Search", "value": "prompt"},
                         {"label": "Generate Story", "value": "story"},
                         {"label": "Moodboard", "value": "moodboard"},
+                        {"label": "Datasets", "value": "datasets"},
                     ],
                     value="prompt",
                     # Dash 4 gives labels its own dark design-token colour, which is
@@ -1028,14 +1087,9 @@ app.layout = html.Div(
                             style={"flex": "1", "marginRight": "8px", "minWidth": "260px"},
                         ),
                         html.Button("Check", id="relocate-check-btn", n_clicks=0,
-                                    style={"padding": "7px 16px", "marginRight": "6px",
-                                           "backgroundColor": "#2a2a2a", "color": "#fff",
-                                           "border": "1px solid #555", "borderRadius": "4px",
-                                           "cursor": "pointer", "fontSize": "12px"}),
+                                    style=_ui.button("secondary", marginRight="6px")),
                         html.Button("Relocate", id="relocate-apply-btn", n_clicks=0,
-                                    style={"padding": "7px 16px", "backgroundColor": "#00796b",
-                                           "color": "#fff", "border": "none", "borderRadius": "4px",
-                                           "cursor": "pointer", "fontWeight": "600", "fontSize": "12px"}),
+                                    style=_ui.button("success")),
                     ],
                     style={"display": "flex", "alignItems": "center"},
                 ),
@@ -1046,6 +1100,8 @@ app.layout = html.Div(
             style={"display": "none"},
         ),
 
+        _ui_datasets.layout(),
+
         dcc.Store(id="story-cache", storage_type="memory"),
         dcc.Store(id="grouped-results", storage_type="memory"),
         dcc.Store(id="carousel-state", storage_type="memory"),
@@ -1054,11 +1110,101 @@ app.layout = html.Div(
         dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
         dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Reference image (palette source for search/transfer)
         dcc.Store(id="selected-target-image", storage_type="memory"),  # Target image (receives colors in transfer)
+
+        # Everything below the header shares the remaining height. min-height:0
+        # is what actually lets a flex child shrink instead of forcing the page
+        # taller than the window.
+        html.Div(id="main-row", style={"flex": "1", "minHeight": "0",
+                                       "display": "flex", "gap": "18px"},
+                 children=[
+        # ── THE RAIL ────────────────────────────────────────────────────────
+        # The kept-image collection, evacuated from the right column. It used to
+        # sit inside #moodboard-section above the search results, which pushed
+        # #image-display to y~763 of an 812px column -- pressing "Find Similar"
+        # at top-left produced about 49 visible pixels of result in the far
+        # corner. Out here it is a fixed 240px band immediately left of the tool
+        # card, so whichever tool is live, the pictures it draws from are one
+        # 18px gutter away. Ground is BG, the most recessed surface: this is
+        # storage, not action.
+        html.Div(
+            id="moodboard-rail",
+            style={"display": "none"},
+            children=[
+                html.Div(id="moodboard-rail-count",
+                         children="COLLECTION",
+                         style={"fontSize": "11px", "fontWeight": "700",
+                                "letterSpacing": "1px", "color": _ui.INK_DIM,
+                                "flex": "0 0 auto", "marginBottom": "10px"}),
+                dcc.Upload(
+                    id="moodboard-external-upload",
+                    children=html.Div("Drop images to collect them here",
+                                      style={"textAlign": "center", "lineHeight": "1.35"}),
+                    style={"padding": "10px", "border": f"2px dashed {_ui.LINE}",
+                           "borderRadius": "8px", "backgroundColor": _ui.SURFACE,
+                           "cursor": "pointer", "fontSize": "11.5px",
+                           "color": _ui.INK_DIM, "flex": "0 0 auto"},
+                    style_active={"borderColor": _ui.INK_DIM},
+                    accept="image/*",
+                    multiple=False,
+                ),
+                # The only flexible item in the rail, so every rounding error in
+                # the column lands here rather than clipping the footer.
+                html.Div(id="moodboard-gallery", style={
+                    "display": "grid",
+                    "gridTemplateColumns": "repeat(auto-fill, minmax(78px, 1fr))",
+                    "gap": "8px",
+                    "flex": "1 1 0",
+                    "minHeight": "0",
+                    "overflowY": "auto",
+                    "overflowX": "hidden",
+                    "padding": "10px 2px",
+                    # Rows size to their content. Without this the grid stretches
+                    # each row to fill the column, and every thumbnail's
+                    # absolutely-positioned x badge lands at the bottom of the
+                    # rail instead of on its own picture.
+                    "alignContent": "start",
+                    "alignItems": "start",
+                }),
+                html.Div(
+                    [
+                        html.Button("Clear", id="clear-moodboard-btn", n_clicks=0,
+                                    style=_ui.button("secondary", padding="5px 11px",
+                                                     fontSize="12px")),
+                        html.Button("Save collection", id="save-moodboard-btn", n_clicks=0,
+                                    style=_ui.button("success", padding="5px 11px",
+                                                     fontSize="12px")),
+                    ],
+                    style={"display": "flex", "gap": "8px", "flex": "0 0 auto"},
+                ),
+                dcc.Input(
+                    id="moodboard-save-folder",
+                    type="text",
+                    placeholder="Folder name...",
+                    style=_ui.input_box(width="100%", marginTop="8px",
+                                        padding="6px 9px", fontSize="12px",
+                                        boxSizing="border-box"),
+                ),
+                # Height reserved so an async confirmation cannot reflow the rail.
+                html.Div(id="moodboard-save-confirmation",
+                         style={"fontSize": "11.5px", "color": _ui.OK,
+                                "minHeight": "16px", "marginTop": "6px",
+                                "flex": "0 0 auto"}),
+            ],
+        ),
         html.Div(
             [
                 html.Div(
-                    dcc.Graph(id="scatter-plot", style={"height": "80vh"}),
                     id="scatter-wrapper",
+                    # position:relative anchors the hover preview below to the
+                    # plot rather than to the window, where it used to sit on
+                    # top of the mode menu.
+                    style={"flex": "1", "minHeight": "0", "position": "relative"},
+                    children=[
+                        dcc.Graph(id="scatter-plot", figure=_blank_fig(),
+                                  style={"height": "100%"},
+                                  config={"responsive": True}),
+                        html.Img(id="hover-thumb", style=HOVER_THUMB_HIDDEN),
+                    ],
                 ),
                 html.Div(
                     [
@@ -1081,14 +1227,33 @@ app.layout = html.Div(
                             placeholder="Enter your story, one scene per line. (Press ENTER after each scene.)",
                             style={"width": "70%", "height": "70px", "marginRight": "10px"},
                         ),
-                        html.Button("Search", id="main-action-btn", n_clicks=0),
+                        html.Button("Search", id="main-action-btn", n_clicks=0, style=_ui.button("primary")),
                     ],
                     id="controls-bar",
-                    style={"display": "flex", "alignItems": "center", "marginTop": "10px"},
+                    style={"display": "flex", "alignItems": "center",
+                           "marginTop": "10px", "flex": "0 0 auto"},
                 ),
                 # Moodboard controls (hidden by default)
                 html.Div(
                     [
+                        # THE TOOL SWITCHER. Both cards mounted together are
+                        # ~930px against the ~810px the bench has, which is what
+                        # forced the bench to scroll and put "Find Similar" and
+                        # the Color Transfer panel at opposite ends of it. They
+                        # share no settings and write to the same output region,
+                        # so showing one at a time costs nothing and makes the
+                        # stage unambiguous about which control produced what.
+                        dcc.RadioItems(
+                            id="moodboard-tool",
+                            options=[
+                                {"label": "Find similar", "value": "search"},
+                                {"label": "Colour transfer", "value": "transfer"},
+                            ],
+                            value="search",
+                            className="tool-switch",
+                            labelStyle={"cursor": "pointer"},
+                            style={"marginBottom": "12px"},
+                        ),
                         # ─────────────────────────────────────────────────────────
                         # SIMILARITY SEARCH PANEL
                         # ─────────────────────────────────────────────────────────
@@ -1098,28 +1263,14 @@ app.layout = html.Div(
                                 html.Div(
                                     [
                                         html.Div("🔍 Similarity Search", style={"fontSize": "14px", "fontWeight": "600", "color": "#00bcd4"}),
-                                        dcc.Upload(
-                                            id="external-image-upload",
-                                            children=html.Div(
-                                                [
-                                                    html.Span("📁 Drop image here", style={"marginRight": "8px"}),
-                                                    html.Span("or click to browse", style={"color": "#888", "fontSize": "11px"}),
-                                                ],
-                                                style={"display": "flex", "alignItems": "center"},
-                                            ),
-                                            style={
-                                                "padding": "8px 16px",
-                                                "border": "2px dashed #3a5a5a",
-                                                "borderRadius": "6px",
-                                                "backgroundColor": "#1a2525",
-                                                "cursor": "pointer",
-                                                "fontSize": "12px",
-                                                "transition": "border-color 0.2s",
-                                            },
-                                            style_active={"borderColor": "#00bcd4"},
-                                            accept="image/*",
-                                            multiple=False,
-                                        ),
+                                        # The drop zone that used to live here is gone.
+                                        # It wrote to the same store as the gallery's,
+                                        # so one drop became the search query AND the
+                                        # colour-transfer palette source. There is now a
+                                        # single intake for the page, in the collection
+                                        # rail, and roles are assigned from the pictures.
+                                        html.Span("uses the [R] picture in the collection",
+                                                  style={"fontSize": "11px", "color": "#7a8a9a"}),
                                     ],
                                     style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "12px"},
                                 ),
@@ -1210,7 +1361,7 @@ app.layout = html.Div(
                                     id="moodboard-prompt",
                                     type="text",
                                     placeholder="Filter by prompt (optional)...",
-                                    style={"flex": "1", "minWidth": "150px", "padding": "8px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff"},
+                                    style=_ui.input_box(flex="1", minWidth="150px"),
                                 ),
                                 html.Div([
                                     html.Span("Results:", style={"fontSize": "11px", "color": "#888", "marginRight": "4px"}),
@@ -1220,7 +1371,7 @@ app.layout = html.Div(
                                         value=50,
                                         min=1,
                                         max=500,
-                                        style={"width": "60px", "padding": "6px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff", "textAlign": "center"},
+                                        style=_ui.input_box(width="60px", padding="6px", textAlign="center"),
                                     ),
                                 ], style={"display": "flex", "alignItems": "center"}),
                             ],
@@ -1266,12 +1417,13 @@ app.layout = html.Div(
                                     "Find Similar", 
                                     id="moodboard-search-btn", 
                                     n_clicks=0,
-                                    style={"padding": "8px 20px", "backgroundColor": "#00bcd4", "color": "#fff", "border": "none", "borderRadius": "4px", "fontWeight": "600", "cursor": "pointer"},
+                                    style=_ui.button("primary"),
                                 ),
                             ],
                             style={"display": "flex", "gap": "12px", "alignItems": "center", "flexWrap": "wrap"},
                         ),
                             ],
+                            id="similarity-card",
                             style={"padding": "14px", "backgroundColor": "#0a1a1a", "borderRadius": "8px", "border": "1px solid #2a4a4a"},
                         ),
                         
@@ -1351,17 +1503,85 @@ app.layout = html.Div(
                                             ),
                                             id="color-transfer-fullres-wrapper",
                                         ),
+                                        # ── the ModFlows model, if it is missing ──
+                                        # The neural method needs a 229 MB
+                                        # checkpoint that is deliberately not
+                                        # shipped in the build. Without this the
+                                        # only sign of that was an error message
+                                        # after pressing Transfer.
+                                        html.Div(id="ct-model-status",
+                                                 style={"marginBottom": "10px"}),
+                                        dcc.Interval(id="ct-poll", interval=700,
+                                                     disabled=True),
+                                        dcc.Store(id="ct-job",
+                                                  storage_type="memory"),
+                                        # ── WHICH COLOURS OF THE REFERENCE ──
+                                        # Both methods read the reference's whole
+                                        # colour distribution, so a picture that
+                                        # reads as teal but is 70% near-black
+                                        # transfers as mostly-black. These two
+                                        # ranges pick the pixels that actually get
+                                        # used; the swatches below show the result
+                                        # before you spend 30s on a transfer.
+                                        html.Details([
+                                            html.Summary(
+                                                "Which colours of the reference",
+                                                style={"fontSize": "11.5px",
+                                                       "color": "#00bcd4",
+                                                       "cursor": "pointer",
+                                                       "marginBottom": "8px",
+                                                       "userSelect": "none"},
+                                            ),
+                                            html.Div("Lightness", style=_ui.field_label()),
+                                            dcc.RangeSlider(
+                                                id="ct-lightness",
+                                                min=0, max=100, step=1, value=[0, 100],
+                                                marks={0: {"label": "black"},
+                                                       50: {"label": "mid"},
+                                                       100: {"label": "white"}},
+                                                tooltip={"placement": "bottom"},
+                                            ),
+                                            html.Div("Saturation", style=_ui.field_label(
+                                                marginTop="10px")),
+                                            dcc.RangeSlider(
+                                                id="ct-saturation",
+                                                min=0, max=100, step=1, value=[0, 100],
+                                                marks={0: {"label": "grey"},
+                                                       100: {"label": "vivid"}},
+                                                tooltip={"placement": "bottom"},
+                                            ),
+                                            html.Div(id="ct-swatches",
+                                                     style={"display": "flex", "height": "22px",
+                                                            "borderRadius": "4px",
+                                                            "overflow": "hidden",
+                                                            "marginTop": "12px",
+                                                            "border": f"1px solid {_ui.LINE}"}),
+                                            html.Div(id="ct-keep-note",
+                                                     style={"fontSize": "11px",
+                                                            "color": _ui.INK_DIM,
+                                                            "marginTop": "6px",
+                                                            "minHeight": "15px"}),
+                                            html.Button(
+                                                "Reset", id="ct-reset", n_clicks=0,
+                                                style=_ui.button("ghost", padding="4px 0",
+                                                                 fontSize="11px",
+                                                                 marginTop="4px"),
+                                            ),
+                                        ], style={"marginTop": "6px", "marginBottom": "10px",
+                                                  "borderTop": f"1px solid {_ui.LINE}",
+                                                  "paddingTop": "10px"}),
                                         html.Button(
                                             "Transfer Colors",
                                             id="color-transfer-btn",
                                             n_clicks=0,
-                                            style={"padding": "8px 20px", "backgroundColor": "#e040fb", "color": "#fff", "border": "none", "borderRadius": "4px", "fontWeight": "600", "cursor": "pointer"},
+                                            style=_ui.button("primary"),
                                         ),
                                     ],
                                     style={"display": "flex", "gap": "16px", "alignItems": "center", "flexWrap": "wrap"},
                                 ),
                                 html.Div(id="color-transfer-status", style={"marginTop": "10px", "fontSize": "12px"}),
                             ],
+                            id="transfer-card",
                             style={"marginTop": "16px", "padding": "14px", "backgroundColor": "#1a1a2a", "borderRadius": "8px", "border": "1px solid #4a3a5a"},
                         ),
                     ],
@@ -1375,7 +1595,8 @@ app.layout = html.Div(
                 ),
             ],
             id="left-column",
-            style={"width": "55%", "display": "inline-block", "verticalAlign": "top"},
+            style={"flex": "1 1 58%", "minWidth": "0", "minHeight": "0",
+                   "display": "flex", "flexDirection": "column"},
         ),
 
         # ───────────────────────── RIGHT COLUMN ─────────────────────────
@@ -1479,104 +1700,72 @@ html.Div(
                     },
                 ),
 
-                # Moodboard gallery (shown in moodboard mode) - NEW DESIGN
+                # THE RESULTS BAR. What used to live here was a single
+                # "MOODBOARD IMAGES" card that held the kept-image collection AND,
+                # below an <hr>, the controls that act on the *search results* --
+                # two unrelated collections in one container, with the selection
+                # buttons ~400px above the results they act on. The collection has
+                # moved out to #moodboard-rail; what remains is only the bar that
+                # governs the results, and it sticks to the top of the results
+                # scrollport so it can never be scrolled away from them.
                 html.Div(
                     [
-                        # Header with distinct styling
                         html.Div(
                             [
-                                html.Span("📁 MOODBOARD IMAGES", style={"fontWeight": "700", "color": "#fff", "fontSize": "13px", "letterSpacing": "1px"}),
-                                html.Span(" — [R] = Reference (palette source)  [T] = Target (receives colors)", style={"fontSize": "11px", "color": "#aaa", "marginLeft": "10px"}),
-                            ],
-                            style={"marginBottom": "12px", "paddingBottom": "10px", "borderBottom": "1px solid #3a4a5a"},
-                        ),
-                        # Drop zone for external images
-                        dcc.Upload(
-                            id="moodboard-external-upload",
-                            children=html.Div(
-                                [html.Span("📁 Drop external image", style={"marginRight": "8px"}), html.Span("or click to add", style={"color": "#7a8a9a", "fontSize": "11px"})],
-                                style={"display": "flex", "alignItems": "center", "justifyContent": "center"},
-                            ),
-                            style={"padding": "10px", "border": "2px dashed #3a4a5a", "borderRadius": "6px", "backgroundColor": "#1a2535", "cursor": "pointer", "fontSize": "12px", "marginBottom": "12px", "textAlign": "center"},
-                            style_active={"borderColor": "#00bcd4"},
-                            accept="image/*",
-                            multiple=False,
-                        ),
-                        # Gallery grid with toggle badges
-                        html.Div(id="moodboard-gallery", style={
-                            "display": "grid", 
-                            "gridTemplateColumns": "repeat(auto-fill, minmax(100px, 1fr))",
-                            "gap": "10px",
-                            "maxHeight": "280px",
-                            "overflowY": "auto",
-                            "padding": "6px",
-                        }),
-                        html.Div(
-                            [
-                                html.Button(
-                                    "Clear References", 
-                                    id="clear-moodboard-btn", 
-                                    n_clicks=0, 
-                                    style={"padding": "6px 14px", "backgroundColor": "#444", "border": "none", "borderRadius": "4px", "color": "#ccc", "fontSize": "12px", "cursor": "pointer"},
+                                html.Span("RESULTS", id="moodboard-results-count",
+                                          style={"fontWeight": "700", "fontSize": "12px",
+                                                 "letterSpacing": "1px", "color": _ui.INK}),
+                                html.Button("Select all", id="moodboard-select-all", n_clicks=0,
+                                            style=_ui.button("secondary", padding="5px 11px",
+                                                             fontSize="12px")),
+                                html.Button("Clear", id="moodboard-clear-all", n_clicks=0,
+                                            style=_ui.button("secondary", padding="5px 11px",
+                                                             fontSize="12px")),
+                                dcc.Input(
+                                    id="moodboard-results-folder",
+                                    type="text",
+                                    placeholder="Folder to save selected results...",
+                                    style=_ui.input_box(flex="1", minWidth="140px",
+                                                        padding="5px 9px", fontSize="12px"),
                                 ),
-                                html.Button(
-                                    "Save Moodboard", 
-                                    id="save-moodboard-btn", 
-                                    n_clicks=0, 
-                                    style={"padding": "6px 14px", "backgroundColor": "#2a6a4f", "border": "none", "borderRadius": "4px", "color": "#fff", "fontSize": "12px", "cursor": "pointer"},
-                                ),
+                                html.Button("Save selected", id="moodboard-save-selected", n_clicks=0,
+                                            style=_ui.button("success", padding="5px 11px",
+                                                             fontSize="12px")),
                             ],
-                            style={"display": "flex", "gap": "8px", "marginTop": "10px"},
+                            style={"display": "flex", "alignItems": "center", "gap": "8px",
+                                   "flexWrap": "wrap"},
                         ),
-                        # Moodboard save folder input
-                        dcc.Input(
-                            id="moodboard-save-folder",
-                            type="text",
-                            placeholder="Folder name to save moodboard images...",
-                            style={"width": "100%", "marginTop": "8px", "padding": "8px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff"},
-                        ),
-                        html.Div(id="moodboard-save-confirmation", style={"marginTop": "6px", "fontSize": "12px"}),
-                        
-                        # Divider
-                        html.Hr(style={"margin": "16px 0", "borderColor": "#444"}),
-                        
-                        # Selection controls for results
-                        html.Div("Results Selection", style={"fontWeight": "600", "color": "#888", "fontSize": "12px", "marginBottom": "8px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
-                        html.Div(
-                            [
-                                html.Button("Select All", id="moodboard-select-all", n_clicks=0, 
-                                           style={"padding": "6px 14px", "backgroundColor": "#333", "border": "none", "borderRadius": "4px", "color": "#ccc", "fontSize": "12px", "cursor": "pointer"}),
-                                html.Button("Clear All", id="moodboard-clear-all", n_clicks=0,
-                                           style={"padding": "6px 14px", "backgroundColor": "#333", "border": "none", "borderRadius": "4px", "color": "#ccc", "fontSize": "12px", "cursor": "pointer"}),
-                            ],
-                            style={"display": "flex", "gap": "8px", "marginBottom": "10px"},
-                        ),
-                        html.Button("Save Selected Images", id="moodboard-save-selected", n_clicks=0,
-                                   style={"width": "100%", "padding": "8px", "backgroundColor": "#00796b", "border": "none", "borderRadius": "4px", "color": "#fff", "fontWeight": "600", "cursor": "pointer"}),
-                        dcc.Input(
-                            id="moodboard-results-folder",
-                            type="text",
-                            placeholder="Folder name to save selected results...",
-                            style={"width": "100%", "marginTop": "8px", "padding": "8px", "borderRadius": "4px", "border": "1px solid #444", "backgroundColor": "#2a2a2a", "color": "#fff"},
-                        ),
-                        html.Div(id="moodboard-results-confirmation", style={"marginTop": "6px", "fontSize": "12px"}),
+                        html.Div(id="moodboard-results-confirmation",
+                                 style={"fontSize": "12px", "color": _ui.OK}),
                     ],
                     id="moodboard-section",
-                    style={"display": "none", "marginBottom": "16px", "padding": "14px", 
-                           "backgroundColor": "#1e1e1e", "borderRadius": "10px", "border": "1px solid #333"},
+                    # Sticky against #right-column's scrollport. The negative side
+                    # margins bleed the bar through the wrapper's padding so it
+                    # spans the full stage width instead of leaving gutters.
+                    style={"display": "none", "position": "sticky", "top": "0",
+                           "zIndex": 5, "margin": "0 -12px 12px", "padding": "9px 12px",
+                           "backgroundColor": _ui.BG,
+                           "borderBottom": f"2px solid {_ui.ACCENT}"},
                 ),
 
                 # Results list
                 html.Div(
                     id="image-display",
-                    style={"overflowY": "scroll", "overflowX": "hidden", "maxHeight": "80vh"},
+                    style={"overflowX": "hidden"},
                 ),
+
+                # The colour-transfer output. Same region as the search results
+                # -- only one of the two is ever mounted, so the stage always
+                # has exactly one plausible author.
+                html.Div(id="transfer-preview", style={"display": "none"}),
 
                 # Bulk selection buttons (hidden in moodboard mode)
                 html.Div(
                     [
-                        html.Button("Select All", id="select-all", n_clicks=0),
-                        html.Button("Clear All", id="clear-all", n_clicks=0),
+                        html.Button("Select All", id="select-all", n_clicks=0,
+                                    style=_ui.button("secondary", padding="6px 12px", fontSize="12px")),
+                        html.Button("Clear All", id="clear-all", n_clicks=0,
+                                    style=_ui.button("secondary", padding="6px 12px", fontSize="12px")),
                     ],
                     id="bulk-selection-btns",
                     style={"display": "flex", "gap": "8px", "marginTop": "8px"},
@@ -1585,7 +1774,8 @@ html.Div(
                 # Save actions (hidden in moodboard mode)
                 html.Div(
                     [
-                        html.Button("Save Selected Images", id="save-button", style={"marginTop": "8px"}),
+                        html.Button("Save Selected Images", id="save-button",
+                                    style=_ui.button("success", marginTop="8px")),
                         dcc.Input(
                             id="save-folder",
                             type="text",
@@ -1595,7 +1785,8 @@ html.Div(
                     ],
                     id="save-actions-section",
                 ),
-                html.Button("Save Story", id="save-story-btn", style={"marginTop": "10px", "display": "none"}),
+                html.Button("Save Story", id="save-story-btn",
+                            style=_ui.button("success", marginTop="10px", display="none")),
                 html.Div(id="save-confirmation", style={"marginTop": "10px"}),
                 html.Div(id="moodboard-added-notification", style={"marginTop": "6px"}),
             ],
@@ -1609,26 +1800,12 @@ html.Div(
         ),
     ],
     id="right-column",
-    style={"width": "42%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"},
+    style={"flex": "0 0 40%", "minWidth": "0", "minHeight": "0",
+           "overflowY": "auto", "overflowX": "hidden"},
 ),
+        ]),   # /main-row
 
-# hover-thumb unchanged
-html.Img(
-    id="hover-thumb",
-    style={
-        "display": "none",
-        "position": "fixed",
-        "top": "8px",
-        "left": "8px",
-        "zIndex": 1000,
-        "maxWidth": "160px",
-        "maxHeight": "120px",
-        "border": "2px solid #fff",
-        "boxShadow": "0 0 12px #000",
-        "backgroundColor": "#000",
-        "objectFit": "contain",
-    },
-)
+
 
 
     ],
@@ -1649,30 +1826,74 @@ html.Img(
         Output("right-column", "style"),
         Output("bulk-selection-btns", "style"),
         Output("save-actions-section", "style"),
+        Output("datasets-panel", "style"),
+        Output("main-row", "style"),
+        Output("moodboard-rail", "style"),
+        Output("similarity-card", "style"),
+        Output("transfer-card", "style"),
+        Output("image-display", "style"),
+        Output("transfer-preview", "style"),
     ],
-    Input("mode-select", "value"),
+    [Input("mode-select", "value"), Input("moodboard-tool", "value")],
 )
-def toggle_inputs(mode):
+def toggle_inputs(mode, tool):
     controls_visible = {"display": "flex", "alignItems": "center", "marginTop": "10px"}
     controls_hidden = {"display": "none"}
     moodboard_controls_visible = {"display": "block", "marginTop": "10px", "padding": "10px", "backgroundColor": "#1a1a1a", "borderRadius": "5px"}
-    moodboard_section_visible = {"display": "block", "marginBottom": "12px", "padding": "10px", 
-                                  "backgroundColor": "#1e1e1e", "borderRadius": "5px"}
+    # The results bar. This callback owns moodboard-section's style, so the
+    # sticky geometry has to be stated here too -- the style set in the layout
+    # is overwritten on every mode change.
+    moodboard_section_visible = {"display": "block", "position": "sticky", "top": "0",
+                                 "zIndex": 5, "margin": "0 -12px 12px",
+                                 "padding": "9px 12px", "backgroundColor": _ui.BG,
+                                 "borderBottom": f"2px solid {_ui.ACCENT}"}
     moodboard_section_hidden = {"display": "none"}
     
     # Column styles
-    left_col_normal = {"width": "55%", "display": "inline-block", "verticalAlign": "top"}
-    right_col_normal = {"width": "42%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"}
+    # Flex, not inline-block percentages: a flex child with min-height:0 can
+    # shrink to fit the window, which is what keeps the app on one screen.
+    left_col_normal = {"flex": "1 1 58%", "minWidth": "0", "minHeight": "0",
+                       "display": "flex", "flexDirection": "column"}
+    right_col_normal = {"flex": "0 0 40%", "minWidth": "0", "minHeight": "0",
+                        "overflowY": "auto", "overflowX": "hidden"}
     
-    # For moodboard: small left (just moodboard controls), larger right (results)
-    left_col_moodboard = {"width": "30%", "display": "inline-block", "verticalAlign": "top"}
-    right_col_moodboard = {"width": "67%", "display": "inline-block", "paddingLeft": "3%", "verticalAlign": "top"}
+    # Moodboard is three bands reading materials -> work -> output: the 240px
+    # rail (above), the bench, and the stage. The bench is narrower than the old
+    # 31% because the rail now carries the collection.
+    left_col_moodboard = {"flex": "0 0 26%", "minWidth": "0", "minHeight": "0",
+                          "overflowY": "auto", "overflowX": "hidden"}
+    # The 12px side padding is what the sticky results bar bleeds back through
+    # with its negative margins, so the bar spans the full stage width.
+    right_col_moodboard = {"flex": "1 1 auto", "minWidth": "0", "minHeight": "0",
+                           "overflowY": "auto", "overflowX": "hidden",
+                           "padding": "0 12px"}
     
-    scatter_visible = {"display": "block"}
+    scatter_visible = {"flex": "1", "minHeight": "0", "position": "relative"}
     scatter_hidden = {"display": "none"}
     
     bulk_btns_visible = {"display": "flex", "gap": "8px", "marginTop": "8px"}
     save_section_visible = {"display": "block"}
+
+    main_row_visible = {"flex": "1", "minHeight": "0", "display": "flex", "gap": "18px"}
+    main_row_hidden = {"display": "none"}
+
+    # The rail exists only in moodboard mode. Fixed width, full height, its own
+    # flex column so the gallery inside it is the single flexible item.
+    rail_visible = {"display": "flex", "flexDirection": "column",
+                    "flex": "0 0 240px", "minHeight": "0",
+                    "backgroundColor": _ui.BG, "border": f"1px solid {_ui.LINE}",
+                    "borderRadius": "10px", "padding": "10px",
+                    "boxSizing": "border-box"}
+    rail_hidden = {"display": "none"}
+
+    # Which tool is mounted in the bench, and therefore what the stage shows.
+    hidden = {"display": "none"}
+    sim_card = {"padding": "14px", "backgroundColor": "#0a1a1a",
+                "borderRadius": "8px", "border": "1px solid #2a4a4a"}
+    xfer_card = {"padding": "14px", "backgroundColor": "#1a1a2a",
+                 "borderRadius": "8px", "border": "1px solid #4a3a5a"}
+    results_list = {"overflowX": "hidden"}
+    transfer_stage = {"display": "block", "overflowX": "hidden"}
     
     if mode == "prompt":
         return (
@@ -1688,6 +1909,13 @@ def toggle_inputs(mode):
             right_col_normal,
             bulk_btns_visible,
             save_section_visible,
+            {"display": "none"},
+            main_row_visible,
+            rail_hidden,
+            hidden,
+            hidden,
+            results_list,
+            hidden,
         )
     elif mode == "story":
         return (
@@ -1703,8 +1931,15 @@ def toggle_inputs(mode):
             right_col_normal,
             bulk_btns_visible,
             save_section_visible,
+            {"display": "none"},
+            main_row_visible,
+            rail_hidden,
+            hidden,
+            hidden,
+            results_list,
+            hidden,
         )
-    else:  # moodboard
+    elif mode == "moodboard":
         return (
             {"display": "none"},
             {"display": "none"},
@@ -1712,12 +1947,47 @@ def toggle_inputs(mode):
             "Search",
             controls_hidden,
             moodboard_controls_visible,
-            moodboard_section_visible,
+            moodboard_section_visible if tool != "transfer" else moodboard_section_hidden,
             scatter_hidden,
             left_col_moodboard,
             right_col_moodboard,
             {"display": "none"},  # hide bulk selection
             {"display": "none"},  # hide save actions
+            {"display": "none"},  # hide the dataset manager
+            main_row_visible,
+            rail_visible,
+            sim_card if tool != "transfer" else hidden,
+            xfer_card if tool == "transfer" else hidden,
+            hidden if tool == "transfer" else results_list,
+            transfer_stage if tool == "transfer" else hidden,
+        )
+    else:  # datasets
+        # The manager owns the whole width: there is no scatter to show, and
+        # nothing here searches.
+        return (
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+            "Search",
+            controls_hidden,
+            controls_hidden,
+            moodboard_section_hidden,
+            scatter_hidden,
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+            # This panel is a child of the root overflow:hidden flex column, so
+            # it has to claim the leftover height and scroll itself -- with a
+            # bare display:block its dataset list was clipped, not scrollable.
+            {"display": "block", "flex": "1", "minHeight": "0",
+             "overflowY": "auto", "overflowX": "hidden"},
+            main_row_hidden,
+            rail_hidden,
+            hidden,
+            hidden,
+            hidden,
+            hidden,
         )
 
 
@@ -1725,18 +1995,63 @@ def toggle_inputs(mode):
 # MOODBOARD CALLBACKS
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def _persist_upload(contents: str, filename: str | None) -> str | None:
+    """
+    Write a browser upload to disk and return its path.
+
+    Content-addressed, so dropping the same picture twice does not litter the
+    directory with duplicates. Registering the root matters: the media
+    endpoints only serve allowlisted paths, and without it an uploaded image
+    renders as a broken thumbnail.
+    """
+    if not contents:
+        return None
+    try:
+        _content_type, content_string = contents.split(",", 1)
+    except ValueError:
+        return None
+    decoded = base64.b64decode(content_string)
+
+    ext = os.path.splitext(filename)[1] if filename else ".jpg"
+    if not ext:
+        ext = ".jpg"
+
+    output_dir = _paths.ensure_dir(os.path.join(OUTPUT_DIR, "_external_refs"))
+    register_media_root(OUTPUT_DIR)
+
+    content_hash = hashlib.md5(decoded).hexdigest()[:12]
+    temp_path = os.path.join(output_dir, f"ext_{content_hash}{ext}")
+    if not os.path.exists(temp_path):
+        with open(temp_path, "wb") as fh:
+            fh.write(decoded)
+    return temp_path
+
+
 @app.callback(
     Output("moodboard-store", "data"),
     [
         Input({"type": "add-to-moodboard", "index": ALL}, "n_clicks"),
         Input({"type": "remove-from-moodboard", "index": ALL}, "n_clicks"),
         Input("clear-moodboard-btn", "n_clicks"),
+        Input("moodboard-external-upload", "contents"),
     ],
-    State("moodboard-store", "data"),
+    [State("moodboard-store", "data"),
+     State("moodboard-external-upload", "filename")],
     prevent_initial_call=True,
 )
-def update_moodboard(add_clicks, remove_clicks, clear_clicks, current_moodboard):
-    """Add or remove images from moodboard."""
+def update_moodboard(add_clicks, remove_clicks, clear_clicks, upload_contents,
+                     current_moodboard, upload_filename):
+    """
+    Add or remove images from the collection.
+
+    The drop zone writes here and nowhere else. There used to be two upload
+    zones -- one in the Similarity Search card, one by the gallery -- and BOTH
+    wrote to selected-moodboard-image, so dropping a picture to search with it
+    silently also made it the colour-transfer palette source. Now there is one
+    intake for the whole page and it does one thing: the picture joins the
+    collection. Giving it a job is a separate, deliberate click on [R] or [T].
+    """
     current_moodboard = current_moodboard or []
     
     # Use ctx.triggered to get actual trigger info including value
@@ -1753,7 +2068,13 @@ def update_moodboard(add_clicks, remove_clicks, clear_clicks, current_moodboard)
     
     if "clear-moodboard-btn" in trigger_prop:
         return []
-    
+
+    if "moodboard-external-upload" in trigger_prop and upload_contents:
+        path = _persist_upload(upload_contents, upload_filename)
+        if path and path not in current_moodboard:
+            current_moodboard.append(path)
+        return current_moodboard
+
     triggered_id = ctx.triggered_id
     if isinstance(triggered_id, dict):
         path = triggered_id["index"]
@@ -1874,8 +2195,18 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
     """Render clickable thumbnails in the moodboard gallery with [R] and [T] toggle badges."""
     moodboard = moodboard or []
     if not moodboard:
-        return [html.Div("No images in moodboard. Use Search mode and click '+ Moodboard' to add images.", 
-                        style={"color": "#7a8a9a", "fontStyle": "italic", "padding": "20px", "textAlign": "center"})]
+        # gridColumn spans the whole track list: the gallery is a grid of ~100px
+        # columns, so without this the sentence wraps to one word per line.
+        return [html.Div(
+            [html.Div("Nothing here yet.",
+                      style={"color": _ui.INK, "fontWeight": "600",
+                             "marginBottom": "4px"}),
+             html.Div("Search for images, then use “+ Moodboard” to collect "
+                      "the ones you want to work from.",
+                      style={"color": _ui.INK_DIM})],
+            style={"gridColumn": "1 / -1", "padding": "26px 20px",
+                   "textAlign": "center", "fontSize": "12.5px",
+                   "lineHeight": "1.5"})]
     
     thumbnails = []
     for path in moodboard:
@@ -1919,7 +2250,7 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
                     style={
                         "position": "absolute", "top": "4px", "left": "4px",
                         "width": "22px", "height": "22px", "borderRadius": "4px",
-                        "backgroundColor": "#00bcd4" if is_ref else "#2a3a4a",
+                        "backgroundColor": _ui.ROLE_REF if is_ref else _ui.ROLE_OFF,
                         "color": "#fff" if is_ref else "#7a8a9a", 
                         "border": "1px solid #00bcd4" if is_ref else "1px solid #4a5a6a",
                         "fontSize": "11px", "fontWeight": "bold", "cursor": "pointer",
@@ -1934,7 +2265,7 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
                     style={
                         "position": "absolute", "top": "4px", "right": "4px",
                         "width": "22px", "height": "22px", "borderRadius": "4px",
-                        "backgroundColor": "#e040fb" if is_target else "#2a3a4a",
+                        "backgroundColor": _ui.ROLE_TARGET if is_target else _ui.ROLE_OFF,
                         "color": "#fff" if is_target else "#7a8a9a",
                         "border": "1px solid #e040fb" if is_target else "1px solid #4a5a6a",
                         "fontSize": "11px", "fontWeight": "bold", "cursor": "pointer",
@@ -1961,21 +2292,19 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
 
 @app.callback(
     Output("selected-moodboard-image", "data"),
-    [
-        Input({"type": "set-ref-badge", "index": ALL}, "n_clicks"),
-        Input("external-image-upload", "contents"),
-        Input("moodboard-external-upload", "contents"),
-    ],
-    [
-        State("moodboard-store", "data"),
-        State("external-image-upload", "filename"),
-        State("moodboard-external-upload", "filename"),
-        State("selected-moodboard-image", "data"),
-    ],
+    Input({"type": "set-ref-badge", "index": ALL}, "n_clicks"),
+    State("selected-moodboard-image", "data"),
     prevent_initial_call=True,
 )
-def select_moodboard_ref(clicks, upload_contents, moodboard_upload, moodboard, upload_filename, moodboard_filename, current_ref):
-    """Set Reference image from badge click or external upload."""
+def select_moodboard_ref(clicks, current_ref):
+    """
+    Set the Reference image from an [R] badge click.
+
+    Uploads used to land here too, from two different drop zones, which is what
+    made dropping a picture have three effects at once. Uploads now go to the
+    collection (update_moodboard) and nothing else; this callback has exactly
+    one trigger.
+    """
     triggered = ctx.triggered_id
     
     # When gallery re-renders, buttons are recreated with n_clicks=0, firing this callback
@@ -1997,37 +2326,6 @@ def select_moodboard_ref(clicks, upload_contents, moodboard_upload, moodboard, u
         if clicked_path == current_ref:
             return None
         return clicked_path
-    
-    # Handle external image upload (either component)
-    upload_data = None
-    filename = None
-    if triggered == "external-image-upload" and upload_contents:
-        upload_data = upload_contents
-        filename = upload_filename
-    elif triggered == "moodboard-external-upload" and moodboard_upload:
-        upload_data = moodboard_upload
-        filename = moodboard_filename
-    
-    if upload_data:
-        content_type, content_string = upload_data.split(',')
-        decoded = base64.b64decode(content_string)
-        
-        ext = os.path.splitext(filename)[1] if filename else ".jpg"
-        if not ext:
-            ext = ".jpg"
-        
-        output_dir = _paths.ensure_dir(os.path.join(OUTPUT_DIR, "_external_refs"))
-        # The media endpoints only serve allowlisted roots; without this an
-        # uploaded reference renders as a broken image.
-        register_media_root(OUTPUT_DIR)
-        
-        content_hash = hashlib.md5(decoded).hexdigest()[:12]
-        temp_path = os.path.join(output_dir, f"ext_{content_hash}{ext}")
-        
-        with open(temp_path, "wb") as f:
-            f.write(decoded)
-        
-        return temp_path
     
     return dash.no_update
 
@@ -2514,8 +2812,193 @@ def toggle_method_params(method):
     return on_row, on_row, {}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# THE MODFLOWS CHECKPOINT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ct_model_card(job_snapshot=None):
+    """One line describing whether the neural method can run, plus a way to fix it."""
+    try:
+        from . import color_transfer as _ct
+    except ImportError:
+        import color_transfer as _ct
+
+    if job_snapshot and not job_snapshot.get("status") in (None, "done", "failed",
+                                                           "cancelled"):
+        pct = int(round((job_snapshot.get("fraction") or 0) * 100))
+        return html.Div([
+            html.Div(job_snapshot.get("message") or "Downloading...",
+                     style={"fontSize": "11.5px", "color": _ui.ACCENT}),
+            html.Div(style={"height": "4px", "borderRadius": "2px",
+                            "backgroundColor": _ui.SURFACE_2, "marginTop": "6px"},
+                     children=html.Div(style={
+                         "width": f"{pct}%", "height": "100%",
+                         "borderRadius": "2px", "backgroundColor": _ui.ACCENT,
+                         "transition": "width .3s"})),
+        ])
+
+    if job_snapshot and job_snapshot.get("status") == "failed":
+        return html.Div(job_snapshot.get("error") or "The download failed.",
+                        style={"fontSize": "11.5px", "color": _ui.BAD})
+
+    try:
+        st = _ct.status()
+    except Exception:
+        return ""
+
+    if st["ready"]:
+        return ""                      # nothing to say when it just works
+    if not st["source"]:
+        return html.Div(
+            "ModFlows is not installed in this build — use the LAB method.",
+            style={"fontSize": "11.5px", "color": _ui.INK_DIM})
+    return html.Div([
+        html.Div(f"ModFlows needs a one-off {st['download_mb']} MB model download.",
+                 style={"fontSize": "11.5px", "color": _ui.INK_DIM,
+                        "marginBottom": "6px"}),
+        html.Button("Download colour model", id="ct-download-btn", n_clicks=0,
+                    style=_ui.button("secondary", padding="6px 12px",
+                                     fontSize="12px")),
+    ])
+
+
 @app.callback(
-    Output("color-transfer-status", "children"),
+    [Output("ct-job", "data"), Output("ct-poll", "disabled"),
+     Output("ct-model-status", "children", allow_duplicate=True)],
+    Input("ct-download-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def start_modflows_download(n):
+    if not n:
+        raise dash.exceptions.PreventUpdate
+    try:
+        from . import color_transfer as _ct
+        from .jobs import MANAGER
+    except ImportError:
+        import color_transfer as _ct
+        from jobs import MANAGER
+
+    # One job at a time, shared with indexing and encoder downloads: they all
+    # compete for the same disk and network.
+    if MANAGER.active():
+        return dash.no_update, dash.no_update, html.Div(
+            "Something else is running — wait for it to finish.",
+            style={"fontSize": "11.5px", "color": _ui.WARN})
+
+    def job(handle):
+        _ct.download_checkpoint(
+            progress=lambda frac, msg: handle.update(fraction=frac, message=msg))
+        handle.update(fraction=1.0, message="Colour model ready")
+        return {"ok": True}
+
+    jid = MANAGER.submit(job, kind="download", label="Colour model")
+    return jid, False, _ct_model_card({"status": "running", "fraction": 0.0,
+                                       "message": "Starting download..."})
+
+
+@app.callback(
+    [Output("ct-model-status", "children"), Output("ct-poll", "disabled",
+                                                   allow_duplicate=True)],
+    [Input("ct-poll", "n_intervals"), Input("mode-select", "value"),
+     Input("moodboard-tool", "value")],
+    State("ct-job", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def poll_modflows_download(_ticks, mode, tool, job_id):
+    try:
+        from .jobs import MANAGER
+    except ImportError:
+        from jobs import MANAGER
+    snap = MANAGER.snapshot(job_id) if job_id else None
+    finished = (snap or {}).get("status") in ("done", "failed", "cancelled")
+    return _ct_model_card(snap), (snap is None or finished)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHICH COLOURS OF THE REFERENCE GET USED
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.callback(
+    [Output("ct-lightness", "value"), Output("ct-saturation", "value")],
+    Input("ct-reset", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reset_reference_filter(n):
+    if not n:
+        raise dash.exceptions.PreventUpdate
+    return [0, 100], [0, 100]
+
+
+@app.callback(
+    [Output("ct-swatches", "children"), Output("ct-keep-note", "children")],
+    [Input("selected-moodboard-image", "data"),
+     Input("ct-lightness", "value"),
+     Input("ct-saturation", "value")],
+)
+def preview_reference_filter(ref_path, lightness, saturation):
+    """
+    Draw the colours the transfer would actually use.
+
+    Runs on every slider move, so it works off a 256px sample and uniform
+    quantisation rather than anything iterative.
+    """
+    if not ref_path:
+        return [], "Pick a Reference [R] picture to choose its colours."
+
+    l_min, l_max = (lightness or [0, 100])
+    s_min, s_max = (saturation or [0, 100])
+
+    try:
+        from . import refselect
+    except ImportError:
+        import refselect
+
+    try:
+        resolved = resolve_path(ref_path)
+        if not os.path.exists(resolved):
+            return [], "The reference file is no longer on disk."
+        with Image.open(resolved) as im:
+            im.load()
+            colours = refselect.palette_strip(im, n=14, l_min=l_min, l_max=l_max,
+                                              s_min=s_min, s_max=s_max,
+                                              source_path=resolved)
+            _proxy, frac = refselect.filter_reference(im, l_min, l_max, s_min, s_max)
+    except Exception as e:
+        return [], f"Could not read the reference: {type(e).__name__}"
+
+    if not colours:
+        return [], html.Span("Nothing is left in that range — the transfer would "
+                             "use the whole picture.", style={"color": _ui.WARN})
+
+    # Widths are proportional to each colour's share, exactly like the strips
+    # /palette draws under the Reference and Target thumbnails. Equal widths
+    # made a 70%-black photograph look like an evenly-spread dark palette, and
+    # disagreed with the strip a few centimetres below it. Proportional widths
+    # also make the sliders legible: raising the lightness floor visibly hands
+    # the black band's width over to the colours you actually want.
+    strip = [html.Div(style={"flexGrow": max(share, 0.0005), "flexBasis": "0",
+                             "backgroundColor": c},
+                      title=f"{c} · {share * 100:.1f}%")
+             for c, share in colours]
+    pct = frac * 100
+    if frac >= 1.0:
+        note = "Using the whole reference — widths show each colour's share."
+    elif frac < refselect.MIN_KEEP:
+        note = html.Span(f"Only {pct:.2f}% of the picture survives — that is very "
+                         "little to estimate from.", style={"color": _ui.WARN})
+    else:
+        note = f"Using {pct:.1f}% of the reference's pixels."
+    return strip, note
+
+
+@app.callback(
+    # Two outputs: a one-line receipt that stays in the card, and the picture
+    # itself, which goes to the stage. The preview used to be a 640px image
+    # rendered width:100% inside a ~300px card in the bench -- the result of the
+    # operation was the smallest thing on screen. Both tools now obey one rule:
+    # you set up on the left, the result appears on the right.
+    [Output("color-transfer-status", "children"),
+     Output("transfer-preview", "children")],
     Input("color-transfer-btn", "n_clicks"),
     State("selected-moodboard-image", "data"),  # Reference (palette source)
     State("selected-target-image", "data"),      # Target (receives colors)
@@ -2524,24 +3007,27 @@ def toggle_method_params(method):
     State("color-transfer-size", "value"),
     State("color-transfer-steps", "value"),
     State("color-transfer-fullres", "value"),
+    State("ct-lightness", "value"),
+    State("ct-saturation", "value"),
     prevent_initial_call=True,
 )
-def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, max_size, steps, fullres_opts):
+def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
+                           max_size, steps, fullres_opts, ct_lightness, ct_saturation):
     """Transfer colors from reference image to target image."""
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
     
     # Validate inputs
     if not ref_path:
-        return html.Div("⚠️ No Reference [R] image selected", style={"color": "#f39c12"})
+        return html.Div("⚠️ No Reference [R] image selected", style={"color": "#f39c12"}), ""
     if not target_path:
-        return html.Div("⚠️ No Target [T] image selected", style={"color": "#f39c12"})
+        return html.Div("⚠️ No Target [T] image selected", style={"color": "#f39c12"}), ""
     
     # Check method availability
     if method == "modflows" and not COLOR_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ ModFlows not available (check installation)", style={"color": "#e74c3c"})
+        return html.Div("⚠️ ModFlows not available (check installation)", style={"color": "#e74c3c"}), ""
     if method == "lab" and not LAB_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ LAB transfer not available", style={"color": "#e74c3c"})
+        return html.Div("⚠️ LAB transfer not available", style={"color": "#e74c3c"}), ""
     
     try:
         import time
@@ -2552,9 +3038,9 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, ma
         target_resolved = resolve_path(target_path)
         
         if not os.path.exists(ref_resolved):
-            return html.Div(f"⚠️ Reference file not found", style={"color": "#e74c3c"})
+            return html.Div(f"⚠️ Reference file not found", style={"color": "#e74c3c"}), ""
         if not os.path.exists(target_resolved):
-            return html.Div(f"⚠️ Target file not found", style={"color": "#e74c3c"})
+            return html.Div(f"⚠️ Target file not found", style={"color": "#e74c3c"}), ""
         
         # Parse options
         strength_val = float(strength) if strength else 1.0
@@ -2562,6 +3048,26 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, ma
         # Load images
         content_img = Image.open(target_resolved).convert("RGB")
         style_img = Image.open(ref_resolved).convert("RGB")
+
+        # Narrow the reference to the colours the user actually chose. Both
+        # methods below read a colour *distribution* from style_img and nothing
+        # else, so swapping in a proxy built from the surviving pixels steers
+        # them without either method needing to know this feature exists.
+        l_min, l_max = (ct_lightness or [0, 100])
+        s_min, s_max = (ct_saturation or [0, 100])
+        try:
+            from . import refselect
+        except ImportError:
+            import refselect
+        style_img, kept_frac = refselect.filter_reference(
+            style_img, l_min, l_max, s_min, s_max)
+        # An impossible range returns the original untouched rather than a blank
+        # reference; say so instead of silently ignoring the sliders.
+        filter_note = ""
+        if kept_frac == 0.0:
+            filter_note = " — colour range matched nothing, used the whole reference"
+        elif kept_frac < 1.0:
+            filter_note = f" — from {kept_frac * 100:.1f}% of the reference"
         
         # Perform transfer based on method
         if method == "lab":
@@ -2618,27 +3124,40 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength, ma
         preview.convert("RGB").save(buf, "JPEG", quality=88)
         preview_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
-        return html.Div([
-            html.Div(f"✓ Color transfer complete ({method_label})",
-                     style={"color": "#2ecc71", "fontWeight": "bold", "marginBottom": "8px"}),
+        receipt = html.Div(f"✓ Done in {elapsed:.1f}s — see the panel on the right",
+                           style={"color": _ui.OK, "fontSize": "11.5px"})
+        stage = html.Div([
+            html.Div(
+                [
+                    html.Span(f"TRANSFER · {method_label}{filter_note}", style={
+                        "fontWeight": "700", "fontSize": "12px",
+                        "letterSpacing": "1px", "color": _ui.INK}),
+                    html.Span(
+                        f"{result_img.size[0]}×{result_img.size[1]} · {device_str} · {elapsed:.2f}s",
+                        style={"color": _ui.INK_DIM, "fontSize": "11px"}),
+                ],
+                style={"display": "flex", "alignItems": "baseline", "gap": "10px",
+                       "flexWrap": "wrap", "margin": "0 -12px 12px",
+                       "padding": "9px 12px",
+                       "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
+            ),
             html.Img(
                 src=preview_uri,
                 title=output_filename,
-                style={"width": "100%", "display": "block", "borderRadius": "6px",
-                       "border": "1px solid #444"},
+                style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
+                       "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
             ),
-            html.Div(f"{result_img.size[0]}×{result_img.size[1]} · {device_str} · {elapsed:.2f}s",
-                     style={"color": "#888", "fontSize": "11px", "marginTop": "6px"}),
             html.Div(f"Saved to {os.path.join('output', 'color_transfer')}",
-                     style={"color": "#666", "fontSize": "10px"}),
+                     style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
             html.Div(output_filename,
-                     style={"color": "#555", "fontSize": "9px", "wordBreak": "break-all",
-                            "marginTop": "2px"}),
+                     style={"color": _ui.INK_FAINT, "fontSize": "10px",
+                            "wordBreak": "break-all"}),
         ])
+        return receipt, stage
 
     except Exception as e:
-        return html.Div(f"✗ Error: {str(e)}",
-                        style={"color": "#e74c3c", "wordBreak": "break-word"})
+        return (html.Div(f"✗ Error: {str(e)}",
+                         style={"color": "#e74c3c", "wordBreak": "break-word"}), "")
 
 
 @app.callback(
@@ -2897,7 +3416,7 @@ def update_images(
 
     # Nothing selected yet
     if not dataset_value:
-        return [], go.Figure(), {"display": "none"}, {}, [], {}, []
+        return [], _blank_fig(), {"display": "none"}, {}, [], {}, []
 
     # Parse "<name>::<dim>::<modality>" (backward compat to ::dim)
     try:
@@ -2908,7 +3427,9 @@ def update_images(
             latent_name, dim, modality = parts[0], int(parts[1]), "image"
     except Exception as e:
         print(f"[update_images] bad dataset value={dataset_value!r}: {e}")
-        return [], go.Figure(), {"display": "none"}, {}, [], {}, []
+        return ([], _blank_fig("That dataset entry could not be read. Rebuild it "
+                               "from the Datasets tab."),
+                {"display": "none"}, {}, [], {}, [])
     db_name = latent_name
 
 
@@ -3432,9 +3953,12 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
     State("spec-toggle", "on"),
 )
 def update_hover_thumb(hoverData, mode, dataset_value, spec_on):
-    # Hide hover thumb in moodboard mode (scatter is hidden)
-    if mode == "moodboard":
-        return "", {"display": "none"}
+    # The hover preview belongs to the scatter, so it must go wherever the
+    # scatter goes. Listing the modes that DO show a scatter, rather than the
+    # ones that don't, means adding a mode cannot strand a thumbnail on screen
+    # again -- which is exactly what happened when "datasets" was added.
+    if mode not in ("prompt", "story"):
+        return "", HOVER_THUMB_HIDDEN
     
     try:
         parts = (dataset_value or "").split("::")
@@ -3449,21 +3973,10 @@ def update_hover_thumb(hoverData, mode, dataset_value, spec_on):
                 else:
                     endpoint = "/thumb?p="
                 thumb_url = endpoint + urllib.parse.quote(media_path)
-                style = {
-                    "display": "block",
-                    "position": "fixed",
-                    "top": "100px",
-                    "left": "100px",
-                    "width": "128px",
-                    "height": "128px",
-                    "border": "2px solid #fff",
-                    "zIndex": 1000,
-                    "boxShadow": "0 0 12px #000",
-                }
-                return thumb_url, style
+                return thumb_url, HOVER_THUMB_SHOWN
     except Exception as e:
         print("[hover-thumb] skipped due to:", e)
-    return dash.no_update, {"display": "none"}
+    return dash.no_update, HOVER_THUMB_HIDDEN
 
 
 
@@ -3624,7 +4137,9 @@ def toggle_results_visibility(mode, owner):
     them. Switching away hides the panel without discarding it, so coming back
     restores what was there.
     """
-    base = {"overflowY": "scroll", "overflowX": "hidden", "maxHeight": "80vh"}
+    # The right column already scrolls, so this must not add a second scrollbar
+    # or an 80vh box taller than the space it sits in.
+    base = {"overflowX": "hidden"}
     if owner is None or owner == mode:
         return {**base, "display": "block"}
     return {**base, "display": "none"}
@@ -3771,6 +4286,11 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
         else:
             msg = "No story to save."
     return msg
+
+
+# The dataset manager registers its own callbacks; done here so the layout
+# it refers to already exists.
+_ui_datasets.register(app)
 
 
 def main():

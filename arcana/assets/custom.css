@@ -125,3 +125,42 @@ textarea.dash-textarea {
 .dash-dropdown-placeholder {
     color: #666 !important;
 }
+
+/* ── moodboard tool switcher ───────────────────────────────────────────────
+   A segmented control, not a list of radios. The bench can only fit one tool
+   card at a time (both together overflow the column), so this is what swaps
+   them. Styled here rather than inline because the ::before dot and the
+   checked state cannot be expressed through Dash's labelStyle. */
+.tool-switch {
+  display: flex;
+  gap: 0;
+  border: 1px solid #33333b;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #16161a;
+}
+.tool-switch label {
+  flex: 1 1 0;
+  text-align: center;
+  padding: 8px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #9a9aa2;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: background 0.12s, color 0.12s;
+}
+.tool-switch label:hover { background: #1f1f25; color: #ececf0; }
+/* The radio itself is only an accessibility anchor; the label is the control. */
+.tool-switch input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.tool-switch label:has(input:checked) {
+  background: #1b1b1f;
+  color: #ececf0;
+}
+.tool-switch label:first-of-type:has(input:checked)  { border-bottom-color: #00bcd4; }
+.tool-switch label:last-of-type:has(input:checked)   { border-bottom-color: #e05fd8; }

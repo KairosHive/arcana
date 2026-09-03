@@ -9,7 +9,9 @@
 #
 # --- Core scientific stack ---
 numpy>=1.23
-pandas>=1.4
+# pandas 3 is a major with pickle/API churn, and every latent space is a pandas
+# pickle. Bounded until that is actually tested.
+pandas>=1.4,<3
 matplotlib>=3.5
 scikit-learn>=1.2
 scipy>=1.9
@@ -24,7 +26,10 @@ opencv-python>=4.7
 torch>=2.0
 torchvision>=0.15
 torchaudio
-transformers>=4.41
+# Upper-bounded deliberately. transformers 5 changed CLIPModel.get_image_features
+# to return a BaseModelOutputWithPooling instead of a tensor, so indexing dies at
+# the first image. Raise this only with a test run behind it.
+transformers>=4.41,<5
 
 # --- Stable Diffusion pipeline & PIL (story mode) ---
 diffusers>=0.27

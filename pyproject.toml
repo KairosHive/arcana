@@ -57,6 +57,18 @@ arcana-relocate = "arcana.relocate:main"
 # For a CPU-only install (what a packaged app should ship), point these at
 # https://download.pytorch.org/whl/cpu instead, or drop the [tool.uv.sources]
 # block entirely and let PyPI serve the default CPU wheels.
+# Keep `uv run` / `uv sync` from resolving past the versions this was tested
+# against. Without these, uv.lock drifted to transformers 5 and torch 2.11 --
+# and transformers 5 breaks indexing outright.
+[tool.uv]
+constraint-dependencies = [
+    "transformers<5",
+    "pandas<3",
+    "torch==2.9.1",
+    "torchvision==0.24.1",
+    "torchaudio==2.9.1",
+]
+
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"

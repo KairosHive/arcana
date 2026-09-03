@@ -161,15 +161,6 @@ def choose_k(
     return best_k, scores
 
 
-def _text2vec(text: str, modality: str) -> np.ndarray:
-    """Route text encoding to the right model for this dataset's modality."""
-    if modality == "image":
-        return txt2vec_clip(text)
-    elif modality == "audio":
-        return txt2vec_clap(text)
-    else:
-        raise ValueError(f"Unsupported modality for text2vec: {modality}")
-
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     a = a.astype(np.float32); b = b.astype(np.float32)
     na = np.linalg.norm(a) + 1e-8
@@ -260,9 +251,9 @@ def _read_label_list(src: str | None) -> tuple[list[str], str]:
         h = hashlib.md5(",".join(labels).encode("utf-8")).hexdigest()[:12]
         return labels, f"inline:{h}"
 
-def _text2vec(text: str, modality: str) -> np.ndarray:
+def _text2vec(text: str, modality: str, model_id: str | None = None) -> np.ndarray:
     if modality == "image":
-        return txt2vec_clip(text)
+        return txt2vec_clip(text, model_id=model_id)
     elif modality == "audio":
         return txt2vec_clap(text)
     else:
@@ -273,6 +264,7 @@ def _encode_label_matrix(
     modality: str,
     cache_base: str,
     cache_dir: str = db_dir,  # reuse your databases/ dir
+    model_id: str | None = None,
 ) -> tuple[list[str], np.ndarray]:
     """
     Returns (labels, M) where M is (L, D) of L2-normalized label embeddings.
@@ -281,7 +273,11 @@ def _encode_label_matrix(
     if not labels:
         return [], np.zeros((0, 1), dtype=np.float32)
 
-    model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
+    # The caller's encoder wins. The cache key already includes the model id,
+    # so switching models produces a separate cache rather than reusing
+    # embeddings of the wrong dimension.
+    if model_id is None:
+        model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
     cache_key = f"{modality}|{model_id}|{cache_base}"
     if cache_key in _LABEL_MEM_CACHE:
         return _LABEL_MEM_CACHE[cache_key]
@@ -314,8 +310,13 @@ def _encode_label_matrix(
         try:
             # fast path: encode each text with the proper encoder
             if modality == "image":
-                # CLIP tokenizer can take batch
-                model, processor = load_clip()
+                # CLIP tokenizer can take batch.
+                # model_id matters: cluster names are found by comparing these
+                # label embeddings against image centroids, so both must come
+                # from the same encoder. Without it the build dies in
+                # _infer_cluster_names_from_matrix on a 512-vs-1024 matmul,
+                # after the expensive encoding is already done.
+                model, processor = load_clip(model_id=model_id)
                 toks = processor.tokenizer(batch, return_tensors="pt", padding=True, truncation=True)
                 with torch.no_grad():
                     v = model.get_text_features(toks.input_ids.to(model.device)).detach().cpu().float().numpy()
@@ -336,7 +337,7 @@ def _encode_label_matrix(
             # robust fallback: per-item
             for t in batch:
                 try:
-                    vecs.append(_text2vec(t, modality)[None, :])
+                    vecs.append(_text2vec(t, modality, model_id=model_id)[None, :])
                 except Exception as e:
                     print(f"[WARN] text2vec failed for '{t}': {e}")
 
@@ -393,24 +394,33 @@ def _infer_cluster_names_from_matrix(
 # --------------------------------------------------------------------------------------
 # Lazy model loaders
 # --------------------------------------------------------------------------------------
-_CLIP = {"model": None, "proc": None}
+_CLIP = {"model": None, "proc": None, "id": None}
 _CLAP = {"model": None, "proc": None}
 
 def _device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
-def load_clip(device: str | None = None):
+def load_clip(device: str | None = None, model_id: str | None = None):
+    """
+    Load an image encoder, caching one at a time.
+
+    The cache is keyed by model id: indexing two datasets with different
+    encoders in one session used to silently reuse whichever loaded first, and
+    the second dataset would then be built with the wrong model while recording
+    the right one.
+    """
     device = device or _device()
-    if _CLIP["model"] is None:
+    model_id = model_id or CLIP_MODEL_ID
+    if _CLIP["model"] is None or _CLIP.get("id") != model_id:
         from transformers import CLIPModel, CLIPProcessor
-        m = CLIPModel.from_pretrained(CLIP_MODEL_ID)
+        m = CLIPModel.from_pretrained(model_id)
         if device == "cuda":
             m = m.to("cuda").half()
         else:
             m = m.to("cpu")
         m.eval()
-        p = CLIPProcessor.from_pretrained(CLIP_MODEL_ID)
-        _CLIP.update(model=m, proc=p)
+        p = CLIPProcessor.from_pretrained(model_id)
+        _CLIP.update(model=m, proc=p, id=model_id)
     return _CLIP["model"], _CLIP["proc"]
 
 def load_clap(device: str | None = None):
@@ -432,17 +442,17 @@ def load_clap(device: str | None = None):
 # --------------------------------------------------------------------------------------
 # Encoders
 # --------------------------------------------------------------------------------------
-def img2vec_clip(image_bgr: np.ndarray) -> np.ndarray:
+def img2vec_clip(image_bgr: np.ndarray, model_id: str | None = None) -> np.ndarray:
     """Input: BGR uint8 image (cv2)."""
-    model, processor = load_clip()
+    model, processor = load_clip(model_id=model_id)
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     px = processor(images=[rgb], return_tensors="pt").pixel_values.to(model.device)
     with torch.no_grad():
         vec = model.get_image_features(px).squeeze().detach().cpu().float().numpy()
     return vec
 
-def txt2vec_clip(text: str) -> np.ndarray:
-    model, processor = load_clip()
+def txt2vec_clip(text: str, model_id: str | None = None) -> np.ndarray:
+    model, processor = load_clip(model_id=model_id)
     toks = processor.tokenizer(text, return_tensors="pt")
     with torch.no_grad():
         vec = model.get_text_features(toks.input_ids.to(model.device)).squeeze().detach().cpu().float().numpy()
@@ -455,18 +465,41 @@ def read_audio_mono(
     pad: bool = False,            # only used if seconds is not None
 ):
     """Load mono float32, resample, optional crop/pad to 'seconds'."""
-    if torchaudio is not None:
-        wav, sr = torchaudio.load(path)  # (ch, n)
-        wav = wav.mean(dim=0).numpy()
-    else:
-        wav, sr = sf.read(path, always_2d=False)
-        if wav.ndim == 2:
-            wav = wav.mean(axis=1)
+    # torchaudio 2.9 removed its own decoding backends: torchaudio.load now
+    # delegates to TorchCodec and raises ImportError if it is absent. That is a
+    # hard failure for every audio dataset, so soundfile -- which is already a
+    # dependency and reads WAV/FLAC/OGG natively -- is tried first, and
+    # torchaudio only as a fallback for what soundfile cannot open (mp3, m4a).
+    wav = sr = None
+    if sf is not None:
+        try:
+            wav, sr = sf.read(path, always_2d=False, dtype="float32")
+            if getattr(wav, "ndim", 1) == 2:
+                wav = wav.mean(axis=1)
+        except Exception:
+            wav = sr = None
+
+    if wav is None:
+        if torchaudio is None:
+            raise RuntimeError(
+                f"Could not read {os.path.basename(path)}: soundfile failed and "
+                "torchaudio is not installed."
+            )
+        try:
+            t_wav, sr = torchaudio.load(path)      # (ch, n)
+            wav = t_wav.mean(dim=0).numpy()
+        except ImportError as e:
+            raise RuntimeError(
+                f"Could not read {os.path.basename(path)}: soundfile could not "
+                f"open it and torchaudio needs TorchCodec ({e}). Install "
+                "torchcodec, or convert the file to WAV or FLAC."
+            ) from e
 
     # resample
     if sr != target_sr:
         if torchaudio is not None:
-            wav = torchaudio.functional.resample(torch.from_numpy(wav), sr, target_sr).numpy()
+            wav = torchaudio.functional.resample(
+                torch.from_numpy(np.ascontiguousarray(wav)), sr, target_sr).numpy()
         else:
             import librosa
             wav = librosa.resample(wav, orig_sr=sr, target_sr=target_sr)
@@ -512,24 +545,36 @@ def txt2vec_clap(text: str) -> np.ndarray:
 # --------------------------------------------------------------------------------------
 # Index building
 # --------------------------------------------------------------------------------------
-def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str = "image") -> tuple[Index, dict]:
+def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str = "image",
+          model_id: str | None = None, progress=None) -> tuple[Index, dict]:
     """
     Build a cosine index for the given media files.
+
     modality: "image" or "audio"
+    model_id: which encoder to use; defaults to the modality's usual one
+    progress: optional callable(done, total, message) so a UI can show a bar.
+              Indexing runs for minutes to hours, so a caller that cannot report
+              progress leaves the user staring at nothing.
     """
+    def _report(done, total, message=""):
+        if progress is not None:
+            progress(done, total, message)
+
     # discover files
+    _report(0, 0, "Scanning for files")
     all_paths = glob(glob_path, recursive=True)
     paths = [p for p in all_paths if (is_image(p) if modality == "image" else is_audio(p))]
     print(f"[INFO] Found {len(paths)} {modality} files to index.")
     if not paths:
         raise SystemExit("No files found for indexing.")
+    _report(0, len(paths), f"Found {len(paths):,} files")
 
     # probe ndim from first vector
     if modality == "image":
         probe = imread_unicode(paths[0])
         if probe is None:
             raise SystemExit(f"Failed to read first image: {paths[0]}")
-        v0 = img2vec_clip(probe)
+        v0 = img2vec_clip(probe, model_id=model_id)
     else:
         # PROBE (before creating the index)
         a, sr = read_audio_mono(paths[0], target_sr=48000, seconds=None, pad=False)
@@ -550,6 +595,7 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
 
     if modality == "image":
         for batch_start in tqdm(range(0, len(paths), batch_size), desc="Indexing images"):
+            _report(batch_start, len(paths), "Encoding images")
             batch_paths = paths[batch_start : batch_start + batch_size]
             imgs = []
             ok_paths = []
@@ -563,7 +609,7 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
             if not ok_paths:
                 continue
             # Encode batch
-            model, processor = load_clip()
+            model, processor = load_clip(model_id=model_id)
             px = processor(images=[cv2.cvtColor(x, cv2.COLOR_BGR2RGB) for x in imgs],
                            return_tensors="pt").pixel_values.to(model.device)
             with torch.no_grad():
@@ -575,7 +621,8 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
 
     else:  # audio
         # MAIN LOOP
-        for p in tqdm(paths, desc="Indexing audio"):
+        for _i, p in enumerate(tqdm(paths, desc="Indexing audio")):
+            _report(_i, len(paths), "Encoding audio")
             try:
                 a, sr = read_audio_mono(p, target_sr=48000, seconds=None, pad=False)
                 vec = aud2vec_clap(a, sr)
@@ -1175,6 +1222,9 @@ def parse_args():
         help="Compress Gram features to N dims via PCA (0=no compression). Default: 512.")
     parser.add_argument("--reuse_index", action="store_true",
         help="Skip CLIP extraction if index already exists. Only extract palette/style features.")
+    parser.add_argument("--model", type=str, default=None,
+        help="Encoder to index with. Defaults to the best one this "
+             "machine can run comfortably; see arcana/models.py.")
     parser.add_argument("--thumbnails", action="store_true",
         help="Embed 192px previews in the portable bundle, so it can be browsed "
              "without the original files.")
@@ -1305,122 +1355,273 @@ def _thumb_bytes(path: str, max_side: int = 192) -> bytes | None:
 
 
 
-def main():
-    args = parse_args()
+# --------------------------------------------------------------------------------------
+# Label caches, one per encoder
+# --------------------------------------------------------------------------------------
+def label_cache_status(modality: str = "image", labels_src: str | None = None) -> list[dict]:
+    """
+    For each encoder Arcana offers, is its label matrix already built?
+
+    Cluster names come from comparing label embeddings against image centroids,
+    so the labels must be encoded by the SAME model as the images. Every model
+    therefore needs its own cache; a missing one is not an error, just work that
+    has to happen before that model can name anything.
+    """
+    try:
+        from . import models as _models
+    except ImportError:
+        import models as _models
+
+    src = labels_src or DEFAULT_LABELS.get(modality)
+    labels, cache_base = _read_label_list(src)
+    out = []
+    for m in _models.for_modality(modality):
+        model_tag = hashlib.md5(m.id.encode("utf-8")).hexdigest()[:8]
+        cache_key = f"{modality}|{m.id}|{cache_base}"
+        disk_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()[:12]
+        path = os.path.join(db_dir, f"label_cache_{modality}_{disk_hash}_{model_tag}.pkl")
+        out.append({
+            "model_id": m.id, "label": m.label, "dim": m.dim,
+            "n_labels": len(labels), "path": path,
+            "ready": os.path.exists(path),
+            "model_downloaded": _models.is_downloaded(m.id),
+        })
+    return out
+
+
+def warm_label_cache(model_id: str, modality: str = "image",
+                     labels_src: str | None = None, progress=None) -> dict:
+    """
+    Build (and persist) the label matrix for one encoder.
+
+    Cheap -- a hundred short strings -- but it must happen before that encoder
+    can name clusters, and doing it up front means an index run does not stop
+    halfway to encode labels.
+    """
+    src = labels_src or DEFAULT_LABELS.get(modality)
+    labels, cache_base = _read_label_list(src)
+    if not labels:
+        return {"model_id": model_id, "n_labels": 0, "dim": 0, "skipped": "no labels"}
+    if progress is not None:
+        progress(0.0, f"Encoding {len(labels)} labels", 0, len(labels))
+    _paths.ensure_dir(db_dir)
+    texts, M = _encode_label_matrix(labels, modality, cache_base, model_id=model_id)
+    if progress is not None:
+        progress(1.0, f"{len(texts)} labels ready", len(texts), len(texts))
+    return {"model_id": model_id, "n_labels": len(texts),
+            "dim": int(M.shape[1]) if M.size else 0}
+
+
+def warm_all_label_caches(modality: str = "image", only_downloaded: bool = True,
+                          labels_src: str | None = None, progress=None) -> list[dict]:
+    """
+    Make every encoder's label matrix ready.
+
+    only_downloaded=True skips models whose weights are not local, so this never
+    silently pulls gigabytes; pass False to accept the download.
+    """
+    status = label_cache_status(modality, labels_src)
+    todo = [s for s in status
+            if not s["ready"] and (s["model_downloaded"] or not only_downloaded)]
+    done = []
+    for i, s in enumerate(todo):
+        if progress is not None:
+            progress(i / max(1, len(todo)), f"Preparing labels for {s['label']}",
+                     i, len(todo))
+        try:
+            done.append(warm_label_cache(s["model_id"], modality, labels_src))
+        except Exception as e:
+            done.append({"model_id": s["model_id"], "error": f"{type(e).__name__}: {e}"})
+    if progress is not None:
+        progress(1.0, "Labels ready", len(todo), len(todo))
+    return done
+
+
+def _scaled(progress, lo: float, hi: float):
+    """Adapt build()'s (done, total, message) into a slice of an overall bar."""
+    if progress is None:
+        return None
+
+    def cb(done, total, message=""):
+        frac = lo + (hi - lo) * ((done / total) if total else 0.0)
+        progress(frac, message, done, total)
+    return cb
+
+
+def index_dataset(
+    media_path: str,
+    name: str,
+    *,
+    modality: str = "image",
+    n_components: int = 2,
+    model_id: str | None = None,
+    features: str = "clip",
+    labels: str | None = None,
+    k: int = 0,
+    k_min: int = 2,
+    k_max: int = 20,
+    k_metric: str = "silhouette",
+    no_gram: bool = False,
+    full_gram: bool = False,
+    gram_pca: int = 512,
+    reuse_index: bool = False,
+    workers: int = 0,
+    thumbnails: bool = False,
+    progress=None,
+    should_cancel=None,
+) -> dict:
+    """
+    Build a dataset end to end: encode, extract features, lay out, save.
+
+    The single implementation behind both `arcana-build-latent` and the app's
+    dataset manager. main() is a thin wrapper over this, so the CLI cannot drift
+    from what the GUI runs -- they used to be the same code only by accident,
+    and a bug living solely in main() shipped unnoticed.
+
+    progress: callable(fraction, message, done, total)
+    should_cancel: callable() -> bool, checked between phases
+    """
+    def report(frac, message="", done=0, total=0):
+        if progress is not None:
+            progress(frac, message, done, total)
+
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            raise KeyboardInterrupt("cancelled")
+
+    if model_id is None:
+        model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
 
     def _to_glob(p: str) -> str:
-        # if user already provided a glob, use it as-is
         if any(ch in p for ch in "*?[]"):
             return p
         p_abs = os.path.abspath(p)
         return os.path.join(p_abs, "**", "*") if os.path.isdir(p_abs) else p_abs
 
-    media_path = args.imgs_path
     glob_arg = _to_glob(media_path)
-
-
-    index_name  = os.path.join(db_dir,     f"index_{args.name}_{args.modality}.pkl")
-    latent_name = os.path.join(latents_dir, f"latent_space_{args.name}_{args.modality}_{args.n_components}d.pkl")
+    index_name = os.path.join(db_dir, f"index_{name}_{modality}.pkl")
+    latent_name = os.path.join(
+        latents_dir, f"latent_space_{name}_{modality}_{n_components}d.pkl")
+    _paths.ensure_dir(db_dir)
+    _paths.ensure_dir(latents_dir)
 
     print("path to index:       ", index_name)
     print("path to latent space:", latent_name)
     print("search path:         ", glob_arg)
-    print("modality:            ", args.modality)
+    print("modality:            ", modality)
+    print("model:               ", model_id)
 
-    # Prepare label candidates (TXT or inline), then get cached embeddings
-    label_src = args.labels
+    # ---- labels -------------------------------------------------------------
+    report(0.01, "Preparing labels")
+    label_src = labels
     if not label_src:
-        # pick default by modality if file exists
-        cand = DEFAULT_LABELS.get(args.modality)
+        cand = DEFAULT_LABELS.get(modality)
         if cand and os.path.exists(cand):
             print(f"[INFO] Using default labels: {cand}")
             label_src = cand
-
     label_texts, cache_base = _read_label_list(label_src)
     if label_texts:
-        label_texts, label_mat = _encode_label_matrix(label_texts, args.modality, cache_base)
+        label_texts, label_mat = _encode_label_matrix(
+            label_texts, modality, cache_base, model_id=model_id)
     else:
         label_mat = np.zeros((0, 1), dtype=np.float32)
+    check_cancel()
 
-
-    # Check if we can reuse existing index
-    if args.reuse_index and os.path.exists(index_name):
+    # ---- encode -------------------------------------------------------------
+    if reuse_index and os.path.exists(index_name):
+        report(0.05, "Reusing the existing index")
         print(f"[INFO] Reusing existing index: {index_name}")
-        with open(index_name, "rb") as f:
-            saved_index, idx2path = pickle.load(f)
+        with open(index_name, "rb") as fh:
+            saved_index, idx2path = pickle.load(fh)
         index = Index.restore(saved_index)
         print(f"[INFO] Loaded {len(idx2path)} indexed paths.")
     else:
-        index, idx2path = build(glob_arg, index_name, modality=args.modality)
-    
-    # --- Extract additional features (palette, style) ---
-    # Bound unconditionally: the branch below is skipped for the default
-    # --features clip and for every audio dataset, but write_bundle() reads this
-    # on every run.
+        index, idx2path = build(glob_arg, index_name, modality=modality,
+                                model_id=model_id,
+                                progress=_scaled(progress, 0.03, 0.65))
+    check_cancel()
+
+    # ---- palette / style ----------------------------------------------------
     feature_paths: dict = {}
-    feature_list = [f.strip().lower() for f in args.features.split(",")]
-    if args.modality == "image" and any(f in feature_list for f in ["palette", "style"]):
-        print(f"\n[INFO] Features requested: {feature_list}")
-        additional_features = [f for f in feature_list if f in ("palette", "style")]
-        n_workers = args.workers if args.workers > 0 else multiprocessing.cpu_count()
+    feature_list = [x.strip().lower() for x in features.split(",")]
+    if modality == "image" and any(x in feature_list for x in ["palette", "style"]):
+        report(0.66, "Extracting palette and style features")
+        additional = [x for x in feature_list if x in ("palette", "style")]
+        n_workers = workers if workers > 0 else multiprocessing.cpu_count()
         feature_paths = extract_additional_features(
-            idx2path=idx2path,
-            name=args.name,
-            features=additional_features,
-            include_gram=(not args.no_gram),
-            compact_gram=(not args.full_gram),
-            gram_pca_dims=args.gram_pca,
-            n_workers=n_workers,
+            idx2path=idx2path, name=name, features=additional,
+            include_gram=(not no_gram), compact_gram=(not full_gram),
+            gram_pca_dims=gram_pca, n_workers=n_workers,
         )
         for ftype, fpath in feature_paths.items():
             print(f"  {ftype}: {fpath}")
-    
-    if args.k <= 0:
-        os.environ["ARCANA_K_MIN"] = str(args.k_min)
-        os.environ["ARCANA_K_MAX"] = str(args.k_max)
-        os.environ["ARCANA_K_METRIC"] = args.k_metric
+    check_cancel()
+
+    # ---- layout -------------------------------------------------------------
+    report(0.80, "Laying out the latent space")
+    if k <= 0:
+        os.environ["ARCANA_K_MIN"] = str(k_min)
+        os.environ["ARCANA_K_MAX"] = str(k_max)
+        os.environ["ARCANA_K_METRIC"] = k_metric
 
     coords, paths, cluster_ids, inferred_names = latent_space(
-        index=index,
-        idx2path=idx2path,
-        n_components=args.n_components,
-        modality=args.modality,
-        n_clusters=(0 if args.k <= 0 else int(args.k)),
-        label_texts=label_texts,
-        label_mat_norm=label_mat,
+        index=index, idx2path=idx2path, n_components=n_components,
+        modality=modality, n_clusters=(0 if k <= 0 else int(k)),
+        label_texts=label_texts, label_mat_norm=label_mat,
     )
+    check_cancel()
 
-    if args.n_components == 2:
-        df = pd.DataFrame(coords, columns=["x", "y"])
-    else:
-        df = pd.DataFrame(coords, columns=["x", "y", "z"])
+    # ---- save ---------------------------------------------------------------
+    report(0.92, "Saving")
+    cols = ["x", "y"] if n_components == 2 else ["x", "y", "z"]
+    df = pd.DataFrame(coords, columns=cols)
     df["path"] = paths
     df["cluster_id"] = cluster_ids.astype(int)
-    # prefer inferred; fallback to "C<id>" if empty
-    df["label"] = [name if name else f"C{int(cid)}" for name, cid in zip(inferred_names, cluster_ids)]
-
+    df["label"] = [nm if nm else f"C{int(cid)}"
+                   for nm, cid in zip(inferred_names, cluster_ids)]
     df.to_pickle(latent_name)
     print(f"[OK] Saved latent DataFrame to {latent_name}")
 
-    # A portable copy that survives the media folder being moved.
+    result = {"name": name, "modality": modality, "n_items": len(idx2path),
+              "model_id": model_id, "index": index_name, "latent": latent_name,
+              "features": sorted(feature_paths), "bundle": None}
+
+    report(0.95, "Writing the portable bundle")
     try:
-        bundle_path = write_bundle(
-            name=args.name, modality=args.modality, media_root=media_path,
-            index=index, idx2path=idx2path, coords=coords, cluster_ids=cluster_ids,
-            labels=df["label"].tolist(),
-            model_id=(CLIP_MODEL_ID if args.modality == "image" else CLAP_MODEL_ID),
-            feature_paths=feature_paths, n_components=args.n_components,
-            thumbnails=args.thumbnails,
+        result["bundle"] = write_bundle(
+            name=name, modality=modality, media_root=media_path,
+            index=index, idx2path=idx2path, coords=coords,
+            cluster_ids=cluster_ids, labels=df["label"].tolist(),
+            model_id=model_id, feature_paths=feature_paths,
+            n_components=n_components, thumbnails=thumbnails,
         )
-        print(f"[OK] Saved portable bundle to {bundle_path}")
+        print(f"[OK] Saved portable bundle to {result['bundle']}")
     except (NameError, AttributeError, TypeError, KeyError, IndexError):
         # A bug in our own code. Do not downgrade it to a warning -- that is
-        # exactly how the unbound `feature_paths` above went unnoticed, silently
-        # skipping the bundle on every default build.
+        # exactly how an unbound feature_paths went unnoticed and silently
+        # skipped the bundle on every default build.
         raise
     except Exception as e:
         print(f"[WARN] Could not write the portable bundle: {type(e).__name__}: {e}")
         print("       The legacy .pkl files were written and remain usable.")
+
+    report(1.0, f"Indexed {len(idx2path):,} items")
+    return result
+
+
+def main():
+    args = parse_args()
+    index_dataset(
+        args.imgs_path, args.name,
+        modality=args.modality, n_components=args.n_components,
+        model_id=getattr(args, "model", None),
+        features=args.features, labels=args.labels,
+        k=args.k, k_min=args.k_min, k_max=args.k_max, k_metric=args.k_metric,
+        no_gram=args.no_gram, full_gram=args.full_gram, gram_pca=args.gram_pca,
+        reuse_index=args.reuse_index, workers=args.workers,
+        thumbnails=args.thumbnails,
+    )
+
 
 if __name__ == "__main__":
     main()

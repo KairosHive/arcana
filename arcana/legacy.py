@@ -29,10 +29,20 @@ import numpy as np
 
 from .bundle import BundleWriter, Item, ModelSpec, SUFFIX, fingerprint
 
-APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-DB_DIR = os.path.join(APP_ROOT, "databases")
-LATENTS_DIR = os.path.join(APP_ROOT, "latents")
-BUNDLES_DIR = os.path.join(APP_ROOT, "bundles")
+try:
+    from . import paths as _paths
+except ImportError:                      # running as a loose script
+    import paths as _paths
+
+# Resolved through paths.py, not from __file__. Deriving these from the module
+# location means a packaged app looks inside its own read-only install
+# directory: the frozen build reported "no dataset named 'japan'" for a dataset
+# that was loaded and on screen, because discover() was searching
+# _internal/arcana/databases while everything else honoured ARCANA_DATA_DIR.
+APP_ROOT = _paths.APP_ROOT
+DB_DIR = _paths.subdir("databases")
+LATENTS_DIR = _paths.subdir("latents")
+BUNDLES_DIR = _paths.subdir("bundles")
 
 # What db.py hardcoded at the time these datasets were built. Recording it is the
 # whole point: without it a bundle cannot know which text encoder can query it.

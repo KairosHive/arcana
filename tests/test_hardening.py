@@ -319,6 +319,74 @@ def test_fit_filename_keeps_similar_long_names_distinct(tmp):
     assert a != b
 
 
+# ─────────────────────────── every module honours the data dir ───────────────────────────
+def test_all_modules_resolve_data_dirs_through_paths(tmp):
+    """
+    A packaged app runs from a read-only install directory, so no module may
+    derive its data location from __file__.
+
+    legacy.py did exactly that, and the frozen build reported "no dataset named
+    'japan'" for a dataset that was loaded and visible -- discover() was looking
+    inside _internal/arcana/databases while everything else honoured
+    ARCANA_DATA_DIR.
+    """
+    import importlib
+    os.environ["ARCANA_DATA_DIR"] = tmp
+    try:
+        from arcana import paths as P
+        importlib.reload(P)
+        from arcana import legacy as L
+        importlib.reload(L)
+        for name, got in (("DB_DIR", L.DB_DIR),
+                          ("LATENTS_DIR", L.LATENTS_DIR),
+                          ("BUNDLES_DIR", L.BUNDLES_DIR)):
+            assert os.path.normcase(got).startswith(os.path.normcase(tmp)), (
+                f"legacy.{name} is {got!r}, which ignores ARCANA_DATA_DIR"
+            )
+        from arcana import db as D
+        importlib.reload(D)
+        for name, got in (("db_dir", D.db_dir), ("latents_dir", D.latents_dir)):
+            assert os.path.normcase(got).startswith(os.path.normcase(tmp)), (
+                f"db.{name} is {got!r}, which ignores ARCANA_DATA_DIR"
+            )
+    finally:
+        os.environ.pop("ARCANA_DATA_DIR", None)
+        import importlib as _i
+        from arcana import paths as P2
+        _i.reload(P2)
+        from arcana import legacy as L2
+        _i.reload(L2)
+        from arcana import db as D2
+        _i.reload(D2)
+
+
+def test_discover_follows_the_data_dir(tmp):
+    """discover() must search where the data actually is, not next to the code."""
+    import importlib
+    os.environ["ARCANA_DATA_DIR"] = tmp
+    try:
+        from arcana import paths as P
+        importlib.reload(P)
+        from arcana import legacy as L
+        importlib.reload(L)
+        assert L.discover() == [], "a fresh data dir has no datasets"
+
+        # plant one and it must be found
+        db = os.path.join(tmp, "databases"); os.makedirs(db, exist_ok=True)
+        lat = os.path.join(tmp, "latents"); os.makedirs(lat, exist_ok=True)
+        open(os.path.join(db, "index_planted_image.pkl"), "wb").close()
+        open(os.path.join(lat, "latent_space_planted_image_2d.pkl"), "wb").close()
+        importlib.reload(L)
+        assert [d.key for d in L.discover()] == ["planted_image"]
+    finally:
+        os.environ.pop("ARCANA_DATA_DIR", None)
+        import importlib as _i
+        from arcana import paths as P2
+        _i.reload(P2)
+        from arcana import legacy as L2
+        _i.reload(L2)
+
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

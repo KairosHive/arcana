@@ -1,48 +1,402 @@
-# The exact combination this branch was tested against, on Windows 11 / Python 3.10.
+# GENERATED -- do not edit by hand.
 #
-#   uv venv
-#   # GPU build first, from PyTorch's own index only:
-#   uv pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 #       --index-url https://download.pytorch.org/whl/cu128
-#   # then everything else from PyPI:
-#   uv pip install -r requirements-lock.txt
-#   uv pip install -e . --no-deps
+#   uv export --no-hashes --no-dev --no-emit-project -o requirements-lock.txt
 #
-# Two steps on purpose. uv will not mix indexes for a single package (it guards
-# against dependency confusion), and the PyTorch index also serves stale copies
-# of common packages like tqdm -- so pointing at it with --extra-index-url makes
-# the whole resolve fail. Installing torch from it alone, first, avoids that.
+# uv.lock is the single source of truth; this file is derived from it so the two
+# cannot disagree. They previously did, on 15 packages, and uv.lock was the one
+# uv actually used -- so `uv run` kept reinstalling transformers 5, which
+# changed CLIPModel.get_image_features to return a BaseModelOutputWithPooling
+# instead of a tensor and broke indexing at the first image.
 #
-# The pins below carry no +cu128 suffix, so "torch==2.9.1" is satisfied by the
-# CUDA build above and by the plain CPU wheel on PyPI. For a CPU-only install --
-# what a packaged app should ship -- just skip the first step.
-
-numpy==2.2.6
-pandas==2.3.3
-matplotlib==3.10.9
-scikit-learn==1.7.2
-scipy==1.15.3
-opencv-python==5.0.0.93
-
-torch==2.9.1
-torchvision==0.24.1
-torchaudio==2.9.1
-transformers==4.57.3
-
-diffusers==0.39.0
-Pillow==12.0.0
-
-usearch==2.26.2
-
+# The versions here are held by [tool.uv] constraint-dependencies in
+# pyproject.toml. To change one, change the constraint and re-run `uv lock`.
+#
+# Install:                uv sync
+# Verify nothing drifted: python -m arcana.envcheck
+#
+# For the CPU-only packaging build, install torch from
+# https://download.pytorch.org/whl/cpu first; everything else is identical.
+#
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.14.2
+    # via httpx
+audioread==3.1.0 ; python_full_version < '3.12'
+    # via librosa
+blinker==1.9.0
+    # via flask
+certifi==2026.7.22
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
+cffi==2.1.1
+    # via soundfile
+charset-normalizer==3.5.1
+    # via requests
+click==8.5.0
+    # via flask
+cloudpickle==3.1.2
+    # via joblib
+colorama==0.4.6 ; sys_platform == 'win32'
+    # via tqdm
+comm==0.2.3
+    # via dash
+contourpy==1.3.2 ; python_full_version < '3.11'
+    # via matplotlib
+contourpy==1.3.3 ; python_full_version >= '3.11'
+    # via matplotlib
+cycler==0.12.1
+    # via matplotlib
 dash==4.4.1
+    # via
+    #   arcana
+    #   dash-daq
 dash-daq==0.6.0
-plotly==6.9.0
-flask==3.1.3
-
-tqdm==4.67.1
-
-soundfile==0.14.0
-librosa==0.11.0
-numba==0.66.0
-
-pot==0.9.7.post1
+    # via arcana
+decorator==5.3.1
+    # via librosa
+diffusers==0.39.0
+    # via arcana
 einops==0.8.2
+    # via arcana
+exceptiongroup==1.3.1 ; python_full_version < '3.11'
+    # via anyio
+filelock==3.32.5
+    # via
+    #   diffusers
+    #   huggingface-hub
+    #   torch
+    #   transformers
+flask==3.1.3
+    # via
+    #   arcana
+    #   dash
+fonttools==4.64.0
+    # via matplotlib
+fsspec==2026.7.0
+    # via
+    #   huggingface-hub
+    #   torch
+h11==0.16.0
+    # via httpcore
+hf-xet==1.6.0 ; platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+    # via huggingface-hub
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via diffusers
+huggingface-hub==0.36.2
+    # via
+    #   diffusers
+    #   tokenizers
+    #   transformers
+idna==3.19
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+importlib-metadata==9.0.1
+    # via
+    #   dash
+    #   diffusers
+itsdangerous==2.2.0
+    # via flask
+janus==2.0.0
+    # via dash
+jinja2==3.1.6
+    # via
+    #   flask
+    #   torch
+joblib==1.6.0
+    # via
+    #   librosa
+    #   scikit-learn
+kiwisolver==1.5.1
+    # via matplotlib
+lazy-loader==0.5
+    # via librosa
+librosa==0.11.0 ; python_full_version < '3.12'
+    # via arcana
+librosa==1.0.0 ; python_full_version >= '3.12'
+    # via arcana
+llvmlite==0.49.0
+    # via numba
+markupsafe==3.0.3
+    # via
+    #   flask
+    #   jinja2
+    #   werkzeug
+matplotlib==3.10.9 ; python_full_version < '3.11'
+    # via arcana
+matplotlib==3.11.1 ; python_full_version >= '3.11'
+    # via arcana
+mpmath==1.3.0
+    # via sympy
+msgpack==1.2.2
+    # via librosa
+narwhals==2.25.0
+    # via
+    #   plotly
+    #   scikit-learn
+nest-asyncio==1.6.0
+    # via dash
+networkx==3.4.2 ; python_full_version < '3.11'
+    # via torch
+networkx==3.6.1 ; python_full_version >= '3.11'
+    # via torch
+numba==0.67.0
+    # via
+    #   arcana
+    #   librosa
+numkong==7.8.2
+    # via usearch
+numpy==2.2.6 ; python_full_version < '3.11'
+    # via
+    #   arcana
+    #   contourpy
+    #   diffusers
+    #   librosa
+    #   matplotlib
+    #   numba
+    #   opencv-python
+    #   pandas
+    #   pot
+    #   scikit-learn
+    #   scipy
+    #   soundfile
+    #   soxr
+    #   torchvision
+    #   transformers
+    #   usearch
+numpy==2.4.6 ; python_full_version == '3.11.*'
+    # via
+    #   arcana
+    #   contourpy
+    #   diffusers
+    #   librosa
+    #   matplotlib
+    #   numba
+    #   opencv-python
+    #   pandas
+    #   pot
+    #   scikit-learn
+    #   scipy
+    #   soundfile
+    #   soxr
+    #   torchvision
+    #   transformers
+    #   usearch
+numpy==2.5.2 ; python_full_version >= '3.12'
+    # via
+    #   arcana
+    #   contourpy
+    #   diffusers
+    #   librosa
+    #   matplotlib
+    #   numba
+    #   opencv-python
+    #   pandas
+    #   pot
+    #   scikit-learn
+    #   scipy
+    #   soundfile
+    #   soxr
+    #   torchvision
+    #   transformers
+    #   usearch
+nvidia-cublas-cu12==12.8.4.1 ; sys_platform == 'linux'
+    # via
+    #   nvidia-cudnn-cu12
+    #   nvidia-cusolver-cu12
+    #   torch
+nvidia-cuda-cupti-cu12==12.8.90 ; sys_platform == 'linux'
+    # via torch
+nvidia-cuda-nvrtc-cu12==12.8.93 ; sys_platform == 'linux'
+    # via torch
+nvidia-cuda-runtime-cu12==12.8.90 ; sys_platform == 'linux'
+    # via torch
+nvidia-cudnn-cu12==9.10.2.21 ; sys_platform == 'linux'
+    # via torch
+nvidia-cufft-cu12==11.3.3.83 ; sys_platform == 'linux'
+    # via torch
+nvidia-cufile-cu12==1.13.1.3 ; sys_platform == 'linux'
+    # via torch
+nvidia-curand-cu12==10.3.9.90 ; sys_platform == 'linux'
+    # via torch
+nvidia-cusolver-cu12==11.7.3.90 ; sys_platform == 'linux'
+    # via torch
+nvidia-cusparse-cu12==12.5.8.93 ; sys_platform == 'linux'
+    # via
+    #   nvidia-cusolver-cu12
+    #   torch
+nvidia-cusparselt-cu12==0.7.1 ; sys_platform == 'linux'
+    # via torch
+nvidia-nccl-cu12==2.27.5 ; sys_platform == 'linux'
+    # via torch
+nvidia-nvjitlink-cu12==12.8.93 ; sys_platform == 'linux'
+    # via
+    #   nvidia-cufft-cu12
+    #   nvidia-cusolver-cu12
+    #   nvidia-cusparse-cu12
+    #   torch
+nvidia-nvshmem-cu12==3.3.20 ; sys_platform == 'linux'
+    # via torch
+nvidia-nvtx-cu12==12.8.90 ; sys_platform == 'linux'
+    # via torch
+opencv-python==5.0.0.93
+    # via arcana
+packaging==26.3
+    # via
+    #   huggingface-hub
+    #   lazy-loader
+    #   matplotlib
+    #   plotly
+    #   pooch
+    #   transformers
+pandas==2.3.3
+    # via arcana
+pillow==12.3.0
+    # via
+    #   arcana
+    #   diffusers
+    #   matplotlib
+    #   torchvision
+platformdirs==4.11.7
+    # via pooch
+plotly==7.0.0
+    # via
+    #   arcana
+    #   dash
+pooch==1.9.0
+    # via librosa
+pot==0.9.7.post1
+    # via arcana
+pycparser==3.0 ; implementation_name != 'PyPy'
+    # via cffi
+pydantic==2.13.5
+    # via dash
+pydantic-core==2.46.5
+    # via pydantic
+pyparsing==3.3.2
+    # via matplotlib
+python-dateutil==2.9.0.post0
+    # via
+    #   matplotlib
+    #   pandas
+pytz==2026.3.post1
+    # via pandas
+pyyaml==6.0.3
+    # via
+    #   huggingface-hub
+    #   transformers
+regex==2026.9.3
+    # via
+    #   diffusers
+    #   transformers
+requests==2.34.2
+    # via
+    #   dash
+    #   diffusers
+    #   huggingface-hub
+    #   pooch
+    #   transformers
+retrying==1.4.2
+    # via dash
+safetensors==0.8.0
+    # via
+    #   diffusers
+    #   transformers
+scikit-learn==1.7.2 ; python_full_version < '3.11'
+    # via
+    #   arcana
+    #   librosa
+scikit-learn==1.9.0 ; python_full_version >= '3.11'
+    # via
+    #   arcana
+    #   librosa
+scipy==1.15.3 ; python_full_version < '3.11'
+    # via
+    #   arcana
+    #   librosa
+    #   pot
+    #   scikit-learn
+scipy==1.17.1 ; python_full_version == '3.11.*'
+    # via
+    #   arcana
+    #   librosa
+    #   pot
+    #   scikit-learn
+scipy==1.18.1 ; python_full_version >= '3.12'
+    # via
+    #   arcana
+    #   librosa
+    #   pot
+    #   scikit-learn
+setuptools==84.0.0
+    # via
+    #   dash
+    #   torch
+six==1.17.0
+    # via python-dateutil
+soundfile==0.14.0
+    # via
+    #   arcana
+    #   librosa
+soxr==1.1.0
+    # via librosa
+sympy==1.14.0
+    # via torch
+threadpoolctl==3.6.0
+    # via scikit-learn
+tokenizers==0.22.2
+    # via transformers
+torch==2.9.1+cu128
+    # via
+    #   arcana
+    #   torchaudio
+    #   torchvision
+torchaudio==2.9.1 ; python_full_version < '3.15' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'
+    # via arcana
+torchaudio==2.9.1+cu128 ; python_full_version >= '3.15' or platform_machine != 'aarch64' or platform_python_implementation != 'CPython' or sys_platform != 'linux'
+    # via arcana
+torchvision==0.24.1 ; python_full_version < '3.15' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'
+    # via arcana
+torchvision==0.24.1+cu128 ; python_full_version >= '3.15' or platform_machine != 'aarch64' or platform_python_implementation != 'CPython' or sys_platform != 'linux'
+    # via arcana
+tqdm==4.70.0
+    # via
+    #   arcana
+    #   huggingface-hub
+    #   transformers
+    #   usearch
+transformers==4.57.6
+    # via arcana
+triton==3.5.1 ; sys_platform == 'linux'
+    # via torch
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   dash
+    #   exceptiongroup
+    #   huggingface-hub
+    #   librosa
+    #   pydantic
+    #   pydantic-core
+    #   soundfile
+    #   torch
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via pydantic
+tzdata==2026.3
+    # via pandas
+urllib3==2.7.0
+    # via requests
+usearch==2.26.2
+    # via arcana
+werkzeug==3.1.8
+    # via
+    #   dash
+    #   flask
+zipp==4.1.0
+    # via importlib-metadata

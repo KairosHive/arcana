@@ -81,10 +81,26 @@ def _load_and_prepare(image_or_path, resize_dim: int = DEFAULT_RESIZE_DIM) -> np
 def _get_pixels(img_lab: np.ndarray, max_pixels: int = KMEANS_MAX_PIXELS) -> np.ndarray:
     """
     Flatten image to (N, 3) pixel array, subsampling if needed.
+
+    The subsample is drawn from a locally seeded generator, so extracting a
+    palette twice from the same image gives the same palette. It used to draw
+    from the global numpy RNG with no seed: KMeans was seeded (random_state=42)
+    but the pixels handed to it were a fresh random subsample every call, so
+    extract_dominant_colors was not a function of its input. Two palette strips
+    drawn for the same picture disagreed, and the same strip changed between
+    renders.
+
+    A local Generator rather than np.random.seed(): seeding the global RNG here
+    would silently make every other random draw in the process reproducible
+    too, which is a much bigger change than this function is entitled to make.
+
+    The default 128x128 resize is 16,384 pixels against a 10,000 cap, so this
+    path is taken for essentially every image.
     """
     pixels = img_lab.reshape(-1, 3)
     if len(pixels) > max_pixels:
-        indices = np.random.choice(len(pixels), max_pixels, replace=False)
+        rng = np.random.default_rng(0)
+        indices = rng.choice(len(pixels), max_pixels, replace=False)
         pixels = pixels[indices]
     return pixels
 

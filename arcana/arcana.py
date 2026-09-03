@@ -4294,7 +4294,16 @@ _ui_datasets.register(app)
 
 
 def main():
-    app.run(debug=False)
+    # 8051, not Dash's default 8050. The packaged app (installer/launcher.py)
+    # listens on 8050, so a development server on the same port either refuses
+    # to start or, worse, quietly serves the installed app's URL from a
+    # different codebase -- and because the moodboard collection lives in
+    # browser localStorage, which is keyed by origin, the two would also share
+    # state and look like one confusing application.
+    #
+    # Override with ARCANA_DEV_PORT when running several branches side by side.
+    port = int(os.environ.get("ARCANA_DEV_PORT", "8051"))
+    app.run(host="127.0.0.1", port=port, debug=False)
 
 
 if __name__ == "__main__":

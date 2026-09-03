@@ -1082,6 +1082,29 @@ app.layout = html.Div(
     children=[
         html.Div(
             [
+                # The mark, then the tabs. Dash serves anything in
+                # arcana/assets, so this survives freezing as long as the spec
+                # ships that directory -- which it already does for custom.css
+                # and the label lists.
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "gap": "11px",
+                           "flex": "0 0 auto", "marginRight": "28px"},
+                    children=[
+                        html.Img(
+                            src=app.get_asset_url("arcana-mark.png"),
+                            alt="",
+                            style={"height": "36px", "width": "auto",
+                                   "display": "block"},
+                        ),
+                        # The name is set in the app's own type rather than
+                        # taken from the logo file: the wordmark there is a pale
+                        # outline drawn for a light page, and on this ground it
+                        # reads as haze.
+                        html.Span("Arcana", style={
+                            "fontSize": "19px", "fontWeight": "600",
+                            "letterSpacing": "0.5px", "color": _ui.INK}),
+                    ],
+                ),
                 dcc.RadioItems(
                     id="mode-select",
                     # Datasets first, and selected by default. It is the only
@@ -1507,49 +1530,39 @@ app.layout = html.Div(
                                                 tooltip={"placement": "bottom", "always_visible": False},
                                             ),
                                         ], style={"flex": "1", "minWidth": "150px"}),
-                                        # Size dropdown (ModFlows only)
+                                        # ── QUALITY ─────────────────────────
+                                        # One choice replaces Size, Steps and a
+                                        # "Full-res output" checkbox. Those were
+                                        # three implementation details the user
+                                        # had to understand, and two of them
+                                        # decided whether the result came back
+                                        # at 1024px or at the original size.
+                                        # Every preset now returns the picture
+                                        # at its original resolution: the flow
+                                        # runs small, because it is looking for
+                                        # a global colour mapping and does not
+                                        # need detail to find one, and that
+                                        # mapping is applied at full size
+                                        # through a 3-D LUT.
                                         html.Div([
-                                            html.Span("Size:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            html.Span("Quality:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
                                             dcc.Dropdown(
-                                                id="color-transfer-size",
+                                                id="color-transfer-quality",
                                                 options=[
-                                                    {"label": "512px (fast)", "value": 512},
-                                                    {"label": "1024px", "value": 1024},
-                                                    {"label": "2048px (slow)", "value": 2048},
+                                                    {"label": "Quick look", "value": "quick"},
+                                                    {"label": "Balanced", "value": "balanced"},
+                                                    {"label": "Best", "value": "best"},
                                                 ],
-                                                value=1024,
+                                                value="balanced",
                                                 clearable=False,
-                                                style={"width": "120px", "color": "#000", "fontSize": "12px"},
+                                                style={"width": "150px", "color": "#000", "fontSize": "12px"},
                                             ),
-                                        ], id="color-transfer-size-wrapper", style={"display": "flex", "alignItems": "center"}),
-                                        # Steps: the flow's integration steps. Was fixed
-                                        # at the library default of 8 and never exposed.
-                                        html.Div([
-                                            html.Span("Steps:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
-                                            dcc.Dropdown(
-                                                id="color-transfer-steps",
-                                                options=[
-                                                    {"label": "4 (fastest)", "value": 4},
-                                                    {"label": "8 (default)", "value": 8},
-                                                    {"label": "16", "value": 16},
-                                                    {"label": "32 (smoothest)", "value": 32},
-                                                ],
-                                                value=8,
-                                                clearable=False,
-                                                style={"width": "120px", "color": "#000", "fontSize": "12px"},
-                                            ),
-                                        ], id="color-transfer-steps-wrapper", style={"display": "flex", "alignItems": "center"}),
-                                        # Full-res checkbox (ModFlows only)
-                                        html.Div(
-                                            dcc.Checklist(
-                                                id="color-transfer-fullres",
-                                                options=[{"label": "Full-res output", "value": "fullres"}],
-                                                value=[],
-                                                inline=True,
-                                                style={"fontSize": "11px"},
-                                            ),
-                                            id="color-transfer-fullres-wrapper",
-                                        ),
+                                        ], id="color-transfer-quality-wrapper",
+                                           style={"display": "flex", "alignItems": "center"}),
+                                        html.Div(id="color-transfer-quality-note",
+                                                 style={"fontSize": "11px", "color": _ui.INK_DIM,
+                                                        "width": "100%", "marginTop": "-4px",
+                                                        "minHeight": "15px"}),
                                         # ── the ModFlows model, if it is missing ──
                                         # The neural method needs a 229 MB
                                         # checkpoint that is deliberately not
@@ -2857,9 +2870,7 @@ def update_feature_availability(dataset_value):
 # Disable ModFlows-only parameters when LAB method is selected
 @app.callback(
     [
-        Output("color-transfer-size-wrapper", "style"),
-        Output("color-transfer-steps-wrapper", "style"),
-        Output("color-transfer-fullres-wrapper", "style"),
+        Output("color-transfer-quality-wrapper", "style"),
     ],
     Input("color-transfer-method", "value"),
 )
@@ -2872,11 +2883,11 @@ def toggle_method_params(method):
     full-res pass to configure. Strength is its only parameter.
     """
     if method == "lab":
-        off_row = {"display": "flex", "alignItems": "center", "opacity": "0.4",
-                   "pointerEvents": "none"}
-        return off_row, off_row, {"opacity": "0.4", "pointerEvents": "none"}
-    on_row = {"display": "flex", "alignItems": "center"}
-    return on_row, on_row, {}
+        # LAB is a closed-form statistical transfer: it has no flow to run, so
+        # a quality choice would be a control that changes nothing.
+        return {"display": "flex", "alignItems": "center", "opacity": "0.4",
+                "pointerEvents": "none"}
+    return {"display": "flex", "alignItems": "center"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3059,6 +3070,31 @@ def preview_reference_filter(ref_path, lightness, saturation):
 
 
 @app.callback(
+    Output("color-transfer-quality-note", "children"),
+    [Input("color-transfer-quality", "value"),
+     Input("color-transfer-method", "value")],
+)
+def describe_transfer_quality(quality, method):
+    """Say what the chosen preset costs, and that the output is full size."""
+    if method == "lab":
+        return "LAB is instant and needs no model."
+    try:
+        from . import color_transfer as _ct
+        from . import gpu as _g
+    except ImportError:
+        import color_transfer as _ct
+        import gpu as _g
+    p = _ct.QUALITY_PRESETS.get(quality or _ct.DEFAULT_QUALITY)
+    if not p:
+        return ""
+    # Measured on a 6000x4000 photograph; the GPU numbers barely move between
+    # presets because building and applying the LUT is CPU work.
+    secs = {"quick": (5, 5), "balanced": (11, 4), "best": (38, 5)}[quality or "balanced"]
+    took = secs[1] if _g.available() else secs[0]
+    return f"{p['note']} — about {took}s here, output at full resolution."
+
+
+@app.callback(
     # Two outputs: a one-line receipt that stays in the card, and the picture
     # itself, which goes to the stage. The preview used to be a 640px image
     # rendered width:100% inside a ~300px card in the bench -- the result of the
@@ -3071,15 +3107,13 @@ def preview_reference_filter(ref_path, lightness, saturation):
     State("selected-target-image", "data"),      # Target (receives colors)
     State("color-transfer-method", "value"),
     State("color-transfer-strength", "value"),
-    State("color-transfer-size", "value"),
-    State("color-transfer-steps", "value"),
-    State("color-transfer-fullres", "value"),
+    State("color-transfer-quality", "value"),
     State("ct-lightness", "value"),
     State("ct-saturation", "value"),
     prevent_initial_call=True,
 )
 def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
-                           max_size, steps, fullres_opts, ct_lightness, ct_saturation):
+                           quality, ct_lightness, ct_saturation):
     """Transfer colors from reference image to target image."""
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
@@ -3142,18 +3176,25 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
             method_label = "LAB (Reinhard)"
             device_str = "CPU"
         else:
-            # ModFlows
-            size_val = int(max_size) if max_size else 1024
-            use_fullres = fullres_opts and "fullres" in fullres_opts
-            result_img = transfer_colors(
+            # ModFlows. The flow runs at the preset's size; the colour
+            # mapping it finds is then applied to the original picture at full
+            # resolution, so the output is never smaller than the input.
+            try:
+                from . import color_transfer as _ct
+            except ImportError:
+                import color_transfer as _ct
+            preset = _ct.QUALITY_PRESETS.get(quality or _ct.DEFAULT_QUALITY,
+                                             _ct.QUALITY_PRESETS[_ct.DEFAULT_QUALITY])
+            low = transfer_colors(
                 content=content_img,
                 style=style_img,
                 strength=strength_val,
-                steps=int(steps) if steps else 8,
-                max_size=size_val,
-                full_res_output=use_fullres
+                steps=preset["steps"],
+                max_size=preset["max_size"],
             )
-            method_label = f"ModFlows, {int(steps) if steps else 8} steps"
+            result_img = _ct.transfer_at_full_resolution(
+                target_resolved, low, preset["lut"])
+            method_label = f"ModFlows, {preset['label'].lower()}"
             device_info = get_device_info() if get_device_info else {"device": "unknown"}
             device_str = device_info.get("device", "unknown")
         

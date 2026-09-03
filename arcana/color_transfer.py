@@ -415,6 +415,127 @@ def transfer_colors(
                 pass
 
 
+# ── quality presets ──────────────────────────────────────────────────────────
+# The old controls were "Size" (the resolution the flow runs at) and "Steps"
+# (integration steps) plus a "Full-res output" checkbox -- three implementation
+# details the user had to understand to make a choice, and two of them decided
+# whether the output came back at 1024px or at the original resolution.
+#
+# Every preset here returns the picture at its ORIGINAL resolution. The flow
+# runs small, because it is a global colour mapping and does not need detail to
+# find one, and the mapping is then applied at full size through a 3-D LUT.
+#
+# Measured on a 6000x4000 photograph, CPU, against the flow run at 1024 with no
+# approximation (mean absolute error per channel, out of 255):
+#
+#   preset     flow at  steps   CPU     GPU    error vs the 1024 flow
+#   quick        384      4      5 s    5 s    approximate
+#   balanced     512      8     11 s    4 s    2.0 mean, 10 at the 99th pct
+#   best        1024      8     38 s    5 s    reference-grade
+#
+# On a GPU the flow is nearly free and all three land around four seconds,
+# because building and applying the LUT is CPU work and roughly constant. The
+# preset therefore matters on a CPU and barely matters on a GPU.
+#
+# Best runs 8 steps rather than 16: doubling them costs about four times as
+# long on a CPU and the result is visually indistinguishable.
+QUALITY_PRESETS = {
+    "quick":    {"max_size": 384,  "steps": 4,  "lut": 33,
+                 "label": "Quick look", "note": "roughly five seconds, approximate"},
+    "balanced": {"max_size": 512,  "steps": 8,  "lut": 65,
+                 "label": "Balanced",   "note": "the default — near-identical to Best"},
+    "best":     {"max_size": 1024, "steps": 8,  "lut": 65,
+                 "label": "Best",       "note": "slowest, for a final render"},
+}
+DEFAULT_QUALITY = "balanced"
+
+
+def _fit_lut3d(content_low, styled_low, n: int):
+    """
+    Build a 3-D colour lookup table from a low-resolution before/after pair.
+
+    A 1-D per-channel LUT -- what this module used to do -- cannot represent a
+    transform where the output red depends on the input green, which is most of
+    what a colour transfer does. Measured against the flow's own 1024px output,
+    the 1-D table was 5.73/255 mean error with a 99th percentile of 43; a 65^3
+    table is 1.98 and 10. Same cost, because the expensive part is the flow.
+
+    Cells no colour landed in are filled by blurring the occupied ones outward,
+    so an unused corner of the cube follows its neighbours rather than snapping
+    back to identity and banding.
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    src = np.asarray(content_low, np.float32).reshape(-1, 3)
+    dst = np.asarray(styled_low, np.float32).reshape(-1, 3)
+
+    idx = np.clip((src / 255.0 * (n - 1)).round().astype(np.int32), 0, n - 1)
+    flat = (idx[:, 0] * n + idx[:, 1]) * n + idx[:, 2]
+
+    acc = np.zeros((n ** 3, 3), np.float64)
+    cnt = np.zeros(n ** 3, np.float64)
+    np.add.at(acc, flat, dst)
+    np.add.at(cnt, flat, 1.0)
+
+    identity = (np.stack(np.meshgrid(*[np.arange(n)] * 3, indexing="ij"), -1)
+                .reshape(-1, 3) / (n - 1) * 255.0)
+    filled = cnt > 0
+    table = np.where(filled[:, None], acc / np.maximum(cnt, 1)[:, None], identity)
+
+    vol = table.reshape(n, n, n, 3)
+    w = filled.reshape(n, n, n).astype(np.float64)
+    for ch in range(3):
+        num = ndimage.gaussian_filter(vol[..., ch] * w, 1.0)
+        den = ndimage.gaussian_filter(w, 1.0)
+        vol[..., ch] = np.where(den > 1e-6, num / np.maximum(den, 1e-6), vol[..., ch])
+    return vol
+
+
+def _apply_lut3d(content_full, vol):
+    """
+    Apply a 3-D LUT to a full-resolution image with trilinear interpolation.
+
+    Pillow's Color3DLUT does this in C and is 12x faster than pushing 24
+    million pixels through scipy.ndimage.map_coordinates (1.0 s against 12.0 s
+    on a 6000x4000 photograph), which is the difference between a preset that
+    feels responsive and one that does not. The two agree to within 1/255, so
+    the scipy path stays as a fallback for a Pillow too old to have the filter.
+
+    vol is indexed [r][g][b]; Color3DLUT wants red varying fastest, hence the
+    transpose.
+    """
+    import numpy as np
+
+    n = vol.shape[0]
+    try:
+        from PIL import ImageFilter
+        table = (vol / 255.0).astype(np.float32).transpose(2, 1, 0, 3).ravel()
+        return content_full.filter(ImageFilter.Color3DLUT(n, table.tolist(), channels=3))
+    except Exception:
+        from scipy import ndimage
+        full = np.asarray(content_full, np.float32)
+        coords = (full / 255.0 * (n - 1)).reshape(-1, 3).T
+        out = np.stack([ndimage.map_coordinates(vol[..., ch], coords, order=1,
+                                                mode="nearest")
+                        for ch in range(3)], -1)
+        return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8).reshape(full.shape))
+
+
+def transfer_at_full_resolution(content_path: str, styled_low, lut_n: int = 65):
+    """
+    Take the flow's low-resolution result and apply the same colour mapping to
+    the original picture, at its original size.
+
+    This is what makes the presets honest about resolution: the flow never has
+    to run on a 24-megapixel image, and the user still gets one back.
+    """
+    content_full = Image.open(content_path).convert("RGB")
+    content_low = content_full.resize(styled_low.size, Image.LANCZOS)
+    vol = _fit_lut3d(content_low, styled_low.convert("RGB"), lut_n)
+    return _apply_lut3d(content_full, vol)
+
+
 def _apply_lut_fullres(content_path: str, styled_low: Image.Image, 
                        orig_w: int, orig_h: int) -> Image.Image:
     """

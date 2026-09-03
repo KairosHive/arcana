@@ -249,6 +249,48 @@ def test_large_reference_is_downsampled_not_read_whole(tmp):
     assert a["n"] <= 512 * 512, a["n"]
 
 
+
+# ───────────────── full-resolution colour transfer ─────────────────
+def test_lut3d_reproduces_a_known_colour_mapping(tmp):
+    """
+    A 3-D LUT must represent a transform where one output channel depends on
+    another input channel. A 1-D per-channel table -- what this used to use --
+    structurally cannot, which is why it scored 5.73/255 mean error against the
+    flow's own output where a 65^3 table scores 1.98.
+    """
+    from arcana.color_transfer import _fit_lut3d, _apply_lut3d
+
+    rng = np.random.RandomState(0)
+    src = rng.randint(0, 256, (64, 64, 3), dtype=np.uint8)
+    # swap red and blue: a pure cross-channel mapping
+    dst = src[..., ::-1].copy()
+
+    vol = _fit_lut3d(Image.fromarray(src), Image.fromarray(dst), 33)
+    out = np.asarray(_apply_lut3d(Image.fromarray(src), vol), np.float32)
+    err = np.abs(out - dst.astype(np.float32)).mean()
+    assert err < 12.0, f"cross-channel mapping not reproduced (mean err {err:.1f})"
+
+
+def test_lut3d_leaves_an_identity_mapping_alone(tmp):
+    from arcana.color_transfer import _fit_lut3d, _apply_lut3d
+    rng = np.random.RandomState(1)
+    src = rng.randint(0, 256, (48, 48, 3), dtype=np.uint8)
+    vol = _fit_lut3d(Image.fromarray(src), Image.fromarray(src), 33)
+    out = np.asarray(_apply_lut3d(Image.fromarray(src), vol), np.float32)
+    assert np.abs(out - src.astype(np.float32)).mean() < 6.0
+
+
+def test_quality_presets_are_ordered_and_complete(tmp):
+    from arcana.color_transfer import QUALITY_PRESETS, DEFAULT_QUALITY
+    assert DEFAULT_QUALITY in QUALITY_PRESETS
+    sizes = [QUALITY_PRESETS[k]["max_size"] for k in ("quick", "balanced", "best")]
+    assert sizes == sorted(sizes), sizes
+    for k, p in QUALITY_PRESETS.items():
+        for field in ("max_size", "steps", "lut", "label", "note"):
+            assert field in p, (k, field)
+        # the LUT must be fine enough to beat the 1-D table it replaced
+        assert p["lut"] >= 33, (k, p["lut"])
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

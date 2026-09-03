@@ -10,9 +10,9 @@ import os
 import sys
 import cv2
 try:
-    from .cvio import imread_unicode, imwrite_unicode
+    from .cvio import imread_unicode, imread_for_encoder, imwrite_unicode
 except ImportError:
-    from cvio import imread_unicode, imwrite_unicode
+    from cvio import imread_unicode, imread_for_encoder, imwrite_unicode
 import math
 import pickle
 import argparse
@@ -20,6 +20,11 @@ from glob import glob
 import hashlib
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import multiprocessing
+try:
+    from . import gpu as _gpu
+except ImportError:
+    import gpu as _gpu
+
 
 
 import numpy as np
@@ -429,7 +434,9 @@ _CLIP = {"model": None, "proc": None, "id": None}
 _CLAP = {"model": None, "proc": None}
 
 def _device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    # Not torch.cuda.is_available(): that says a driver and card exist, not
+    # that this torch build has kernels for them. See arcana/gpu.py.
+    return _gpu.device()
 
 def load_clip(device: str | None = None, model_id: str | None = None):
     """
@@ -446,7 +453,12 @@ def load_clip(device: str | None = None, model_id: str | None = None):
         from transformers import CLIPModel, CLIPProcessor
         m = CLIPModel.from_pretrained(model_id)
         if device == "cuda":
-            m = m.to("cuda").half()
+            m = m.to("cuda")
+            # Half precision only from Volta up. A pre-Volta card runs .half()
+            # slowly and less accurately, and the result goes into an index
+            # that is then indistinguishable from an fp32 one.
+            if _gpu.use_fp16():
+                m = m.half()
         else:
             m = m.to("cpu")
         m.eval()
@@ -625,13 +637,23 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
     next_key = 0
 
     if modality == "image":
+      # OpenCV threads inside a single decode by default, which fights the pool
+      # below for the same cores. Pin it to one for the duration and restore it
+      # afterwards, so nothing else in the process is affected.
+      _cv_threads = cv2.getNumThreads()
+      cv2.setNumThreads(1)
+      # One pool for the whole run: a batch is 32 images, so creating a pool per
+      # batch would make thread start-up a measurable share of the work.
+      with ThreadPoolExecutor(max_workers=_decode_workers()) as _decoder:
         for batch_start in tqdm(range(0, len(paths), batch_size), desc="Indexing images"):
             _report(batch_start, len(paths), "Encoding images")
             batch_paths = paths[batch_start : batch_start + batch_size]
             imgs = []
             ok_paths = []
-            for p in batch_paths:
-                im = imread_unicode(p)
+            # map keeps input order, so imgs and ok_paths stay aligned with each
+            # other and with the vectors the encoder returns. A bad file yields
+            # None and is dropped from both.
+            for p, im in zip(batch_paths, _decoder.map(imread_for_encoder, batch_paths)):
                 if im is None:
                     print(f"[WARN] bad image, skipping: {p}")
                     continue
@@ -646,6 +668,13 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
             with torch.no_grad():
                 vecs = model.get_image_features(px).detach().cpu().float().numpy()
             for i, vec in enumerate(vecs):
+                # fp16 on the GPU can overflow to inf/nan on a pathological
+                # image. usearch stores it happily, and the point then sits at
+                # an undefined place on the map matching nothing, with no error
+                # raised anywhere.
+                if not np.isfinite(vec).all():
+                    print(f"[WARN] non-finite embedding, skipping: {ok_paths[i]}")
+                    continue
                 index.add(next_key, vec)
                 idx2path[next_key] = os.path.abspath(ok_paths[i])
                 next_key += 1
@@ -660,9 +689,15 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
             except Exception as e:
                 print(f"[WARN] failed on {p}: {e}")
                 continue
+            if not np.isfinite(vec).all():
+                print(f"[WARN] non-finite embedding, skipping: {p}")
+                continue
             index.add(next_key, vec)
             idx2path[next_key] = os.path.abspath(p)
             next_key += 1
+
+    if modality == "image":
+        cv2.setNumThreads(_cv_threads)
 
     if not idx2path:
         raise SystemExit(f"No {modality} files could be read; nothing to index.")
@@ -693,6 +728,35 @@ def _extract_palette_worker(args):
         return (i, feats, None)
     except Exception as e:
         return (i, None, str(e))
+
+
+def _decode_workers() -> int:
+    """
+    How many threads to decode images with.
+
+    Decoding dominated indexing and it was serial: ~143 ms per image on the
+    machine this was measured on, against 27.6 ms for a ViT-B/32 forward pass
+    on the CPU and 0.6 ms on the GPU. That one loop is why a GPU was worth only
+    1.2x end-to-end for the default encoder -- the card sat idle for roughly
+    94% of a run, waiting for JPEGs.
+
+    Threads, not processes: cv2.imdecode releases the GIL for the whole decode,
+    and a process pool inside a frozen app re-launches the application once per
+    worker (see _feature_executor). Capped because past a point this is bound by
+    the disk, and every in-flight image is a decoded bitmap held in memory.
+
+    Measured on 120 real photographs with a warm page cache, decoding one image:
+
+        serial, OpenCV threading on     79.1 ms
+        16 threads, OpenCV threading on 17.8 ms
+        22 threads, OpenCV pinned to 1  14.1 ms   <- 5.6x
+
+    OpenCV parallelises inside a single decode by default, so an outer pool
+    ends up fighting it for the same cores. Pinning cv2 to one thread while the
+    pool is open is worth another ~25%.
+    """
+    n = os.cpu_count() or 4
+    return int(max(2, min(24, n)))
 
 
 def _feature_executor(n_workers: int):

@@ -97,6 +97,11 @@ try:
 except ImportError:
     import paths as _paths
 
+try:
+    from . import gpu as _gpu
+except ImportError:
+    import gpu as _gpu
+
 # Every writable location comes from paths.py, which keeps data outside the
 # install directory. Nothing here creates a directory: a packaged app installs
 # read-only, so an os.makedirs at import time is a crash on launch.
@@ -3243,7 +3248,7 @@ def inject_poetry(n_clicks, story_cache, folder, strength_val):
     output_dir = _safe_output_dir("stories", subfolder, "poetry_injected")
     os.makedirs(output_dir, exist_ok=True)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _gpu.device()
     from diffusers import StableDiffusionImg2ImgPipeline
     # fp16 is a CUDA thing: on CPU most fp16 kernels are unimplemented, so asking
     # for the fp16 variant here made story mode raise on every machine without an
@@ -3374,7 +3379,7 @@ def _spec_cache_key(full_path: str, mtime: float, params: tuple) -> str:
 def _mel_db(y: np.ndarray, sr: int, n_fft: int, hop: int, n_mels: int) -> np.ndarray:
     # Torch path is fast and can use GPU if available; falls back to librosa
     if torchaudio is not None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = _gpu.device()
         wav = torch.from_numpy(y).to(device).unsqueeze(0)  # (1, T)
         mel = torchaudio.transforms.MelSpectrogram(
             sample_rate=sr, n_fft=n_fft, hop_length=hop, n_mels=n_mels, power=2.0

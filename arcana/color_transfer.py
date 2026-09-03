@@ -57,6 +57,11 @@ try:
 except ImportError:                                          # loose script
     import paths as _paths
 
+try:
+    from . import gpu as _gpu
+except ImportError:
+    import gpu as _gpu
+
 ENV_MODFLOWS_DIR = "ARCANA_MODFLOWS_DIR"
 
 CHECKPOINT_NAMES = [
@@ -196,15 +201,15 @@ def get_device_info() -> dict:
         _torch = torch
     
     info = {
-        "device": "cuda" if _torch.cuda.is_available() else "cpu",
-        "cuda_available": _torch.cuda.is_available(),
+        "device": _gpu.device(),
+        "cuda_available": _gpu.available(),
         "gpu_name": None,
         "gpu_memory_gb": None,
         "torch_version": _torch.__version__,
         "cuda_version": None,
     }
     
-    if _torch.cuda.is_available():
+    if _gpu.available():
         info["gpu_name"] = _torch.cuda.get_device_name(0)
         info["gpu_memory_gb"] = _torch.cuda.get_device_properties(0).total_memory / (1024**3)
         if hasattr(_torch.version, 'cuda'):
@@ -229,7 +234,7 @@ def check_cuda_installation() -> dict:
         _torch = torch
     
     result = {
-        "is_cuda": _torch.cuda.is_available(),
+        "is_cuda": _gpu.available(),
         "recommendation": None,
         "install_command": None,
     }
@@ -320,7 +325,7 @@ def _get_encoder():
     from src.encoder import Encoder
     
     # Determine device
-    _device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
+    _device = _torch.device(_gpu.device())
     
     # Load encoder. Build it in a local first: assigning the module-level
     # _encoder before load_state_dict lets a second concurrent request see a

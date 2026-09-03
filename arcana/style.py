@@ -9,6 +9,11 @@
 # All methods return fixed-size vectors for cosine similarity comparison.
 
 import numpy as np
+try:
+    from . import gpu as _gpu
+except ImportError:
+    import gpu as _gpu
+
 import cv2
 try:
     from .cvio import imread_unicode
@@ -364,7 +369,7 @@ def _load_vgg():
         vgg.eval()
         
         # Move to GPU if available
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(_gpu.device())
         vgg = vgg.to(device)
         
         # Freeze

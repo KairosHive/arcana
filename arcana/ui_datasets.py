@@ -19,11 +19,13 @@ try:
     from . import paths as _paths
     from . import db as _db
     from .jobs import MANAGER
+    from . import gpu as _gpu
 except ImportError:                      # loose-script fallback
     import models as _models
     import paths as _paths
     import db as _db
     from jobs import MANAGER
+    import gpu as _gpu
 
 # ── a small design system, shared by this panel and the moodboard ─────────────
 #
@@ -242,6 +244,14 @@ def layout() -> html.Div:
                                    style={"fontSize": "12px", "color": INK_DIM,
                                           "lineHeight": "1.5", "marginTop": "10px",
                                           "maxWidth": "70ch", "minHeight": "18px"}),
+                          # What the app can actually see. The estimates above
+                          # are computed from this, so when someone with a good
+                          # card is told "on the CPU" they deserve to know why
+                          # rather than assume the app is simply slow.
+                          html.Div(id="dm-hardware",
+                                   style={"fontSize": "11.5px", "color": INK_FAINT,
+                                          "marginTop": "8px", "maxWidth": "70ch",
+                                          "lineHeight": "1.5"}),
                       ])),
 
                 _step(4, "Extras, then go",
@@ -919,6 +929,38 @@ def register(app) -> None:
         if n_other:
             msg += f" ({n_other:,} {other} files here too \u2014 index those separately.)"
         return html.Span(msg, style={"color": OK})
+
+    @app.callback(
+        Output("dm-hardware", "children"),
+        Input("mode-select", "value"),
+    )
+    def _hardware(mode):
+        """
+        Say what the app can see, and what to do about it.
+
+        check_cuda_installation() in color_transfer.py has always produced
+        exactly this advice and nothing ever called it, so a user with a good
+        card sat through CPU-speed indexing with no hint that anything was
+        wrong -- and a user whose card has no compiled kernels got a crash
+        part-way through instead of a sentence.
+        """
+        if mode != "datasets":
+            return no_update
+        try:
+            line = _gpu.describe()
+        except Exception:
+            return ""
+        if _gpu.available():
+            return line
+        # No usable GPU. Only mention the pip route to someone who has hardware
+        # that would actually benefit; telling a laptop owner to rebuild from
+        # source is noise.
+        extra = (" The packaged build ships CPU-only PyTorch to keep the "
+                 "download under a gigabyte. Installing Arcana from source into "
+                 "a CUDA environment uses the card instead.")
+        v = _gpu.verdict()
+        return line + (extra if v.get("name") else "")
+
 
     @app.callback(
         Output("dm-model-note", "children"),

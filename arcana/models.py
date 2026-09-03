@@ -14,6 +14,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, asdict
 
+try:
+    from . import gpu as _gpu
+except ImportError:
+    import gpu as _gpu
+
 IMAGE = "image"
 AUDIO = "audio"
 
@@ -105,12 +110,15 @@ def default_for(modality: str, has_gpu: bool | None = None) -> ModelInfo:
 
 
 def gpu_available() -> bool:
-    """True if torch can see a GPU. Never raises, never imports torch eagerly."""
-    try:
-        import torch
-        return bool(torch.cuda.is_available())
-    except Exception:
-        return False
+    """
+    True only if a GPU is present AND this torch build can run on it.
+
+    This used to be bool(torch.cuda.is_available()), which is the question
+    "is there a card?" rather than "will anything work?". It feeds
+    default_for(), so on a card with no compiled kernels it promoted the user
+    to ViT-H/14 and a 3,945 MB download before anything failed.
+    """
+    return _gpu.available()
 
 
 # --------------------------------------------------------------------------------------

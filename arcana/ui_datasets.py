@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from dash import dcc, html, Input, Output, State, ctx, no_update
+from dash import ALL, dcc, html, Input, Output, State, ctx, no_update
 
 try:
     from . import models as _models
@@ -274,9 +274,31 @@ def layout() -> html.Div:
             # -- existing datasets -------------------------------------------
             html.Div(style=CARD, children=[
                 html.Div("Your datasets", style=SECTION_TITLE),
-                html.Div("Green means every file is still where the index expects it. "
-                         "The tags show what each dataset can do.",
+                html.Div("Green means the dataset is finished and every file is still "
+                         "where the index expects it \u2014 only those appear in the "
+                         "Dataset menu. The tags show what each one can do.",
                          style=SECTION_HINT),
+                dcc.Store(id="dm-pending-delete", storage_type="memory"),
+                # Rendered once, hidden until armed. Building it inside a
+                # callback would mean dm-del-yes/dm-del-cancel do not exist at
+                # page load, and a Dash callback whose Inputs are missing never
+                # fires -- which is precisely how the first version of this
+                # broke.
+                html.Div(id="dm-delete-confirm",
+                         style={"display": "none"},
+                         children=[
+                             html.Div(id="dm-delete-text"),
+                             html.Div(style={"display": "flex", "gap": "8px",
+                                             "marginTop": "10px"}, children=[
+                                 html.Button("Delete", id="dm-del-yes", n_clicks=0,
+                                             style=_btn("danger", padding="6px 12px",
+                                                        fontSize="12px", color="#fff",
+                                                        backgroundColor=BAD)),
+                                 html.Button("Cancel", id="dm-del-cancel", n_clicks=0,
+                                             style=_btn("secondary", padding="6px 12px",
+                                                        fontSize="12px")),
+                             ]),
+                         ]),
                 html.Div(id="dm-list"),
             ]),
 
@@ -304,6 +326,14 @@ def layout() -> html.Div:
 # ──────────────────────────────────────────────────────────────────────────────
 # helpers used by callbacks
 # ──────────────────────────────────────────────────────────────────────────────
+# Remove buttons use pattern-matching ids. The rest of this panel uses plain
+# sequential ones, because pattern ids serialise to JSON and produce CSS
+# selectors that break some tooling -- but that only works where the number of
+# components is fixed. Declaring dm-del-0..59 for a list of ten datasets means
+# fifty of the callback's Inputs do not exist, and Dash then never fires it at
+# all: the buttons rendered and did nothing. A varying number of components is
+# exactly what ALL is for.
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
@@ -487,6 +517,12 @@ def dataset_rows() -> list:
                             "lineHeight": "1.5", "maxWidth": "62ch"}),
         ])]
 
+    # One job at a time, so a single lookup covers every row.
+    try:
+        active = MANAGER.active()
+    except Exception:
+        active = None
+
     rows = []
     for i, d in enumerate(found):
         key = (d.name, d.modality, d.index_path,
@@ -501,8 +537,22 @@ def dataset_rows() -> list:
 
         ex = _dataset_extras(d)
 
+        # A dataset is only usable once it has a 2-D map: get_matching_datasets()
+        # requires BOTH an index and a latent file before it will offer the
+        # dataset in the Dataset menu, while this list is built from discover(),
+        # which needs only an index. Anything half-built therefore used to show
+        # as "ready" here and be absent from the menu, with nothing on screen
+        # explaining the difference -- the single most confusing thing about
+        # this panel.
+        has_map = bool(d.latent_paths)
+        building = (active or {}).get("label") == "Indexing " + d.name
+
         if h.get("error"):
             pill, tone = _pill("unreadable", BAD), BAD
+        elif building:
+            pill, tone = _pill("building\u2026", ACCENT), ACCENT
+        elif not has_map:
+            pill, tone = _pill("unfinished", WARN), WARN
         elif h["missing"]:
             pill, tone = _pill("files missing", WARN), WARN
         else:
@@ -544,7 +594,22 @@ def dataset_rows() -> list:
                     style={"display": "flex", "gap": "5px"},
                 ),
                 pill,
+                html.Button("Remove",
+                            id={"type": "dm-del", "index": f"{d.name}::{d.modality}"},
+                            n_clicks=0,
+                            title=f"Delete the index for {d.name}. Your files stay "
+                                  f"where they are.",
+                            style=_btn("danger", padding="4px 10px",
+                                       fontSize="11px")),
             ]))
+
+        if not has_map and not building:
+            rows.append(html.Div(
+                "Indexed, but the 2-D map was never built \u2014 probably an "
+                "interrupted run. It cannot be opened until you index that "
+                "folder again.",
+                style={"fontSize": "11.5px", "color": WARN, "lineHeight": "1.5",
+                       "padding": "0 0 10px 17px", "maxWidth": "70ch"}))
     return rows
 
 
@@ -618,6 +683,104 @@ _last_seen: dict = {}
 # ──────────────────────────────────────────────────────────────────────────────
 def register(app) -> None:
     """Wire the panel up. Called once from arcana.py after the layout is built."""
+
+    @app.callback(
+        Output("dm-pending-delete", "data"),
+        [Input({"type": "dm-del", "index": ALL}, "n_clicks"),
+         Input("dm-del-cancel", "n_clicks")],
+        prevent_initial_call=True,
+    )
+    def _arm_delete(_row_clicks, _cancel):
+        """Remember which dataset the user asked to remove; do not delete yet."""
+        trig = ctx.triggered_id
+        if trig == "dm-del-cancel":
+            return None
+        if not isinstance(trig, dict) or trig.get("type") != "dm-del":
+            return no_update
+        # Rebuilding the list recreates every button with n_clicks=0, which
+        # fires this callback; only a real click carries a value.
+        if not ctx.triggered or not ctx.triggered[0].get("value"):
+            return no_update
+        # The id carries the dataset, so this never depends on row order.
+        name, _, modality = str(trig.get("index", "")).partition("::")
+        if not name or not modality:
+            return no_update
+        return {"name": name, "modality": modality}
+
+
+    @app.callback(
+        [Output("dm-delete-text", "children"),
+         Output("dm-delete-confirm", "style")],
+        Input("dm-pending-delete", "data"),
+    )
+    def _confirm_delete(pending):
+        """
+        Ask before deleting, and say exactly what will and will not go.
+
+        The distinction that matters is that Arcana indexes media in place, so
+        removing a dataset removes an index, not a library. Saying so on the
+        confirmation is the difference between a safe button and a frightening
+        one.
+        """
+        hidden = {"display": "none"}
+        shown = {"display": "block", "marginBottom": "12px",
+                 "border": f"1px solid {BAD}55", "borderRadius": "8px",
+                 "padding": "12px 14px", "backgroundColor": f"{BAD}0f"}
+        if not pending:
+            return "", hidden
+        try:
+            from .legacy import delete_dataset
+        except ImportError:
+            from legacy import delete_dataset
+        try:
+            preview = delete_dataset(pending["name"], pending["modality"],
+                                     dry_run=True)
+        except Exception as e:
+            return (html.Div(f"Could not inspect that dataset: {e}",
+                             style={"fontSize": "12px", "color": BAD}), shown)
+
+        mb = preview["bytes"] / (1024 * 1024)
+        return ([
+            html.Div(f"Remove \u201c{pending['name']}\u201d?",
+                     style={"fontSize": "13px", "fontWeight": "600",
+                            "color": INK, "marginBottom": "4px"}),
+            html.Div(f"Deletes {len(preview['removed'])} index and feature files, "
+                     f"freeing {mb:,.1f} MB. Your {pending['modality']} files are "
+                     f"not touched \u2014 Arcana only ever read them where they "
+                     f"are. Re-indexing the folder rebuilds this.",
+                     style={"fontSize": "12px", "color": INK_DIM,
+                            "lineHeight": "1.5", "maxWidth": "70ch"}),
+        ], shown)
+
+
+    @app.callback(
+        [Output("dm-refresh", "data", allow_duplicate=True),
+         Output("dm-pending-delete", "data", allow_duplicate=True),
+         Output("dm-start-status", "children", allow_duplicate=True)],
+        Input("dm-del-yes", "n_clicks"),
+        [State("dm-pending-delete", "data"), State("dm-refresh", "data")],
+        prevent_initial_call=True,
+    )
+    def _do_delete(n, pending, token):
+        if not n or not pending:
+            return no_update, no_update, no_update
+        try:
+            from .legacy import delete_dataset
+        except ImportError:
+            from legacy import delete_dataset
+        res = delete_dataset(pending["name"], pending["modality"])
+        invalidate_dataset_cache()
+        if res["failed"]:
+            msg = html.Span(
+                f"Removed {len(res['removed'])} files; {len(res['failed'])} could "
+                f"not be deleted (in use?).", style={"color": WARN})
+        else:
+            mb = res["bytes"] / (1024 * 1024)
+            msg = html.Span(
+                f"Removed \u201c{pending['name']}\u201d and freed {mb:,.1f} MB.",
+                style={"color": OK})
+        return (token or 0) + 1, None, msg
+
 
     @app.callback(
         [Output("dm-model", "options"), Output("dm-model", "value")],

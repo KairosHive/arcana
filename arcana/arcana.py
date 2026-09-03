@@ -617,29 +617,58 @@ def load_index(name, modality="image"):
 # 354M parameters instead of the full model's 986M, and ~0.9 s to load instead
 # of ~25 s. Loading it lazily also means the app starts (and can show an error)
 # without a 4 GB download having to succeed first.
-CLIP_MODEL_ID = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+CLIP_MODEL_ID = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"   # fallback only
 
-_CLIP_TEXT = {"model": None, "tokenizer": None}
+# Keyed by model id. A single-slot cache was wrong for the same reason it was
+# wrong in db.load_clip: the first dataset you opened decided which text
+# encoder every later search used.
+_CLIP_TEXT: dict = {}
 _MODEL_LOAD_LOCK = threading.Lock()
 
 
-def load_clip_text(device: str = "cpu"):
-    """Load the CLIP text tower on first use. Raises with something actionable."""
+def text_model_for_dim(ndim: int) -> str:
+    """
+    Which encoder produced vectors of this width.
+
+    A prompt has to be encoded by the same model that encoded the pictures, or
+    the two live in unrelated spaces. Nothing in a legacy index records which
+    model built it -- but the vector width does, because Arcana's image
+    encoders have distinct dimensions (512 / 768 / 1024). Reading it off the
+    index means every dataset searches correctly with no migration and no extra
+    metadata.
+    """
+    try:
+        from . import models as _models
+    except ImportError:
+        import models as _models
+    for m in _models.MODELS:
+        if m.modality == "image" and m.dim == ndim:
+            return m.id
+    raise RuntimeError(
+        f"This dataset's vectors are {ndim}-dimensional, which does not match "
+        f"any encoder Arcana knows about. It was probably built by a different "
+        f"version; re-index the folder to search it."
+    )
+
+
+def load_clip_text(device: str = "cpu", model_id: str | None = None):
+    """Load a CLIP text tower on first use. Raises with something actionable."""
+    model_id = model_id or CLIP_MODEL_ID
     with _MODEL_LOAD_LOCK:
-        if _CLIP_TEXT["model"] is None:
+        if model_id not in _CLIP_TEXT:
             try:
                 from transformers import CLIPTextModelWithProjection, CLIPTokenizerFast
-                m = CLIPTextModelWithProjection.from_pretrained(CLIP_MODEL_ID, dtype=torch.float32)
+                m = CLIPTextModelWithProjection.from_pretrained(model_id, dtype=torch.float32)
                 m.eval().to(device)
-                tok = CLIPTokenizerFast.from_pretrained(CLIP_MODEL_ID)
+                tok = CLIPTokenizerFast.from_pretrained(model_id)
             except Exception as e:
                 raise RuntimeError(
-                    f"Could not load the text encoder '{CLIP_MODEL_ID}': {e}. "
+                    f"Could not load the text encoder '{model_id}': {e}. "
                     f"The first run needs to download it, so check your internet connection. "
                     f"Set HF_HOME to choose where models are cached."
                 ) from e
-            _CLIP_TEXT.update(model=m, tokenizer=tok)
-    return _CLIP_TEXT["model"], _CLIP_TEXT["tokenizer"]
+            _CLIP_TEXT[model_id] = (m, tok)
+    return _CLIP_TEXT[model_id]
 
 # --- lazy CLAP (keep FP32 to avoid BN/dtype issues) ---
 _CLAP = {"model": None, "proc": None}
@@ -656,7 +685,15 @@ def load_clap(device="cpu"):
 
 def search(index, idx2path, query, n, modality="image"):
     if modality == "image":
-        clip_model, clip_tok = load_clip_text()
+        # Match the encoder to the index. This used to always load ViT-H/14
+        # while an index built with ViT-B/32 holds 512-d vectors, so every
+        # search against such a dataset died inside usearch with "The number of
+        # vector dimensions doesn't match!" and the results panel simply stayed
+        # empty. ViT-B/32 is the encoder the panel recommends to anyone without
+        # a GPU, so prompt search was broken for exactly the people most likely
+        # to choose it.
+        clip_model, clip_tok = load_clip_text(
+            model_id=text_model_for_dim(int(index.ndim)))
         inputs = clip_tok(query, return_tensors="pt")
         vec = clip_model(**inputs).text_embeds.detach().cpu().numpy().flatten()
     else:

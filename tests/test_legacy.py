@@ -257,6 +257,155 @@ def test_output_filename_is_predictable(tmp):
     assert os.path.basename(report["out"]) == "synth_image" + SUFFIX
 
 
+
+# ─────────────────────────── deleting a dataset ───────────────────────────
+def _fake_dataset(tmp, name="trip", modality="image", dims=(2,), extras=True):
+    """Lay out the files Arcana creates for one dataset, plus decoys."""
+    import numpy as np
+    db = os.path.join(tmp, "databases")
+    lat = os.path.join(tmp, "latents")
+    bun = os.path.join(tmp, "bundles")
+    for d in (db, lat, bun):
+        os.makedirs(d, exist_ok=True)
+
+    with open(os.path.join(db, f"index_{name}_{modality}.pkl"), "wb") as f:
+        pickle.dump((b"blob", {0: os.path.join(tmp, "media", "a.jpg")}), f)
+    for d in dims:
+        with open(os.path.join(lat, f"latent_space_{name}_{modality}_{d}d.pkl"), "wb") as f:
+            pickle.dump({"x": 1}, f)
+    if extras:
+        np.savez(os.path.join(db, f"features_{name}_palette.npz"), ids=np.arange(1))
+        np.savez(os.path.join(db, f"features_{name}_style.npz"), ids=np.arange(1))
+        open(os.path.join(bun, f"{name}_{modality}.arcana"), "wb").close()
+
+    # decoys that must survive: another dataset, and the user's media
+    with open(os.path.join(db, f"index_other_{modality}.pkl"), "wb") as f:
+        pickle.dump((b"blob", {0: "x"}), f)
+    with open(os.path.join(lat, f"latent_space_other_{modality}_2d.pkl"), "wb") as f:
+        pickle.dump({"x": 1}, f)
+    media = os.path.join(tmp, "media")
+    os.makedirs(media, exist_ok=True)
+    open(os.path.join(media, "a.jpg"), "wb").close()
+    return db, lat, bun
+
+
+def _dirs(tmp):
+    return {"db_dir": os.path.join(tmp, "databases"),
+            "latents_dir": os.path.join(tmp, "latents"),
+            "bundles_dir": os.path.join(tmp, "bundles")}
+
+
+def test_dataset_files_lists_everything_it_owns(tmp):
+    from arcana.legacy import dataset_files
+    _fake_dataset(tmp)
+    got = [os.path.basename(p) for p in dataset_files("trip", "image", **_dirs(tmp))]
+    assert "index_trip_image.pkl" in got
+    assert "latent_space_trip_image_2d.pkl" in got
+    assert "features_trip_palette.npz" in got
+    assert "features_trip_style.npz" in got
+    assert "trip_image.arcana" in got
+
+
+def test_dataset_files_never_lists_media(tmp):
+    from arcana.legacy import dataset_files
+    _fake_dataset(tmp)
+    for p in dataset_files("trip", "image", **_dirs(tmp)):
+        assert "media" not in p.replace(os.sep, "/").split("/"), p
+
+
+def test_delete_removes_only_that_dataset(tmp):
+    from arcana.legacy import delete_dataset
+    db, lat, bun = _fake_dataset(tmp)
+    res = delete_dataset("trip", "image", **_dirs(tmp))
+
+    assert res["failed"] == [], res["failed"]
+    assert len(res["removed"]) == 5, res["removed"]
+    assert not os.path.exists(os.path.join(db, "index_trip_image.pkl"))
+    assert not os.path.exists(os.path.join(lat, "latent_space_trip_image_2d.pkl"))
+    assert not os.path.exists(os.path.join(bun, "trip_image.arcana"))
+
+    # the other dataset and the photographs are untouched
+    assert os.path.exists(os.path.join(db, "index_other_image.pkl"))
+    assert os.path.exists(os.path.join(lat, "latent_space_other_image_2d.pkl"))
+    assert os.path.exists(os.path.join(tmp, "media", "a.jpg"))
+
+
+def test_delete_dry_run_changes_nothing(tmp):
+    from arcana.legacy import delete_dataset
+    db, _lat, _bun = _fake_dataset(tmp)
+    res = delete_dataset("trip", "image", dry_run=True, **_dirs(tmp))
+    assert len(res["removed"]) == 5
+    assert res["bytes"] > 0
+    assert os.path.exists(os.path.join(db, "index_trip_image.pkl"))
+
+
+def test_delete_reports_reclaimed_bytes(tmp):
+    from arcana.legacy import delete_dataset
+    db, _lat, _bun = _fake_dataset(tmp)
+    with open(os.path.join(db, "features_trip_palette.npz"), "wb") as f:
+        f.write(b"x" * 50_000)
+    res = delete_dataset("trip", "image", dry_run=True, **_dirs(tmp))
+    assert res["bytes"] >= 50_000, res["bytes"]
+
+
+def test_delete_handles_several_latent_dimensions(tmp):
+    from arcana.legacy import delete_dataset
+    _db, lat, _bun = _fake_dataset(tmp, dims=(2, 3))
+    res = delete_dataset("trip", "image", **_dirs(tmp))
+    assert not os.path.exists(os.path.join(lat, "latent_space_trip_image_2d.pkl"))
+    assert not os.path.exists(os.path.join(lat, "latent_space_trip_image_3d.pkl"))
+    assert len(res["removed"]) == 6, res["removed"]
+
+
+def test_delete_of_an_unknown_dataset_is_a_no_op(tmp):
+    from arcana.legacy import delete_dataset
+    _fake_dataset(tmp)
+    res = delete_dataset("nope", "image", **_dirs(tmp))
+    assert res["removed"] == [] and res["failed"] == []
+
+
+def test_delete_refuses_paths_outside_the_data_directories(tmp):
+    """
+    The name reaches os.path.join from a filename on disk, so a crafted one is
+    the only route out of Arcana's own folders -- and the cost of being wrong
+    is somebody's photographs.
+    """
+    from arcana.legacy import delete_dataset
+    _fake_dataset(tmp)
+    outside = os.path.join(tmp, "precious.txt")
+    with open(outside, "wb") as f:
+        f.write(b"do not delete me")
+
+    escape = os.path.join("..", "precious")
+    res = delete_dataset(escape, "image", **_dirs(tmp))
+    assert res["removed"] == [], res["removed"]
+    assert os.path.exists(outside)
+
+
+def test_migration_resolves_the_encoder_from_vector_width(tmp):
+    """
+    Legacy indexes record no model, so migration assumed whatever db.py
+    hardcoded -- ViT-H/14. For a dataset built with ViT-B/32 that produced a
+    bundle claiming CLIP-ViT-H-14 with dim=512, a combination that does not
+    exist, and require_model() then compared against a model that never built
+    it. The width identifies the encoder unambiguously.
+    """
+    from arcana.legacy import model_for_vectors
+    from arcana import models as _models
+
+    for m in _models.MODELS:
+        got = model_for_vectors(m.modality, m.dim)
+        assert got.id == m.id, (m.modality, m.dim, got.id)
+        assert got.dim == m.dim
+
+
+def test_migration_keeps_the_real_width_for_an_unknown_encoder(tmp):
+    # No catalogue match: the id is a guess, but the dimension must stay true
+    # or the bundle misdescribes its own vectors.
+    from arcana.legacy import model_for_vectors
+    got = model_for_vectors("image", 333)
+    assert got.dim == 333
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

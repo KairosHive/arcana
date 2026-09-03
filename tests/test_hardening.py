@@ -416,6 +416,40 @@ def test_feature_extraction_uses_threads_when_frozen(tmp):
     finally:
         del _sys.frozen
 
+
+def test_auto_k_scales_with_collection_size(tmp):
+    """
+    Automatic k used to come purely from a silhouette sweep over [2, 20], which
+    on CLIP embeddings essentially always returns 2 -- a 246-photo library came
+    back as two clusters, "Portrait" and "Street", with every texture and
+    landscape forced into one of them.
+    """
+    from arcana.db import auto_k
+    assert auto_k(30) == 4
+    assert auto_k(246) == 11
+    assert auto_k(1000) == 22
+    # monotonic, so a bigger library never gets fewer names
+    ks = [auto_k(n) for n in (30, 100, 246, 500, 1000, 2000, 9359)]
+    assert ks == sorted(ks), ks
+
+
+def test_auto_k_is_bounded_at_both_ends(tmp):
+    from arcana.db import auto_k
+    # never one cluster: a single name for a whole library says nothing
+    assert auto_k(3) >= 2
+    assert auto_k(0) >= 2
+    # capped, because the label vocabulary is 100 words and past ~24 clusters
+    # start sharing names, which reads as a bug
+    assert auto_k(82_173) == 24
+    assert auto_k(1_000_000) == 24
+
+
+def test_auto_k_never_exceeds_the_item_count(tmp):
+    # KMeans cannot fit more clusters than points.
+    from arcana.db import auto_k
+    for n in range(1, 30):
+        assert auto_k(n) <= max(2, n), n
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

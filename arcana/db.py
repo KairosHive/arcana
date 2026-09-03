@@ -114,6 +114,36 @@ def _row_norm(X: np.ndarray) -> np.ndarray:
     X /= (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
     return X
 
+def auto_k(n_items: int) -> int:
+    """
+    A sensible number of clusters for a collection of this size.
+
+    Automatic k used to be chosen purely by silhouette score over k in [2, 20],
+    and on CLIP embeddings that reliably returns 2. Silhouette rewards a few
+    well-separated blobs, and in a 1024-dimensional space almost any collection
+    splits cleanly in half -- so a 246-photo library came back as two clusters
+    named "Portrait" and "Street", with every texture, building and landscape
+    forced into one or the other. The names were not wrong so much as
+    meaningless: a cluster averaging 120 unrelated pictures has no nearest
+    label worth printing.
+
+    k ~ sqrt(n/2) is the usual rule of thumb and behaves sensibly across the
+    range this app sees:
+
+        30 photos   ->  4        2,000  -> 24 (capped)
+        246         -> 11        9,359  -> 24 (capped)
+
+    The floor of 4 keeps tiny folders from collapsing to a single name. The cap
+    of 24 exists because the label vocabulary is only 100 words: past that,
+    clusters start sharing names, which reads as a bug.
+    """
+    if n_items <= 0:
+        return 2
+    if n_items < 24:
+        return max(2, min(4, n_items))
+    return int(max(4, min(24, round((n_items / 2.0) ** 0.5))))
+
+
 def choose_k(
     X: np.ndarray,
     k_min: int = 2,
@@ -1187,12 +1217,21 @@ def latent_space(
     # ---- choose k (optional) & cluster on ORIGINAL embeddings ----
     X_for_kmeans = _row_norm(vecs)
     if n_clusters is None or n_clusters <= 0:
-        # pull globals via closure or pass args in; here we read env-like defaults
-        k_min  = int(os.getenv("ARCANA_K_MIN", "2"))
-        k_max  = int(os.getenv("ARCANA_K_MAX", "20"))
+        # The floor scales with the collection. Without it the silhouette sweep
+        # starts at k=2 and, on CLIP embeddings, essentially always stops
+        # there -- see auto_k for why that produces two meaningless names.
+        # The metric still chooses within the remaining range, so a collection
+        # that genuinely wants more clusters can still ask for them.
+        sized = auto_k(len(X_for_kmeans))
+        k_min = max(int(os.getenv("ARCANA_K_MIN", "2")), sized)
+        k_max = max(int(os.getenv("ARCANA_K_MAX", "20")), k_min)
         metric = os.getenv("ARCANA_K_METRIC", "silhouette")
+        # k must stay below the number of points or KMeans cannot fit.
+        k_max = min(k_max, max(2, len(X_for_kmeans) - 1))
+        k_min = min(k_min, k_max)
         best_k, scores = choose_k(X_for_kmeans, k_min=k_min, k_max=k_max, metric=metric)
-        print(f"[auto-k] selected k={best_k} via {metric} in [{k_min},{k_max}]  scores={scores}")
+        print(f"[auto-k] {len(X_for_kmeans)} items -> floor {sized}; "
+              f"selected k={best_k} via {metric} in [{k_min},{k_max}]")
         n_clusters = int(best_k)
 
     try:

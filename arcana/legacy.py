@@ -140,6 +140,121 @@ def _thumbnail(path: str, max_side: int = 192, quality: int = 80) -> bytes | Non
         return None
 
 
+def model_for_vectors(modality: str, dim: int) -> ModelSpec:
+    """
+    Which encoder produced vectors of this width, for this modality.
+
+    Legacy indexes record no model, so migration used to assume whatever db.py
+    hardcoded at the time -- ViT-H/14 for images. That is wrong for any dataset
+    built with a different encoder: it produced a bundle claiming
+    CLIP-ViT-H-14 with dim=512, a combination that does not exist, and
+    Bundle.require_model() then compares against a model that never built it.
+
+    The dimension identifies the encoder unambiguously, because Arcana's image
+    encoders are 512 / 768 / 1024 and its one audio encoder is 512.
+    """
+    try:
+        from . import models as _models
+    except ImportError:
+        import models as _models
+    for m in _models.MODELS:
+        if m.modality == modality and m.dim == dim:
+            return ModelSpec(id=m.id, dim=dim, modality=modality, normalized=False)
+    fallback = LEGACY_MODELS.get(modality)
+    if fallback is None:
+        raise SystemExit(f"unknown modality {modality!r}")
+    # No catalogue match: keep the real width, and be honest that the id is a
+    # guess rather than silently asserting one.
+    return ModelSpec(id=fallback.id, dim=dim, modality=modality,
+                     normalized=fallback.normalized)
+
+
+def dataset_files(name: str, modality: str = "image", *,
+                  db_dir: str = DB_DIR, latents_dir: str = LATENTS_DIR,
+                  bundles_dir: str = BUNDLES_DIR) -> list[str]:
+    """
+    Every file Arcana owns for this dataset. Nothing else.
+
+    The media itself is never included and never touched: Arcana indexes photos
+    where they live, so deleting a dataset must delete the index, not the
+    library. Everything returned here lives under Arcana's own data directories.
+    """
+    found: list[str] = []
+    for d in discover(db_dir=db_dir, latents_dir=latents_dir):
+        if d.name != name or d.modality != modality:
+            continue
+        found.append(d.index_path)
+        found.extend((d.latent_paths or {}).values())
+        for p in (d.palette_path, d.style_path):
+            if p:
+                found.append(p)
+
+    # Bundles are named <name>_<modality>.arcana and are not part of discover().
+    bundle = os.path.join(bundles_dir, f"{name}_{modality}{SUFFIX}")
+    if os.path.exists(bundle):
+        found.append(bundle)
+
+    # Legacy thumbnail latents sit beside the ordinary ones under a different
+    # suffix, so the regex in discover() does not see them.
+    if os.path.isdir(latents_dir):
+        for fn in os.listdir(latents_dir):
+            if fn.startswith(f"latent_space_{name}_") and fn.endswith("_thumbnail.pkl"):
+                found.append(os.path.join(latents_dir, fn))
+
+    out, seen = [], set()
+    for p in found:
+        rp = os.path.abspath(p)
+        if rp not in seen and os.path.exists(rp):
+            seen.add(rp)
+            out.append(rp)
+    return out
+
+
+def delete_dataset(name: str, modality: str = "image", *, dry_run: bool = False,
+                   db_dir: str = DB_DIR, latents_dir: str = LATENTS_DIR,
+                   bundles_dir: str = BUNDLES_DIR) -> dict:
+    """
+    Remove a dataset's index and derived files.
+
+    Returns {"removed": [...], "failed": [(path, reason)], "bytes": n}. With
+    dry_run the same list comes back untouched, which is what the confirmation
+    step in the UI shows.
+
+    Every path is checked to be inside one of Arcana's own directories before
+    it is unlinked. That guard is not theatre: the name comes from a filename
+    on disk and flows into os.path.join, so a crafted name is the one way this
+    could reach outside, and the cost of being wrong is somebody's photographs.
+    """
+    roots = [os.path.abspath(d) for d in (db_dir, latents_dir, bundles_dir)]
+    targets = dataset_files(name, modality, db_dir=db_dir,
+                            latents_dir=latents_dir, bundles_dir=bundles_dir)
+
+    removed: list[str] = []
+    failed: list[tuple[str, str]] = []
+    total = 0
+    for path in targets:
+        if not any(_paths.is_within(path, r) for r in roots):
+            failed.append((path, "outside Arcana's data directories"))
+            continue
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if dry_run:
+            removed.append(path)
+            total += size
+            continue
+        try:
+            os.remove(path)
+        except OSError as e:
+            failed.append((path, str(e)))
+            continue
+        removed.append(path)
+        total += size
+
+    return {"removed": removed, "failed": failed, "bytes": total}
+
+
 def convert(ds: LegacyDataset, out_dir: str = BUNDLES_DIR, *,
             thumbnails: bool = False, n_components: int | None = None,
             verbose: bool = True) -> dict:
@@ -170,16 +285,15 @@ def convert(ds: LegacyDataset, out_dir: str = BUNDLES_DIR, *,
     if vecs.ndim != 2:
         raise SystemExit(f"{ds.key}: could not read vectors from the index (got shape {vecs.shape})")
 
-    model = LEGACY_MODELS.get(ds.modality)
-    if model is None:
+    assumed = LEGACY_MODELS.get(ds.modality)
+    if assumed is None:
         raise SystemExit(f"{ds.key}: unknown modality {ds.modality!r}")
-    if vecs.shape[1] != model.dim:
+    model = model_for_vectors(ds.modality, int(vecs.shape[1]))
+    if model.id != assumed.id:
         report["warnings"].append(
-            f"index is {vecs.shape[1]}-d but {model.id} is {model.dim}-d; "
-            f"recording the actual dimension"
+            f"index is {vecs.shape[1]}-d, so it was built with {model.id}, "
+            f"not the {assumed.id} this migration used to assume"
         )
-        model = ModelSpec(id=model.id, dim=int(vecs.shape[1]), modality=model.modality,
-                          normalized=model.normalized)
 
     # --- coordinates, labels, clusters from the latent DataFrame ---------------
     coords = None

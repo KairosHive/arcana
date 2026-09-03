@@ -337,6 +337,43 @@ def test_scan_both_recurses_and_ignores_other_files(tmp):
     got = scan_both(tmp)
     assert got["image"] == 1 and got["audio"] == 0, got
 
+
+def test_text_encoder_is_chosen_by_index_width(tmp):
+    """
+    A prompt must be encoded by the model that encoded the pictures.
+
+    search() used to always load ViT-H/14 while an index built with ViT-B/32
+    holds 512-d vectors, so searching such a dataset died inside usearch with
+    "The number of vector dimensions doesn't match!" and the results panel just
+    stayed empty. ViT-B/32 is what the panel recommends to anyone without a
+    GPU, so prompt search was broken for the people most likely to pick it.
+    """
+    from arcana.arcana import text_model_for_dim
+    from arcana import models as _models
+
+    for m in _models.MODELS:
+        if m.modality == "image":
+            assert text_model_for_dim(m.dim) == m.id, m.id
+
+
+def test_image_encoder_dimensions_stay_distinct(tmp):
+    # text_model_for_dim resolves by width, which only works while no two image
+    # encoders share one. If a new encoder collides, that lookup silently picks
+    # whichever came first in the catalogue.
+    from arcana import models as _models
+    dims = [m.dim for m in _models.MODELS if m.modality == "image"]
+    assert len(dims) == len(set(dims)), dims
+
+
+def test_unknown_vector_width_is_refused_with_advice(tmp):
+    from arcana.arcana import text_model_for_dim
+    try:
+        text_model_for_dim(999)
+    except RuntimeError as e:
+        assert "re-index" in str(e).lower(), str(e)
+    else:
+        raise AssertionError("expected a RuntimeError for an unknown width")
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

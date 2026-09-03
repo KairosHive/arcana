@@ -2869,9 +2869,12 @@ def update_feature_availability(dataset_value):
 
 # Disable ModFlows-only parameters when LAB method is selected
 @app.callback(
-    [
-        Output("color-transfer-quality-wrapper", "style"),
-    ],
+    # A bare Output, not a one-element list: Dash matches the return value
+    # against the declared shape, so a list here would require the function to
+    # return a list too. It used to have three outputs; reducing it to one left
+    # the brackets behind and every method change raised
+    # SchemaTypeValidationError.
+    Output("color-transfer-quality-wrapper", "style"),
     Input("color-transfer-method", "value"),
 )
 def toggle_method_params(method):

@@ -7,6 +7,7 @@
 #   latents/latent_space_<name>_<modality>_<n_components>D.pkl
 
 import os
+import sys
 import cv2
 try:
     from .cvio import imread_unicode, imwrite_unicode
@@ -17,7 +18,7 @@ import pickle
 import argparse
 from glob import glob
 import hashlib
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import multiprocessing
 
 
@@ -664,6 +665,29 @@ def _extract_palette_worker(args):
         return (i, None, str(e))
 
 
+def _feature_executor(n_workers: int):
+    """
+    Pick a pool for CPU-bound feature extraction.
+
+    Processes normally: palette and style are CPU-bound and a process pool
+    sidesteps the GIL entirely.
+
+    Threads when frozen. On Windows multiprocessing spawns rather than forks,
+    which re-launches the executable for each worker -- and in a PyInstaller
+    build the executable is the whole application. Even with freeze_support()
+    in place (without it the workers start a second Dash server and get killed,
+    which is exactly what happened: every image failed with "A process in the
+    process pool was terminated abruptly" at ~36 minutes each), every worker
+    would still pay a full interpreter start plus a torch import before doing
+    any work. Palette and style are mostly OpenCV and scikit-learn, both of
+    which drop the GIL inside their hot loops, so threads keep most of the
+    parallelism at none of that cost.
+    """
+    if getattr(sys, "frozen", False):
+        return ThreadPoolExecutor(max_workers=n_workers), "threads"
+    return ProcessPoolExecutor(max_workers=n_workers), "processes"
+
+
 def extract_additional_features(
     idx2path: dict[int, str],
     name: str,
@@ -709,7 +733,9 @@ def extract_additional_features(
             work_items = list(enumerate(paths))
             
             if n_workers > 1:
-                with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                _pool, _kind = _feature_executor(n_workers)
+                print(f"[INFO] using {n_workers} {_kind}")
+                with _pool as executor:
                     futures = {executor.submit(_extract_palette_worker, item): item for item in work_items}
                     for future in tqdm(as_completed(futures), total=len(work_items), desc="Palette features"):
                         try:

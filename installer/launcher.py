@@ -13,6 +13,7 @@ has to do that `arcana-build-latent`-style CLI use does not:
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import sys
 import threading
@@ -108,4 +109,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # MUST come before anything else. On Windows multiprocessing uses "spawn",
+    # which re-launches the executable for every worker -- and in a frozen app
+    # the executable is this application. Without freeze_support() each worker
+    # starts a whole second copy of Arcana (Dash server and all) instead of
+    # running the job it was handed, and the pool then kills it: indexing with
+    # palette or style features failed on every single image with "A process in
+    # the process pool was terminated abruptly", after ~36 minutes per image.
+    multiprocessing.freeze_support()
     sys.exit(main())

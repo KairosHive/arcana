@@ -19,8 +19,12 @@
 ; row, and no way to tell a user "just run this". It is also 927 MB of loose
 ; files to copy around; compressed into one file it is roughly half that.
 
+; AppVersion comes from installer/version.iss, which arcana.spec regenerates
+; from arcana/__init__.py on every build -- so the installer can never claim a
+; different version from the code inside it.
+#include "version.iss"
+
 #define AppName        "Arcana"
-#define AppVersion     "0.2.0"
 #define AppPublisher   "Antoine Bellemare"
 #define AppExeName     "Arcana.exe"
 ; Relative to this .iss file, so the script works from any working directory.
@@ -37,10 +41,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=out
 OutputBaseFilename=Arcana-Setup-{#AppVersion}
-; No SetupIconFile: it requires a .ico and the project has none yet, so the
-; wizard uses Inno's default. Add arcana/assets/arcana.ico and set both this and
-; the spec's `icon=` when there is artwork. UninstallDisplayIcon does accept an
-; .exe, so Add/Remove Programs still shows the app's own icon.
+SetupIconFile=..\arcana\assets\arcana.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 ; AppVersion drives the wizard and Add/Remove Programs, but NOT the Windows file
 ; properties of the setup binary itself -- without these the compiled .exe shows

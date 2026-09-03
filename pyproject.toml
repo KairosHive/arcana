@@ -14,15 +14,16 @@ arcana = ["assets/*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+version = {attr = "arcana.__version__"}
 
 [tool.black]
 line-length = 128
 
 [project]
 name = "arcana"
-version = "0.1.0"
 description = "Latent space navigation for large-scale image databases using AI."
-dynamic = ["dependencies"]
+# version is single-sourced from arcana/__init__.py; see [tool.setuptools.dynamic].
+dynamic = ["version", "dependencies"]
 readme = {file = "README.md", content-type = "text/markdown"}
 keywords = ["latent space", "CLIP", "image retrieval", "generative", "dash", "exploration"]
 # arcana.py and db.py use PEP 604 ("X | None") and PEP 585 ("dict[int, str]")

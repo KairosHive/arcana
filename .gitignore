@@ -6,6 +6,7 @@ __pycache__/
 .env
 .venv
 .venv-pack/
+.venv-pack-gpu/
 *.env
 *.sqlite3
 
@@ -52,6 +53,10 @@ modflows/
 
 # setuptools / uv build artefacts
 build/
+# PyInstaller's workpath for the GPU variant. This was missed when the GPU build
+# was added -- `build/` alone does not match it -- and 211 MB of scratch went
+# into a commit before anyone noticed.
+build-gpu/
 dist/
 
 # Compiled installers. Arcana-Setup-*.exe is ~226 MB; build artefacts belong in

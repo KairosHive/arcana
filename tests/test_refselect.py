@@ -384,3 +384,54 @@ def test_extract_all_agrees_with_the_standalone_extractors(tmp):
     both = extract_all_palette_features(path)
     assert np.allclose(both["histogram"], extract_lab_histogram(path), atol=1e-5)
     assert np.allclose(both["moments"], extract_color_moments(path), atol=1e-3)
+
+
+def test_palette_format_stamp_survives_both_shapes(tmp):
+    """
+    The stamp was first written as np.array(2), which numpy makes
+    ZERO-dimensional. Reading it as data["fmt"][0] then raised
+
+        too many indices for array: array is 0-dimensional, but 1 were indexed
+
+    which broke palette search entirely -- but only for datasets indexed after
+    the stamp was introduced, so re-indexing to fix the LAB bug was what
+    exposed it. Those 0-d files are already on disk in real data directories,
+    so both shapes have to keep loading.
+    """
+    import numpy as np, os
+    from arcana import db
+
+    zero = os.path.join(tmp, "zero.npz")
+    one = os.path.join(tmp, "one.npz")
+    none = os.path.join(tmp, "none.npz")
+    np.savez_compressed(zero, fmt=np.array(db.PALETTE_FEATURE_FMT, dtype=np.int32))
+    np.savez_compressed(one, fmt=np.array([db.PALETTE_FEATURE_FMT], dtype=np.int32))
+    np.savez_compressed(none, x=np.zeros(3))
+
+    for path, expected in ((zero, db.PALETTE_FEATURE_FMT),
+                           (one, db.PALETTE_FEATURE_FMT),
+                           (none, 1)):
+        with np.load(path) as z:
+            assert db._read_fmt(z) == expected, path
+
+
+def test_palette_features_are_written_one_dimensional(tmp, monkeypatch):
+    """New palette files must not reintroduce the 0-d stamp."""
+    import numpy as np, os, cv2
+    from arcana import db
+
+    monkeypatch.setattr(db, "db_dir", tmp)
+    rng = np.random.default_rng(3)
+    paths = {}
+    for i in range(3):
+        p = os.path.join(tmp, f"i{i}.png")
+        cv2.imwrite(p, rng.integers(0, 255, (64, 64, 3), dtype=np.uint8))
+        paths[i] = p
+
+    db.extract_additional_features(idx2path=paths, name="fmtcheck",
+                                   features=["palette"], n_workers=1)
+
+    with np.load(os.path.join(tmp, "features_fmtcheck_palette.npz")) as z:
+        assert "fmt" in z.files
+        assert np.asarray(z["fmt"]).ndim == 1, "stamp must be 1-d, not a scalar"
+        assert db._read_fmt(z) == db.PALETTE_FEATURE_FMT

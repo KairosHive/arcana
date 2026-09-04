@@ -891,7 +891,7 @@ def extract_additional_features(
                     # histograms and moments are not comparable with features
                     # extracted now, so load_palette_features says so instead
                     # of silently ranking against them.
-                    fmt=np.array(PALETTE_FEATURE_FMT, dtype=np.int32),
+                    fmt=np.array([PALETTE_FEATURE_FMT], dtype=np.int32),
                 )
                 print(f"[OK] Saved palette features to {palette_path}")
                 print(f"     histogram: {histograms[valid_indices[0]].shape} x {len(valid_ids)}")
@@ -1024,13 +1024,34 @@ def extract_additional_features(
 # --------------------------------------------------------------------------------------
 # Feature-based search (palette, style)
 # --------------------------------------------------------------------------------------
+def _read_fmt(data) -> int:
+    """
+    The palette format stamp, whatever shape it was written in.
+
+    It was first written as np.array(2), which numpy makes ZERO-dimensional --
+    so the obvious data["fmt"][0] raised "too many indices for array: array is
+    0-dimensional, but 1 were indexed" and broke palette search outright, but
+    only for datasets indexed after the stamp was added. Files written before
+    it have no stamp at all and read as format 1.
+
+    Both shapes stay readable here, because 0-d stamps are already on disk in
+    anyone's data directory who re-indexed in between.
+    """
+    if "fmt" not in data.files:
+        return 1
+    try:
+        return int(np.asarray(data["fmt"]).reshape(-1)[0])
+    except Exception:
+        return 1
+
+
 def load_palette_features(name: str) -> dict | None:
     """Load palette features from .npz file."""
     path = os.path.join(db_dir, f"features_{name}_palette.npz")
     if not os.path.exists(path):
         return None
     data = np.load(path)
-    fmt = int(data['fmt'][0]) if 'fmt' in data.files else 1
+    fmt = _read_fmt(data)
     return {
         'ids': data['ids'],
         'histogram': data['histogram'],
@@ -1056,7 +1077,7 @@ def palette_features_stale(name: str) -> bool:
         return False
     try:
         with np.load(path) as d:
-            return 'fmt' not in d.files or int(d['fmt'][0]) < PALETTE_FEATURE_FMT
+            return _read_fmt(d) < PALETTE_FEATURE_FMT
     except Exception:
         return False
 

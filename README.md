@@ -67,13 +67,16 @@ The installer needs nothing else. The other two need Python 3.10+.
 
 ## First run
 
-Arcana opens on the **Datasets** tab, which walks you through four steps:
+Arcana opens on the **Datasets** tab, which walks you through five steps:
 
 1. **Point at a folder** — everything inside, including subfolders
 2. **Check what it found** — media type and name are detected from the folder
 3. **Choose the quality** — a stronger encoder understands prompts better but
    takes longer to index
-4. **Name the groups, then go** — optional extras, then Start indexing
+4. **How to name the groups** — how many clusters, and where their names come
+   from: Arcana's word list, or your own subfolder names
+5. **Extras, then go** — colour palette, style and thumbnails, then Start
+   indexing
 
 The encoder downloads itself on first use (605 MB for the fast one). Indexing
 10,000 photographs takes about seven minutes on a CPU, three with a GPU.

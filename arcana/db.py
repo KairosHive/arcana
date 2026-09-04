@@ -790,6 +790,7 @@ def extract_additional_features(
     compact_gram: bool = True,
     gram_pca_dims: int = 0,
     n_workers: int = 1,
+    progress=None,
 ) -> dict[str, str]:
     """
     Extract palette and/or style features for all indexed images.
@@ -892,24 +893,78 @@ def extract_additional_features(
             gram_features = [] if include_gram else None
             valid_ids = []
             
-            for idx, path in zip(tqdm(sorted_ids, desc="Style features"), paths):
-                try:
-                    feats = extract_all_style_features(path, include_gram=include_gram, compact_gram=compact_gram)
-                except Exception as e:
-                    print(f"[WARN] Style failed on {path}: {e}")
-                    continue
-                # Every list here is joined by position to `valid_ids`, so an item
-                # that cannot supply all of them has to be skipped entirely --
-                # appending some but not others silently shifts every later row
-                # onto the wrong image.
-                if include_gram and feats.get('gram') is None:
-                    print(f"[WARN] Style: no Gram for {path}; skipping (would desync feature rows)")
-                    continue
-                edge_histograms.append(feats['edge_histogram'])
-                lbp_textures.append(feats['texture_lbp'])
-                if include_gram:
-                    gram_features.append(feats['gram'])
-                valid_ids.append(idx)
+            # Batched, not one image at a time. This loop used to call
+            # extract_all_style_features per file, which runs VGG19 on a single
+            # image: 9,359 photographs took about ninety minutes at ~1.7/s with
+            # the device idle between them. CLIP indexing was batched from the
+            # start; this was not.
+            try:
+                from .style import (extract_gram_features_batch,
+                                     extract_edge_histogram, extract_texture_lbp)
+            except ImportError:
+                from style import (extract_gram_features_batch,
+                                   extract_edge_histogram, extract_texture_lbp)
+
+            _style_batch = 16
+            _pool, _kind = _feature_executor(n_workers)
+            print(f"[INFO] using {n_workers} {_kind}, batches of {_style_batch}")
+            with _pool as _sx:
+                with tqdm(total=len(paths), desc="Style features") as _bar:
+                    for _b0 in range(0, len(paths), _style_batch):
+                        chunk_ids = sorted_ids[_b0:_b0 + _style_batch]
+                        chunk_paths = paths[_b0:_b0 + _style_batch]
+
+                        # Decode in parallel; the VGG pass is the serial part.
+                        imgs = list(_sx.map(imread_for_encoder, chunk_paths))
+                        keep = [(i, p, im) for i, p, im in
+                                zip(chunk_ids, chunk_paths, imgs) if im is not None]
+                        for i, p, im in zip(chunk_ids, chunk_paths, imgs):
+                            if im is None:
+                                print(f"[WARN] Style: could not read {p}; skipping")
+
+                        if not keep:
+                            _bar.update(len(chunk_paths))
+                            continue
+
+                        k_ids = [k[0] for k in keep]
+                        k_imgs = [k[2] for k in keep]
+
+                        # The cheap per-image parts stay parallel.
+                        try:
+                            edges = list(_sx.map(extract_edge_histogram, k_imgs))
+                            lbps = list(_sx.map(extract_texture_lbp, k_imgs))
+                        except Exception as e:
+                            print(f"[WARN] Style features failed on a batch: {e}")
+                            _bar.update(len(chunk_paths))
+                            continue
+
+                        grams = None
+                        if include_gram:
+                            try:
+                                grams = extract_gram_features_batch(
+                                    k_imgs, compact=compact_gram)
+                            except Exception as e:
+                                print(f"[WARN] Gram failed on a batch: {e}")
+                                _bar.update(len(chunk_paths))
+                                continue
+
+                        # Every list here is joined by position to valid_ids, so
+                        # an item that cannot supply all of them is skipped
+                        # entirely -- appending some but not others silently
+                        # shifts every later row onto the wrong image.
+                        for j, idx in enumerate(k_ids):
+                            if include_gram and (grams is None or grams[j] is None):
+                                continue
+                            edge_histograms.append(edges[j])
+                            lbp_textures.append(lbps[j])
+                            if include_gram:
+                                gram_features.append(grams[j])
+                            valid_ids.append(idx)
+
+                        _bar.update(len(chunk_paths))
+                        if progress is not None:
+                            progress(_b0 + len(chunk_paths), len(paths),
+                                     "Extracting style features")
             
             if valid_ids:
                 style_path = os.path.join(db_dir, f"features_{name}_style.npz")
@@ -1681,6 +1736,12 @@ def index_dataset(
             idx2path=idx2path, name=name, features=additional,
             include_gram=(not no_gram), compact_gram=(not full_gram),
             gram_pca_dims=gram_pca, n_workers=n_workers,
+            # Palette and style together are the longest phase on a large
+            # library -- about ninety minutes for 9,359 images -- and the job
+            # card used to sit at one position for all of it with no counter,
+            # which is indistinguishable from being stuck.
+            progress=lambda d, t, m: report(
+                0.66 + 0.24 * (d / t if t else 0), m, done=d, total=t),
         )
         for ftype, fpath in feature_paths.items():
             print(f"  {ftype}: {fpath}")

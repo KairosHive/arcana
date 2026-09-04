@@ -261,31 +261,54 @@ def _is_uniform_pattern(pattern: int, n_bits: int = 8) -> bool:
     return transitions <= 2
 
 
+_LBP_BIN_LUT: dict = {}
+
+
+def _lbp_bin_lut(n_points: int) -> np.ndarray:
+    """
+    pattern value -> histogram bin, for every pattern that fits in a byte.
+
+    An LBP image is uint8, so there are only 256 possible values however many
+    megapixels went in. Classifying each pixel individually is therefore work
+    that can be done once per process instead of once per pixel.
+    """
+    lut = _LBP_BIN_LUT.get(n_points)
+    if lut is None:
+        size = 1 << n_points
+        lut = np.empty(size, dtype=np.int64)
+        for pattern in range(size):
+            lut[pattern] = (bin(pattern).count("1")
+                            if _is_uniform_pattern(pattern, n_points)
+                            else n_points + 1)
+        _LBP_BIN_LUT[n_points] = lut
+    return lut
+
+
 def _compute_uniform_lbp_histogram(lbp: np.ndarray, n_points: int = LBP_POINTS) -> np.ndarray:
     """
     Compute histogram of uniform LBP patterns.
-    
+
     Uniform patterns: n_points + 1 bins (one per number of 1s)
     Non-uniform: 1 bin
     Total: n_points + 2 bins
+
+    This used to be a Python loop over lbp.flatten(), calling
+    _is_uniform_pattern and bin().count('1') per pixel -- 65,536 iterations for
+    a 256px image, run once per cell of a 4x4 grid. It was 436 ms per image and
+    87% of the entire style-feature phase, which is why indexing 9,359 pictures
+    with style took an hour and a half. The bin for a pattern depends only on
+    the pattern, so it is a 256-entry table and a bincount. The output is
+    identical.
     """
-    n_uniform = n_points + 1
-    hist = np.zeros(n_uniform + 1, dtype=np.float32)  # +1 for non-uniform
-    
-    for pattern in lbp.flatten():
-        if _is_uniform_pattern(pattern, n_points):
-            # Count number of 1s
-            n_ones = bin(pattern).count('1')
-            hist[n_ones] += 1
-        else:
-            hist[-1] += 1  # Non-uniform bin
-    
-    # Normalize
-    total = hist.sum()
+    lut = _lbp_bin_lut(n_points)
+    flat = np.asarray(lbp).ravel()
+    if flat.size == 0:
+        return np.zeros(n_points + 2, dtype=np.float32)
+    counts = np.bincount(lut[flat], minlength=n_points + 2).astype(np.float32)
+    total = counts.sum()
     if total > 0:
-        hist = hist / total
-    
-    return hist
+        counts = counts / total
+    return counts
 
 
 def extract_texture_lbp(
@@ -467,6 +490,77 @@ def extract_gram_features(
             gram_features.append(upper)
     
     return np.concatenate(gram_features).astype(np.float32)
+
+
+def extract_gram_features_batch(images, layers: list = None,
+                                resize_dim: int = 224, compact: bool = False):
+    """
+    Gram features for many images, batching every group that shares a shape.
+
+    extract_gram_features runs VGG19 on one image at a time, and the indexing
+    loop called it once per file: 9,359 photographs took about ninety minutes at
+    ~1.7/s with the device idle between them. CLIP indexing was batched from the
+    start; this was not.
+
+    _load_and_prepare_rgb scales the long side and keeps the aspect ratio, so a
+    mixed library produces tensors of different shapes that cannot be stacked.
+    Rather than forcing everything square -- which would change every feature
+    value and quietly break comparison with already-built datasets -- images are
+    grouped by shape and each group is run as one batch. A library of uniform
+    exports becomes a single pass; a mixed one degrades gracefully toward the
+    old per-image cost without ever being wrong.
+
+    Returns a list of feature vectors aligned with `images`.
+    """
+    if not HAS_TORCH:
+        raise ImportError("PyTorch required for Gram matrix features.")
+    if layers is None:
+        layers = GRAM_LAYERS_COMPACT if compact else GRAM_LAYERS
+
+    vgg, device = _load_vgg()
+    layer_indices = {name: _VGG_STYLE_LAYERS[name] for name in layers}
+    max_idx = max(layer_indices.values())
+
+    prepared = [_vgg_preprocess(_load_and_prepare_rgb(im, resize_dim), device)
+                for im in images]
+
+    groups: dict = {}
+    for i, t in enumerate(prepared):
+        groups.setdefault(tuple(t.shape[1:]), []).append(i)
+
+    out: list = [None] * len(images)
+    for _shape, members in groups.items():
+        batch = torch.cat([prepared[i] for i in members], dim=0)
+        x = batch
+        features_at_layer = {}
+        with torch.no_grad():
+            for i, layer in enumerate(vgg.children()):
+                x = layer(x)
+                for name, idx in layer_indices.items():
+                    if i == idx:
+                        features_at_layer[name] = x.clone()
+                if i >= max_idx:
+                    break
+
+        per_image = [[] for _ in members]
+        for name in layers:
+            feat = features_at_layer.get(name)
+            if feat is None:
+                continue
+            b, c, h, w = feat.shape
+            flat = feat.reshape(b, c, h * w)
+            # Same arithmetic as _compute_gram, done across the batch so the
+            # whole thing stays on the device.
+            grams = torch.bmm(flat, flat.transpose(1, 2)) / float(c * h * w)
+            iu = np.triu_indices(c)
+            g = grams.cpu().numpy()
+            for k in range(b):
+                per_image[k].append(g[k][iu])
+
+        for k, orig_i in enumerate(members):
+            out[orig_i] = (np.concatenate(per_image[k]).astype(np.float32)
+                           if per_image[k] else np.zeros(0, dtype=np.float32))
+    return out
 
 
 def gram_similarity(gram_a: np.ndarray, gram_b: np.ndarray) -> float:

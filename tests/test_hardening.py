@@ -450,6 +450,62 @@ def test_auto_k_never_exceeds_the_item_count(tmp):
     for n in range(1, 30):
         assert auto_k(n) <= max(2, n), n
 
+
+def test_lbp_histogram_matches_the_original_loop(tmp):
+    """
+    _compute_uniform_lbp_histogram used to classify every pixel in a Python
+    loop -- 65,536 iterations per image, once per cell of a 4x4 grid. It was
+    436 ms per image and 87% of the whole style-feature phase, which is why
+    indexing 9,359 pictures with style took an hour and a half. An LBP image is
+    uint8, so the bin for a pattern is a 256-entry table; this pins that the
+    replacement is exactly equal, not merely close.
+    """
+    import numpy as np
+    import arcana.style as st
+
+    def reference(lbp, n_points=8):
+        hist = np.zeros(n_points + 2, dtype=np.float32)
+        for pattern in lbp.flatten():
+            if st._is_uniform_pattern(pattern, n_points):
+                hist[bin(pattern).count("1")] += 1
+            else:
+                hist[-1] += 1
+        total = hist.sum()
+        return hist / total if total > 0 else hist
+
+    rng = np.random.RandomState(0)
+    for shape in ((64, 64), (17, 5), (1, 1)):
+        lbp = rng.randint(0, 256, shape, dtype=np.uint8)
+        got = st._compute_uniform_lbp_histogram(lbp)
+        assert np.array_equal(got, reference(lbp)), shape
+
+
+def test_lbp_histogram_handles_an_empty_cell(tmp):
+    import numpy as np
+    import arcana.style as st
+    got = st._compute_uniform_lbp_histogram(np.zeros((0, 0), dtype=np.uint8))
+    assert got.shape == (10,) and got.sum() == 0
+
+
+def test_batched_gram_equals_per_image_gram(tmp):
+    """Batching must not change a single feature value."""
+    import numpy as np
+    import arcana.style as st
+    if not st.HAS_TORCH:
+        return
+    rng = np.random.RandomState(1)
+    # deliberately mixed shapes: _load_and_prepare_rgb keeps aspect ratio, so a
+    # real library produces tensors that cannot simply be stacked
+    imgs = [rng.randint(0, 255, (h, w, 3), dtype=np.uint8)
+            for h, w in ((200, 300), (300, 200), (256, 256), (200, 300))]
+    single = [st.extract_gram_features(im, compact=True) for im in imgs]
+    batched = st.extract_gram_features_batch(imgs, compact=True)
+    assert len(batched) == len(single)
+    for a, b in zip(single, batched):
+        assert a.shape == b.shape
+        cos = float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+        assert cos > 0.9999, cos
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

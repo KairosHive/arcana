@@ -317,3 +317,70 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ------------------------------------------------------------------------------------
+# Palette features: one LAB conversion, not two
+# ------------------------------------------------------------------------------------
+def test_palette_features_are_not_double_converted(tmp):
+    """
+    extract_all_palette_features used to pass its already-converted LAB array
+    back into extract_lab_histogram and extract_color_moments, each of which
+    starts by running cv2.cvtColor(..., COLOR_BGR2LAB) on it. The second
+    conversion reads float32 LAB as if it were RGB in [0,1], which left the
+    4096-bin histogram with about five populated bins and pushed the colour
+    moments outside the range LAB is defined on.
+
+    It never raised, and because queries were mangled identically it still
+    returned plausible results -- just far coarser than intended.
+    """
+    import numpy as np, cv2, os
+    from arcana.palette import extract_all_palette_features
+
+    # A picture with genuinely distinct colour regions, so a working histogram
+    # has to populate many bins.
+    rng = np.random.default_rng(0)
+    img = np.zeros((240, 240, 3), np.uint8)
+    for i, colour in enumerate([(200, 40, 40), (40, 200, 40), (40, 40, 200),
+                                (200, 200, 40), (200, 40, 200), (40, 200, 200),
+                                (230, 230, 230), (20, 20, 20), (120, 90, 60)]):
+        r, c = divmod(i, 3)
+        img[r*80:(r+1)*80, c*80:(c+1)*80] = colour
+    img = np.clip(img.astype(np.int16) + rng.integers(-12, 12, img.shape), 0, 255).astype(np.uint8)
+    path = os.path.join(tmp, "swatches.png")
+    cv2.imwrite(path, img)
+
+    feats = extract_all_palette_features(path)
+
+    populated = int((feats["histogram"] > 0).sum())
+    assert populated > 50, (
+        f"only {populated} of {feats['histogram'].size} histogram bins populated; "
+        "this is the signature of the double BGR->LAB conversion"
+    )
+
+    # LAB is bounded: L in [0,100], A and B in [-128,127]. The double
+    # conversion produced means well outside that.
+    mean_l, mean_a, mean_b = feats["moments"][:3]
+    assert 0.0 <= mean_l <= 100.0, f"L mean {mean_l} outside [0,100]"
+    assert -128.0 <= mean_a <= 127.0, f"A mean {mean_a} outside [-128,127]"
+    assert -128.0 <= mean_b <= 127.0, f"B mean {mean_b} outside [-128,127]"
+
+
+def test_extract_all_agrees_with_the_standalone_extractors(tmp):
+    """
+    The combined path decodes once and shares the LAB array; the standalone
+    functions each decode for themselves. They must still agree, or a palette
+    built during indexing would not match one computed at query time.
+    """
+    import numpy as np, cv2, os
+    from arcana.palette import (extract_all_palette_features, extract_lab_histogram,
+                                extract_color_moments)
+
+    rng = np.random.default_rng(7)
+    img = rng.integers(0, 255, (200, 260, 3), dtype=np.uint8)
+    path = os.path.join(tmp, "noise.png")
+    cv2.imwrite(path, img)
+
+    both = extract_all_palette_features(path)
+    assert np.allclose(both["histogram"], extract_lab_histogram(path), atol=1e-5)
+    assert np.allclose(both["moments"], extract_color_moments(path), atol=1e-3)

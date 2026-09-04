@@ -5,30 +5,52 @@
 <h1 align="center">Arcana</h1>
 
 <p align="center">
-  Explore, search and tell stories with large image and audio collections,<br>
-  by the way they look and sound rather than by filename.
+  Search, explore and tell stories with large image and audio collections —<br>
+  by what they look and sound like, not by what they are called.
 </p>
 
 ---
 
-Arcana reads your files **where they are**. Nothing is copied, moved or
-uploaded — it builds a searchable index beside them and leaves the originals
-alone. Everything runs on your own machine.
+## What it is
 
-## What it does
+A photo library is usually searchable only by the things written down about it:
+filenames, folders, dates, whatever you were disciplined enough to tag. The
+pictures themselves are opaque. Ten thousand images means ten thousand things
+you can only find by remembering where you put them.
 
-**Prompt search** — type *"a quiet street at dusk"* and get the pictures that
-look like it, from a collection that was never tagged. Works on audio too:
-*"distant thunder"* against a folder of field recordings.
+Arcana makes the contents searchable. It runs every file through a
+**vision–language model** — CLIP for images, CLAP for audio — which turns each
+one into a few hundred numbers describing what is *in* it. Those numbers live in
+a shared space with the same model's reading of English, so a sentence and a
+photograph can be compared directly.
 
-**A map of the collection** — every file placed by similarity, clustered and
-named, so you can see the shape of what you have and click your way around it.
+Two useful things follow.
 
-**Moodboard** — collect pictures, then find more like them by colour palette or
-texture, and transfer the colours of one onto another.
+**You can search by description.** Type *"a quiet street at dusk"* and get the
+pictures that look like that, from a collection nobody ever tagged. Type
+*"distant thunder"* at a folder of field recordings and get the right sounds.
+Nothing was labelled; the model recognises the content.
 
-**Story mode** — give it a sequence of scenes and it assembles a visual
-narrative from your own images.
+**The collection gets a shape.** Every file has a position, so the whole library
+can be laid out as a map where similar things sit together. Related pictures
+form visible clusters, each named automatically, and you navigate by looking
+rather than by scrolling a list of filenames.
+
+On top of that sit two tools that use the same representation: a **moodboard**
+that finds images by colour palette or texture and transfers the colours of one
+onto another, and a **story mode** that assembles a visual narrative from a
+sequence of scene descriptions.
+
+It is meant for people with more images than they can remember — photographers,
+researchers, artists, anyone with an archive.
+
+## Demo — search mode
+
+![image](https://github.com/user-attachments/assets/dd46c1b2-d8db-4417-b173-a9872e01a927)
+
+## Demo — story mode
+
+![image](https://github.com/user-attachments/assets/9977b27d-501e-49ac-9ebc-60bb8d42a467)
 
 ## Install
 
@@ -59,9 +81,13 @@ The encoder downloads itself on first use (605 MB for the fast one). Indexing
 Once a dataset is built it appears in the **Dataset** menu at the top of every
 tab, and the other three tabs come alive.
 
-## Where things live
+## Your files stay put
 
-Your media is never touched. Everything Arcana creates goes in one place:
+Arcana reads your media where it lives. Nothing is copied, moved or uploaded —
+it builds an index beside your collection and leaves the originals alone.
+Everything runs on your own machine, including the models.
+
+What Arcana creates goes in one place:
 
 | | |
 |---|---|
@@ -71,8 +97,8 @@ Your media is never touched. Everything Arcana creates goes in one place:
 | anywhere | set `ARCANA_DATA_DIR` |
 
 That folder holds the indexes, the downloaded models and anything you save. It
-survives uninstalling, and pointing two machines at the same one lets them
-share datasets.
+survives uninstalling, and pointing two machines at the same one lets them share
+datasets.
 
 ## Command line
 

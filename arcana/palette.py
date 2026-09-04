@@ -9,9 +9,9 @@
 import numpy as np
 import cv2
 try:
-    from .cvio import imread_unicode
+    from .cvio import imread_unicode, imread_for_encoder
 except ImportError:
-    from cvio import imread_unicode
+    from cvio import imread_unicode, imread_for_encoder
 from sklearn.cluster import KMeans
 from typing import Tuple, Optional
 from functools import lru_cache
@@ -53,7 +53,11 @@ def _load_and_prepare(image_or_path, resize_dim: int = DEFAULT_RESIZE_DIM) -> np
         LAB image as np.ndarray (H, W, 3), dtype float32, L in [0,100], A/B in [-128,127]
     """
     if isinstance(image_or_path, str):
-        img = imread_unicode(image_or_path)
+        # Everything here runs at resize_dim (128px by default), so decoding
+        # a 24-megapixel JPEG in full and throwing 99% of it away is waste.
+        # imread_for_encoder asks libjpeg to skip DCT coefficients and stops
+        # at the first scale still comfortably above what we need.
+        img = imread_for_encoder(image_or_path, min_side=2 * resize_dim)
         if img is None:
             raise ValueError(f"Could not load image: {image_or_path}")
     else:
@@ -125,7 +129,11 @@ def extract_lab_histogram(
         Normalized histogram vector of shape (bins^3,), dtype float32
     """
     img_lab = _load_and_prepare(image_or_path, resize_dim)
-    
+    return _hist_from_lab(img_lab, bins)
+
+
+def _hist_from_lab(img_lab: np.ndarray, bins: int = DEFAULT_HISTOGRAM_BINS) -> np.ndarray:
+    """Histogram of an image already converted to LAB by _load_and_prepare."""
     # Convert back to 0-255 range for cv2.calcHist
     img_hist = img_lab.copy()
     img_hist[:, :, 0] = img_hist[:, :, 0] * (255.0 / 100.0)
@@ -182,6 +190,12 @@ def extract_dominant_colors(
         sorted by proportion (descending). dtype float32.
     """
     img_lab = _load_and_prepare(image_or_path, resize_dim)
+    return _dominant_from_lab(img_lab, n_colors, max_pixels)
+
+
+def _dominant_from_lab(img_lab: np.ndarray, n_colors: int = DEFAULT_N_DOMINANT,
+                       max_pixels: int = KMEANS_MAX_PIXELS) -> np.ndarray:
+    """K-means palette of an image already converted to LAB by _load_and_prepare."""
     pixels = _get_pixels(img_lab, max_pixels)
     
     # K-means clustering
@@ -291,6 +305,11 @@ def extract_color_moments(
         Array of shape (9,): [μL, μA, μB, σL, σA, σB, skewL, skewA, skewB]
     """
     img_lab = _load_and_prepare(image_or_path, resize_dim)
+    return _moments_from_lab(img_lab)
+
+
+def _moments_from_lab(img_lab: np.ndarray) -> np.ndarray:
+    """Colour moments of an image already converted to LAB by _load_and_prepare."""
     pixels = img_lab.reshape(-1, 3)
     
     # Mean
@@ -388,19 +407,26 @@ def extract_all_palette_features(
             'dominant': np.ndarray (n_dominant, 4) - [L, A, B, proportion]
             'moments': np.ndarray (9,)
     """
+    # Convert to LAB exactly once, then compute all three features from it.
+    #
+    # This used to hand `img_lab` straight back to extract_lab_histogram and
+    # extract_color_moments, whose first act is to call _load_and_prepare --
+    # which runs cv2.cvtColor(..., COLOR_BGR2LAB) on data that was already LAB.
+    # OpenCV reads a float32 input as RGB in [0,1], so LAB values of L=0..100
+    # and A/B=-128..127 came out as nonsense: the 4096-bin histogram ended up
+    # with about five populated bins (0.1% of it), and the moments landed
+    # outside the valid LAB range. Every stored palette feature was affected.
+    # Both features were computed the same wrong way at query time too, which
+    # is why this degraded ranking quietly instead of raising.
+    #
+    # The dominant-colour call had the opposite problem: it was passed the
+    # path, so the file was decoded a second time from disk (~148 ms/image on
+    # the machine this was profiled on, roughly a third of the total).
     img_lab = _load_and_prepare(image_or_path, resize_dim)
-    
-    # Histogram
-    hist = extract_lab_histogram(img_lab, bins=histogram_bins, resize_dim=resize_dim)
-    
-    # Dominant colors (need original image, not LAB)
-    if isinstance(image_or_path, str):
-        dominant = extract_dominant_colors(image_or_path, n_colors=n_dominant, resize_dim=resize_dim)
-    else:
-        dominant = extract_dominant_colors(image_or_path, n_colors=n_dominant, resize_dim=resize_dim)
-    
-    # Moments
-    moments = extract_color_moments(img_lab, resize_dim=resize_dim)
+
+    hist = _hist_from_lab(img_lab, histogram_bins)
+    dominant = _dominant_from_lab(img_lab, n_dominant)
+    moments = _moments_from_lab(img_lab)
     
     return {
         'histogram': hist,

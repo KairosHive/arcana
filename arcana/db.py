@@ -713,6 +713,15 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
 
 
 # --------------------------------------------------------------------------------------
+# Palette features are stamped with this. Bump it whenever the arrays change
+# meaning, so an index built by an older Arcana is reported as stale rather
+# than compared against features that no longer mean the same thing.
+#   1: histograms and moments computed through a double BGR->LAB conversion
+#      (unstamped -- every palette file written before that bug was fixed)
+#   2: one conversion, as documented
+PALETTE_FEATURE_FMT = 2
+
+
 # Additional feature extraction (palette, style)
 # --------------------------------------------------------------------------------------
 def _extract_palette_worker(args):
@@ -832,7 +841,14 @@ def extract_additional_features(
                 print(f"[INFO] using {n_workers} {_kind}")
                 with _pool as executor:
                     futures = {executor.submit(_extract_palette_worker, item): item for item in work_items}
+                    # `progress` drives the bar in the GUI. The style loop
+                    # reports; this one never did, so a palette run looked
+                    # frozen from the moment it started until it finished.
+                    _done = 0
                     for future in tqdm(as_completed(futures), total=len(work_items), desc="Palette features"):
+                        _done += 1
+                        if progress is not None and _done % 8 == 0:
+                            progress(_done, len(work_items), "Extracting palette features")
                         try:
                             i, feats, err = future.result(timeout=5)  # 5s timeout per image
                             if feats is not None:
@@ -870,6 +886,12 @@ def extract_additional_features(
                     histogram=np.stack([histograms[i] for i in valid_indices]).astype(np.float32),
                     dominant=np.stack([dominant_colors[i] for i in valid_indices]).astype(np.float32),
                     moments=np.stack([color_moments[i] for i in valid_indices]).astype(np.float32),
+                    # Bumped when the meaning of these arrays changes. Files
+                    # without it predate the LAB double-conversion fix: their
+                    # histograms and moments are not comparable with features
+                    # extracted now, so load_palette_features says so instead
+                    # of silently ranking against them.
+                    fmt=np.array(PALETTE_FEATURE_FMT, dtype=np.int32),
                 )
                 print(f"[OK] Saved palette features to {palette_path}")
                 print(f"     histogram: {histograms[valid_indices[0]].shape} x {len(valid_ids)}")
@@ -1008,13 +1030,35 @@ def load_palette_features(name: str) -> dict | None:
     if not os.path.exists(path):
         return None
     data = np.load(path)
+    fmt = int(data['fmt'][0]) if 'fmt' in data.files else 1
     return {
         'ids': data['ids'],
         'histogram': data['histogram'],
         'dominant': data['dominant'],
         'moments': data['moments'],
         'path': path,
+        'fmt': fmt,
+        'stale': fmt < PALETTE_FEATURE_FMT,
     }
+
+
+def palette_features_stale(name: str) -> bool:
+    """
+    True when a dataset's palette features predate the LAB fix.
+
+    Their histograms populate about five of 4096 bins and their moments fall
+    outside the valid LAB range, so palette search still returns results but
+    ranks them on nearly no information. Re-extract to fix; nothing else in
+    the dataset is affected.
+    """
+    path = os.path.join(db_dir, f"features_{name}_palette.npz")
+    if not os.path.exists(path):
+        return False
+    try:
+        with np.load(path) as d:
+            return 'fmt' not in d.files or int(d['fmt'][0]) < PALETTE_FEATURE_FMT
+    except Exception:
+        return False
 
 
 def load_style_features(name: str) -> dict | None:

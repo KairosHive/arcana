@@ -551,7 +551,18 @@ def _dataset_extras(d) -> dict:
         "palette": bool(d.palette_path and os.path.exists(d.palette_path)),
         "style": bool(d.style_path and os.path.exists(d.style_path)),
         "labels": False,
+        # Palette features written before the LAB double-conversion fix are
+        # still loadable and still return results, just far coarser ones --
+        # about five populated histogram bins out of 4096. Nothing tells the
+        # user their moodboard is working at a fraction of its resolution
+        # unless we say so here.
+        "palette_stale": False,
     }
+    if out["palette"]:
+        try:
+            out["palette_stale"] = _db.palette_features_stale(d.name)
+        except Exception:
+            pass
     if latent and os.path.exists(latent):
         try:
             import pickle
@@ -663,12 +674,17 @@ def dataset_rows() -> list:
                 html.Div(
                     [
                         _pill("labels", OK if ex["labels"] else INK_FAINT),
-                        _pill("palette", OK if ex["palette"] else INK_FAINT),
+                        _pill("palette" + (" · dated" if ex.get("palette_stale") else ""),
+                              (WARN if ex.get("palette_stale") else OK)
+                              if ex["palette"] else INK_FAINT),
                         _pill("style", OK if ex["style"] else INK_FAINT),
                     ],
                     title=("Named clusters / colour-palette features / style features. "
                            "Grey means the dataset was indexed without it; palette and "
-                           "style can only be added by re-indexing."),
+                           "style can only be added by re-indexing. "
+                           "'palette · dated' means those features were built before "
+                           "a fix to the colour conversion: search still works, but "
+                           "much more coarsely. Re-index to sharpen it."),
                     style={"display": "flex", "gap": "5px"},
                 ),
                 pill,

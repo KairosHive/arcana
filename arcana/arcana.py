@@ -1366,13 +1366,26 @@ app.layout = html.Div(
                                             dcc.Dropdown(
                                                 id="palette-method",
                                                 options=[
-                                                    {"label": "Histogram", "value": "histogram"},
                                                     {"label": "EMD", "value": "emd"},
+                                                    {"label": "Histogram", "value": "histogram"},
                                                     {"label": "Moments", "value": "moments"},
                                                 ],
-                                                value="histogram",
+                                                # EMD matches palettes by how far
+                                                # colours actually sit from each other in
+                                                # LAB; the histogram compares fixed bins,
+                                                # so two near-identical colours either
+                                                # side of a bin edge score as unrelated.
+                                                # It costs 2.7s against 0.14s across 9,359
+                                                # images, which is worth it at the sizes
+                                                # this app is used at.
+                                                #
+                                                # It also reads `dominant`, the one palette
+                                                # feature the LAB double-conversion never
+                                                # touched, so it gives full-quality results
+                                                # on datasets indexed before that fix.
+                                                value="emd",
                                                 clearable=False,
-                                                style={"width": "100px", "color": "#000", "fontSize": "12px"},
+                                                style={"minWidth": "116px", "fontSize": "12px"},
                                             ),
                                         ], style={"display": "flex", "alignItems": "center"}),
                                         html.Div([
@@ -1382,7 +1395,7 @@ app.layout = html.Div(
                                                 options=[{"label": str(n), "value": n} for n in [4, 8, 12, 16, 24, 32]],
                                                 value=16,
                                                 clearable=False,
-                                                style={"width": "60px", "color": "#000", "fontSize": "12px"},
+                                                style={"minWidth": "72px", "fontSize": "12px"},
                                             ),
                                         ], style={"display": "flex", "alignItems": "center", "marginTop": "6px"}),
                                     ],
@@ -1413,7 +1426,7 @@ app.layout = html.Div(
                                                 ],
                                                 value="gram",
                                                 clearable=False,
-                                                style={"width": "80px", "color": "#000", "fontSize": "12px"},
+                                                style={"minWidth": "96px", "fontSize": "12px"},
                                             ),
                                         ], style={"display": "flex", "alignItems": "center"}),
                                     ],
@@ -2600,7 +2613,7 @@ def moodboard_similarity_search(n_clicks, ref_image, use_palette, palette_method
     
     num_results = num_results or 50
     n_colors = n_colors or 16
-    palette_method = palette_method or "histogram"
+    palette_method = palette_method or "emd"
     style_method = style_method or "gram"
     img_size = img_size or "medium"
     columns = columns or 2

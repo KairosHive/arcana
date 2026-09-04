@@ -1082,7 +1082,7 @@ def search_by_palette(
     query_image,
     name: str,
     idx2path: dict[int, str],
-    method: str = "histogram",
+    method: str = "emd",
     n_colors: int = 10,
     top_k: int = 20,
 ) -> list[tuple[str, float]]:

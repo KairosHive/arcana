@@ -389,6 +389,72 @@ def test_unknown_vector_width_is_refused_with_advice(tmp):
     else:
         raise AssertionError("expected a RuntimeError for an unknown width")
 
+
+# ─────────────── labelling: a vocabulary from the folder tree ───────────────
+def test_folder_vocabulary_uses_subfolder_names(tmp):
+    """
+    Cluster names are chosen from a fixed 100-word list that knows nothing
+    about the pictures -- a library of circuit boards gets named out of a
+    vocabulary with no word for circuit board. Most people have already written
+    a better vocabulary without realising: their folder tree.
+    """
+    import os
+    from arcana.ui_datasets import folder_vocabulary
+    for sub in ("Street Photography", "portraits", "night_shots"):
+        d = os.path.join(tmp, sub)
+        os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, "a.jpg"), "wb").close()
+    # Order is irrelevant -- this is a bag of words to match cluster centroids
+    # against -- and os.listdir sorts case-sensitively, so compare as a set.
+    got = folder_vocabulary(tmp)
+    assert set(got) == {"night shots", "portraits", "Street Photography"}, got
+
+
+def test_folder_vocabulary_skips_folders_without_media(tmp):
+    # An "exports" or "originals" wrapper is not a label.
+    import os
+    from arcana.ui_datasets import folder_vocabulary
+    os.makedirs(os.path.join(tmp, "real"), exist_ok=True)
+    open(os.path.join(tmp, "real", "a.jpg"), "wb").close()
+    os.makedirs(os.path.join(tmp, "empty"), exist_ok=True)
+    os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+    open(os.path.join(tmp, "docs", "notes.txt"), "wb").close()
+    assert folder_vocabulary(tmp) == ["real"]
+
+
+def test_folder_vocabulary_finds_media_nested_deeply(tmp):
+    import os
+    from arcana.ui_datasets import folder_vocabulary
+    deep = os.path.join(tmp, "trip", "day one", "raw")
+    os.makedirs(deep, exist_ok=True)
+    open(os.path.join(deep, "a.wav"), "wb").close()
+    assert folder_vocabulary(tmp) == ["trip"]
+
+
+def test_folder_vocabulary_on_a_flat_folder_is_empty(tmp):
+    # The caller falls back to the built-in list and says so.
+    import os
+    from arcana.ui_datasets import folder_vocabulary
+    open(os.path.join(tmp, "a.jpg"), "wb").close()
+    assert folder_vocabulary(tmp) == []
+
+
+def test_folder_vocabulary_is_bounded(tmp):
+    import os
+    from arcana.ui_datasets import folder_vocabulary
+    for i in range(80):
+        d = os.path.join(tmp, f"folder{i:03d}")
+        os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, "a.jpg"), "wb").close()
+    assert len(folder_vocabulary(tmp, limit=60)) == 60
+
+
+def test_folder_vocabulary_handles_a_missing_folder(tmp):
+    import os
+    from arcana.ui_datasets import folder_vocabulary
+    assert folder_vocabulary(os.path.join(tmp, "nope")) == []
+    assert folder_vocabulary("") == []
+
 # ─────────────────────────── runner ───────────────────────────
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())

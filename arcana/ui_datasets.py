@@ -254,7 +254,39 @@ def layout() -> html.Div:
                                           "lineHeight": "1.5"}),
                       ])),
 
-                _step(4, "Extras, then go",
+                _step(4, "How to name the groups",
+                      "Arcana clusters the collection and gives each group a name. "
+                      "Leave this alone and it picks both for you.",
+                      html.Div([
+                          html.Div(style={"display": "flex", "gap": "18px",
+                                          "flexWrap": "wrap",
+                                          "alignItems": "flex-end"}, children=[
+                              _field("How many groups",
+                                     dcc.Dropdown(
+                                         id="dm-k", clearable=False, value=0,
+                                         options=[{"label": "Automatic", "value": 0},
+                                                  {"label": "6 — broad strokes", "value": 6},
+                                                  {"label": "12", "value": 12},
+                                                  {"label": "18", "value": 18},
+                                                  {"label": "24 — fine grained", "value": 24}],
+                                         style={"color": "#111", "fontSize": "12.5px"}),
+                                     grow="0", min_width="210px"),
+                              _field("Names come from",
+                                     dcc.Dropdown(
+                                         id="dm-vocab", clearable=False, value="builtin",
+                                         options=[{"label": "Arcana's word list", "value": "builtin"},
+                                                  {"label": "This folder's subfolder names", "value": "folders"},
+                                                  {"label": "Don't name them", "value": "none"}],
+                                         style={"color": "#111", "fontSize": "12.5px"}),
+                                     grow="1", min_width="240px"),
+                          ]),
+                          html.Div(id="dm-label-note",
+                                   style={"fontSize": "11.5px", "color": INK_DIM,
+                                          "marginTop": "10px", "lineHeight": "1.5",
+                                          "maxWidth": "70ch", "minHeight": "17px"}),
+                      ])),
+
+                _step(5, "Extras, then go",
                       "Palette and style power the moodboard's similarity search. They "
                       "cost time now and cannot be added later without re-reading every "
                       "file, so tick them if you think you might want them.",
@@ -369,6 +401,42 @@ def next_name(folder: str, current_name: str | None, last_suggested: str | None)
     if not current or current == (last_suggested or ""):
         return suggested
     return None
+
+
+def folder_vocabulary(root: str, limit: int = 60) -> list[str]:
+    """
+    Subfolder names, cleaned up, for use as a label vocabulary.
+
+    Arcana names a cluster by finding the nearest word in a fixed 100-word list
+    (Portrait, Street, Sunset...). That list knows nothing about the pictures:
+    a library of circuit boards gets named out of a vocabulary with no word for
+    circuit board. Most people have already written a better vocabulary without
+    realising -- it is their folder tree.
+
+    Only directories that actually contain media are counted, so an "originals"
+    or "export" wrapper folder does not become a label.
+    """
+    if not root or not os.path.isdir(root):
+        return []
+    words: list[str] = []
+    for entry in sorted(os.listdir(root)):
+        sub = os.path.join(root, entry)
+        if not os.path.isdir(sub):
+            continue
+        has_media = False
+        for _r, _d, files in os.walk(sub):
+            if any(os.path.splitext(f)[1].lower() in IMAGE_EXTS | AUDIO_EXTS
+                   for f in files):
+                has_media = True
+                break
+        if not has_media:
+            continue
+        cleaned = " ".join(w for w in entry.replace("_", " ").replace("-", " ").split())
+        if cleaned and cleaned.lower() not in {w.lower() for w in words}:
+            words.append(cleaned)
+        if len(words) >= limit:
+            break
+    return words
 
 
 def scan_both(folder: str, cap: int = 200_000, keep: int = 40) -> dict:
@@ -931,6 +999,43 @@ def register(app) -> None:
         return html.Span(msg, style={"color": OK})
 
     @app.callback(
+        Output("dm-label-note", "children"),
+        [Input("dm-k", "value"), Input("dm-vocab", "value"),
+         Input("dm-folder", "value")],
+    )
+    def _label_note(k, vocab, folder):
+        """Say what the choices will actually produce, before the long job runs."""
+        if vocab == "none":
+            return ("Groups still get found, they just stay numbered. You can name "
+                    "them later only by re-indexing.")
+
+        bits = []
+        n = _scanned_count.get("n", 0)
+        if not k:
+            try:
+                auto = _db.auto_k(n) if n else None
+            except Exception:
+                auto = None
+            bits.append(f"About {auto} groups for {n:,} files."
+                        if auto else "The number of groups scales with the collection.")
+        else:
+            bits.append(f"Exactly {k} groups.")
+
+        if vocab == "folders":
+            path = os.path.expanduser(str(folder or "").strip().strip('"'))
+            words = folder_vocabulary(path) if path else []
+            if not words:
+                bits.append("No subfolders with media in them, so Arcana's own word "
+                            "list will be used instead.")
+            else:
+                shown = ", ".join(words[:6]) + ("..." if len(words) > 6 else "")
+                bits.append(f"Names chosen from your {len(words)} subfolders: {shown}")
+        else:
+            bits.append("Names chosen from Arcana's 100-word list.")
+        return " ".join(bits)
+
+
+    @app.callback(
         Output("dm-hardware", "children"),
         Input("mode-select", "value"),
     )
@@ -987,10 +1092,11 @@ def register(app) -> None:
         Input("dm-start", "n_clicks"),
         [State("dm-folder", "value"), State("dm-name", "value"),
          State("dm-modality", "value"), State("dm-model", "value"),
-         State("dm-features", "value")],
+         State("dm-features", "value"),
+         State("dm-k", "value"), State("dm-vocab", "value")],
         prevent_initial_call=True,
     )
-    def _start(n, folder, name, modality, model_id, features):
+    def _start(n, folder, name, modality, model_id, features, k, vocab):
         def err(text):
             return no_update, no_update, html.Span(text, style={"color": "#e74c3c"})
 
@@ -1013,16 +1119,27 @@ def register(app) -> None:
         feats = set(features or [])
         feature_arg = ",".join(["clip"] + sorted(feats & {"palette", "style"}))
 
+        # _read_label_list takes either a path or an inline comma list, so a
+        # vocabulary built from folder names needs no temporary file.
+        label_src = None                       # None -> the built-in list
+        if vocab == "folders":
+            words = folder_vocabulary(folder)
+            label_src = ",".join(words) if words else None
+        elif vocab == "none":
+            label_src = ""                     # empty -> clusters stay numbered
+
         def job(handle):
             handle.update(fraction=0.0, message="Preparing")
             _models.ensure_model(model_id, handle)
             # Cluster names come from label embeddings in this encoder's space,
             # so build them before the long part rather than failing after it.
-            _db.warm_label_cache(model_id, modality)
+            if vocab != "none":
+                _db.warm_label_cache(model_id, modality)
             handle.update(fraction=0.02, message="Indexing")
             return _db.index_dataset(
                 folder, name, modality=modality, model_id=model_id,
                 features=feature_arg, thumbnails=("thumbnails" in feats),
+                k=int(k or 0), labels=label_src,
                 progress=lambda f, m, d, t: handle.update(
                     fraction=f, message=(m or None),
                     detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),

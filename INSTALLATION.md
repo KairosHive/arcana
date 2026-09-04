@@ -35,15 +35,34 @@ if you want the space back.
 Installing a newer version upgrades in place. There is no need to uninstall
 first.
 
-### One thing to know
+### Two builds: CPU and GPU
 
-The packaged build ships **CPU-only PyTorch**, because the CUDA build is 4.4 GB
-against 421 MB and would take the download from 226 MB to well over 2 GB.
+`Arcana-Setup-<version>.exe` ships **CPU-only PyTorch** (310 MB against 4,312 MB
+for the CUDA build) so the download stays near 200 MB. It runs everywhere and
+needs no graphics card.
 
-Search never needs a GPU. Indexing works without one — the fast encoder is only
-about twice as quick with a card. If you own an NVIDIA GPU and index large
-collections with the largest encoder, install from source instead; that is
-roughly thirty times faster there.
+`Arcana-Setup-<version>-GPU.exe` is the same application with CUDA PyTorch. It is
+a much larger download, and only worth it if you have an NVIDIA card.
+
+They are the same product to Windows — same AppId — so **installing one over
+the other upgrades in place**. You will not end up with both.
+
+Which to pick:
+
+| | CPU | GPU |
+|---|---|---|
+| Prompt search | instant | instant |
+| Indexing, ViT-B/32 | fine (decode-bound either way) | slightly faster |
+| Indexing, ViT-H/14 | 715 ms an image | 7 ms — **100x** |
+| Style features | 11.7 /s | 45 /s — 3.8x |
+| Inject Poetry | 37.5 s a scene | 1.3 s — **29x** |
+
+Search never needs a GPU. Take the CPU build unless you index large collections
+with the largest encoder, or use Inject Poetry.
+
+The app tells you which situation you are in: if it finds an NVIDIA card it
+cannot use, the Datasets panel and Inject Poetry both say so, rather than
+leaving you to wonder why things are slow.
 
 ---
 
@@ -154,6 +173,33 @@ Then build:
 ```
 
 The result is `installer\out\Arcana-Setup-<version>.exe`, around 226 MB.
+
+### The GPU build
+
+Same spec and same .iss, pointed at an environment with CUDA PyTorch. Build that
+environment from the lock, which already pins `torch==2.9.1+cu128`. The CUDA
+wheels are not on PyPI, so torch comes from NVIDIA's index first and everything
+else from the lock afterwards:
+
+```bash
+uv venv .venv-pack-gpu
+uv pip install --python .venv-pack-gpu\Scripts\python.exe torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128
+grep -vE "^(torch|torchvision|torchaudio)([=<>~ ]|$)" requirements-lock.txt > gpu-reqs.txt
+uv pip install --python .venv-pack-gpu\Scripts\python.exe -r gpu-reqs.txt --no-deps
+uv pip install --python .venv-pack-gpu\Scripts\python.exe pyinstaller
+.venv-pack-gpu\Scripts\python -m arcana.envcheck
+```
+
+Then build and compile it:
+
+```bash
+$env:ARCANA_BUILD_VARIANT="GPU"; .venv-pack-gpu\Scripts\pyinstaller installer\arcana.spec --noconfirm --distpath dist --workpath build-gpu
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" /DGpu installer\arcana.iss
+```
+
+`ARCANA_BUILD_VARIANT=GPU` stages to `dist\Arcana-GPU`, and `/DGpu` points the
+installer at that folder and appends `-GPU` to the setup filename — so the two
+builds never overwrite each other's output.
 
 Two traps that cost time the first time round:
 

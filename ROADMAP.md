@@ -198,3 +198,66 @@ so 0.87 in one search is not 0.87 in another.
 - **Sequence a selection** — nearest-neighbour plus 2-opt over the CLIP distance
   matrix so consecutive frames flow. Story mode already draws the path overlay
   but picks each node independently, so consecutive frames have no relation.
+
+---
+
+## GPU: where it matters, and how to get it
+
+Measured on this machine, GPU against CPU for the same work:
+
+| | CPU | GPU | |
+|---|---|---|---|
+| Inject Poetry (sd-turbo, 1024px, 4 steps) | 37.5 s / scene | 1.3 s | **29×** |
+| Style features (VGG gram + LBP) | 11.7 /s | 45.0 /s | 3.8× |
+| CLIP ViT-H/14 encode | 715.7 ms | 7.1 ms | 100× |
+| CLIP ViT-B/32 encode | 21.9 ms | 0.2 ms | (decode-bound end to end) |
+
+The packaged build ships **CPU-only PyTorch (310 MB)** because the CUDA build is
+**4,312 MB** — 14× larger. That single fact drives everything below.
+
+### Local GPU — a second installer *(implemented)*
+
+`arcana.spec` and `arcana.iss` now build either variant:
+
+```bash
+ARCANA_BUILD_VARIANT=GPU .venv-pack-gpu/Scripts/pyinstaller installer/arcana.spec --noconfirm
+ISCC.exe /DGpu installer/arcana.iss
+```
+
+Same `AppId`, so installing one over the other upgrades in place rather than
+leaving a second 900 MB copy behind; only the setup filename differs
+(`Arcana-Setup-<version>-GPU.exe`).
+
+**Why not hot-swap torch inside the existing build instead?** It was considered
+and rejected on evidence. PyInstaller splits torch: the Python modules go into
+the PYZ embedded in `Arcana.exe` (2,014 of them), the binaries into
+`_internal/torch/lib/`. `FrozenImporter` sits ahead of `PathFinder` in
+`sys.meta_path`, so a torch dropped on `sys.path` loses to the bundled one, and
+the bundled DLLs would still win the DLL search. Overriding both before torch is
+first imported is possible but delicate, and the failure mode is a half-loaded
+CUDA stack — exactly the class of error `gpu.py` exists to prevent.
+
+A separate download that the app shells out to (its own interpreter, its own
+torch) would avoid that cleanly and keep the default install small. It needs a
+downloader, a worker protocol and a fallback path — a real feature, worth doing
+only if the two-installer split proves annoying in practice.
+
+### Cloud GPU — recommended against
+
+Not implemented, deliberately.
+
+- **It contradicts what the app is.** The README promises nothing is uploaded and
+  everything runs locally. Sending someone's personal photographs to a third
+  party is a change of character, not a toggle.
+- **It needs an account, keys and billing.** Somebody pays per inference. That is
+  a product decision, not a code change.
+- **Colour transfer has nowhere to go.** ModFlows is a specific checkpoint with
+  no hosted equivalent, so it would mean running and paying for a GPU server.
+  Inject Poetry could use a hosted SD endpoint; colour transfer could not.
+- **The numbers do not demand it.** The worst case is a five-scene story at about
+  three minutes on the CPU. That is worth a progress bar, which it now has —
+  not an upload pipeline.
+
+If remote compute ever becomes worth it, the version that fits this app is
+pointing Arcana at *a machine the user owns* on their own network, not at a
+commercial API.

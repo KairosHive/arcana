@@ -27,8 +27,23 @@
 #define AppName        "Arcana"
 #define AppPublisher   "Antoine Bellemare"
 #define AppExeName     "Arcana.exe"
-; Relative to this .iss file, so the script works from any working directory.
-#define DistDir        "..\dist\Arcana"
+
+; Which torch went into the bundle. The default build ships CPU-only PyTorch
+; (310 MB); the GPU build ships the CUDA one (4.3 GB), which is the whole reason
+; there are two. Compile the GPU one with:
+;
+;     ISCC.exe /DGpu installer\arcana.iss
+;
+; Same AppId either way on purpose -- they are the same product, so installing
+; one over the other upgrades in place rather than leaving 927 MB of the other
+; behind. Only the setup filename differs, so both can sit in a releases folder.
+#ifdef Gpu
+  #define VariantSuffix  "-GPU"
+  #define DistDir        "..\dist\Arcana-GPU"
+#else
+  #define VariantSuffix  ""
+  #define DistDir        "..\dist\Arcana"
+#endif
 
 [Setup]
 ; A stable GUID. Changing it makes Windows treat a new build as a different
@@ -40,7 +55,7 @@ AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=out
-OutputBaseFilename=Arcana-Setup-{#AppVersion}
+OutputBaseFilename=Arcana-Setup-{#AppVersion}{#VariantSuffix}
 SetupIconFile=..\arcana\assets\arcana.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 ; AppVersion drives the wizard and Add/Remove Programs, but NOT the Windows file

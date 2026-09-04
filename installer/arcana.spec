@@ -179,5 +179,10 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Arcana",
+    # The GPU build goes to dist/Arcana-GPU so both variants can exist side by
+    # side without one overwriting the other's 900 MB. The executable inside is
+    # still Arcana.exe either way -- only the staging folder differs, and
+    # arcana.iss picks the matching one from its own /DGpu flag.
+    name=("Arcana-GPU" if os.environ.get("ARCANA_BUILD_VARIANT", "").upper() == "GPU"
+          else "Arcana"),
 )

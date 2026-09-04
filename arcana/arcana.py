@@ -1362,7 +1362,7 @@ app.layout = html.Div(
                                             html.Span(id="palette-db-status", style={"fontSize": "10px", "marginLeft": "8px"}),
                                         ], style={"marginBottom": "8px", "display": "flex", "alignItems": "center"}),
                                         html.Div([
-                                            html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            html.Span("Method", style={"fontSize": "10px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
                                             dcc.Dropdown(
                                                 id="palette-method",
                                                 options=[
@@ -1385,22 +1385,22 @@ app.layout = html.Div(
                                                 # on datasets indexed before that fix.
                                                 value="emd",
                                                 clearable=False,
-                                                style={"minWidth": "116px", "fontSize": "12px"},
+                                                style={"width": "100%", "minWidth": "0", "fontSize": "12px"},
                                             ),
-                                        ], style={"display": "flex", "alignItems": "center"}),
+                                        ], style={"display": "flex", "flexDirection": "column"}),
                                         html.Div([
-                                            html.Span("Colors:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            html.Span("Colors", style={"fontSize": "10px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
                                             dcc.Dropdown(
                                                 id="palette-n-colors",
                                                 options=[{"label": str(n), "value": n} for n in [4, 8, 12, 16, 24, 32]],
                                                 value=16,
                                                 clearable=False,
-                                                style={"minWidth": "72px", "fontSize": "12px"},
+                                                style={"width": "100%", "minWidth": "0", "fontSize": "12px"},
                                             ),
-                                        ], style={"display": "flex", "alignItems": "center", "marginTop": "6px"}),
+                                        ], style={"display": "flex", "flexDirection": "column", "marginTop": "8px"}),
                                     ],
                                     id="palette-card",
-                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"},
+                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1 1 0", "minWidth": "128px", "overflow": "hidden"},
                                 ),
                                 # Style Card
                                 html.Div(
@@ -1416,7 +1416,7 @@ app.layout = html.Div(
                                             html.Span(id="style-db-status", style={"fontSize": "10px", "marginLeft": "8px"}),
                                         ], style={"marginBottom": "8px", "display": "flex", "alignItems": "center"}),
                                         html.Div([
-                                            html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            html.Span("Method", style={"fontSize": "10px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
                                             dcc.Dropdown(
                                                 id="style-method",
                                                 options=[
@@ -1426,12 +1426,12 @@ app.layout = html.Div(
                                                 ],
                                                 value="gram",
                                                 clearable=False,
-                                                style={"minWidth": "96px", "fontSize": "12px"},
+                                                style={"width": "100%", "minWidth": "0", "fontSize": "12px"},
                                             ),
-                                        ], style={"display": "flex", "alignItems": "center"}),
+                                        ], style={"display": "flex", "flexDirection": "column"}),
                                     ],
                                     id="style-card",
-                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"},
+                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1 1 0", "minWidth": "128px", "overflow": "hidden"},
                                 ),
                             ],
                             style={"display": "flex", "gap": "10px", "marginBottom": "12px", "flexWrap": "wrap"},

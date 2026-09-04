@@ -1,100 +1,100 @@
-# Arcana
+<p align="center">
+  <img src="arcana/assets/arcana-mark.png" alt="" width="120">
+</p>
 
-**Arcana** is a web-based tool to **explore, search, and generate stories in the latent space of large image databases** using state-of-the-art AI models.  
-It allows you to interactively search by prompt, visualize clusters, and assemble visual stories—ideal for researchers, artists, and creative technologists.
+<h1 align="center">Arcana</h1>
 
----
-
-## Features
-
-- **Interactive latent space visualization** (2D or 3D)
-- **Prompt-based image search** with CLIP embeddings
-- **Story mode:** generate sequences of images from scene descriptions
-- **Save selected images and stories** in organized output folders
-- Fast thumbnail display for efficient navigation
-- Custom dataset selection
+<p align="center">
+  Explore, search and tell stories with large image and audio collections,<br>
+  by the way they look and sound rather than by filename.
+</p>
 
 ---
 
-## Demo - search mode
+Arcana reads your files **where they are**. Nothing is copied, moved or
+uploaded — it builds a searchable index beside them and leaves the originals
+alone. Everything runs on your own machine.
 
-![image](https://github.com/user-attachments/assets/dd46c1b2-d8db-4417-b173-a9872e01a927)
+## What it does
 
-## Demo - story mode
+**Prompt search** — type *"a quiet street at dusk"* and get the pictures that
+look like it, from a collection that was never tagged. Works on audio too:
+*"distant thunder"* against a folder of field recordings.
 
-![image](https://github.com/user-attachments/assets/9977b27d-501e-49ac-9ebc-60bb8d42a467)
+**A map of the collection** — every file placed by similarity, clustered and
+named, so you can see the shape of what you have and click your way around it.
 
----
+**Moodboard** — collect pictures, then find more like them by colour palette or
+texture, and transfer the colours of one onto another.
 
-## Quick Start
+**Story mode** — give it a sequence of scenes and it assembles a visual
+narrative from your own images.
 
-### 1. **Clone the repository**
+## Install
 
-```bash
-git clone https://github.com/yourusername/arcana.git
-cd arcana
-```
+Three ways, depending on who you are — see **[INSTALLATION.md](INSTALLATION.md)**
+for the details.
 
-### 2. **Install dependencies**
+| | for | command |
+|---|---|---|
+| **Installer** | using Arcana on Windows | run `Arcana-Setup-<version>.exe` |
+| **uv** | developing on it | `uv sync && uv run python -m arcana.arcana` |
+| **pip** | adding it to an environment you already have | `pip install .` then `arcana` |
 
-This project uses [uv](https://docs.astral.sh/uv/):
+The installer needs nothing else. The other two need Python 3.10+.
 
-```bash
-uv venv
-uv pip install -e .
-```
+## First run
 
-To reproduce the exact combination the project was last verified against:
+Arcana opens on the **Datasets** tab, which walks you through four steps:
 
-```bash
-uv pip install -r requirements-lock.txt --extra-index-url https://download.pytorch.org/whl/cu128
-uv pip install -e . --no-deps
-```
+1. **Point at a folder** — everything inside, including subfolders
+2. **Check what it found** — media type and name are detected from the folder
+3. **Choose the quality** — a stronger encoder understands prompts better but
+   takes longer to index
+4. **Name the groups, then go** — optional extras, then Start indexing
 
-`pyproject.toml` maps torch, torchvision and torchaudio to PyTorch's CUDA 12.8
-index, so `uv pip install -e .` gets GPU builds automatically. For a CPU-only
-install, point that index at `https://download.pytorch.org/whl/cpu` or remove the
-`[tool.uv.sources]` block. Searching never needs a GPU; only indexing and story
-mode benefit from one.
+The encoder downloads itself on first use (605 MB for the fast one). Indexing
+10,000 photographs takes about seven minutes on a CPU, three with a GPU.
 
-### 3. **Prepare your images**
+Once a dataset is built it appears in the **Dataset** menu at the top of every
+tab, and the other three tabs come alive.
 
-Place your images (jpg, png) inside a subfolder inside the `images/` folder, e.g.:
+## Where things live
 
-```
-project_root/
-  images/
-    AntarticaTrip/
-      your_images1.png
-      your_images2.png
-  arcana/
-    ...
-```
+Your media is never touched. Everything Arcana creates goes in one place:
 
-### 4. **Build your latent space and index**
+| | |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Arcana` |
+| macOS | `~/Library/Application Support/Arcana` |
+| Linux | `~/.local/share/arcana` |
+| anywhere | set `ARCANA_DATA_DIR` |
 
-Generate CLIP features, a latent space embedding, and an index for your image folder:
+That folder holds the indexes, the downloaded models and anything you save. It
+survives uninstalling, and pointing two machines at the same one lets them
+share datasets.
 
-```bash
-arcana-build-latent --imgs_path AntarticaTrip --name Antartica --n_components 2
-```
-- `--imgs_path` is your image folder
-- `--name` is the dataset name (used as a key)
-- `--n_components` is 2 or 3 (for 2D or 3D visualization)
+## Command line
 
-> This will create all necessary files in `arcana/databases/` and `arcana/latents/`.
-
-### 5. **Run the app**
+The GUI covers everything, but each piece is also a command:
 
 ```bash
-arcana
+arcana                                   # the app
+arcana-build-latent --path ./photos --name holiday
+arcana-relocate --name holiday           # after moving your files
+arcana-migrate                           # older datasets to the portable format
 ```
 
-The app will launch at `http://127.0.0.1:8050/` (visit in your browser).
+`arcana-build-latent --help` lists the indexing options — cluster count, label
+vocabulary, which features to extract.
 
----
+## Requires
 
-## Saving and Output
+Python 3.10 or newer. A GPU is optional: search never needs one, and indexing
+works without one — it is simply slower with the larger encoders.
 
-- **Selected images** are saved to `arcana/output/selections/<your-session>/`
-- **Stories** (with images and scene descriptions) are saved to `arcana/output/stories/<your-story>/`
+## Licence
+
+Not yet declared. `pyproject.toml` sets no licence and the repository has no
+LICENSE file, which means default copyright applies and others have no explicit
+right to use or redistribute this. Worth deciding before publishing widely.

@@ -203,3 +203,71 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ------------------------------------------------------------------------------------
+# Hardware present vs hardware usable
+# ------------------------------------------------------------------------------------
+def test_hardware_detection_is_independent_of_torch(monkeypatch):
+    """
+    gpu.hardware() must answer "is there a card" without asking torch.
+
+    The packaged build ships CPU-only PyTorch, so torch.cuda reports nothing on
+    a machine with a perfectly good GPU. The advice that would tell such a user
+    to install from source was gated on verdict()["name"], which comes from
+    torch and is therefore always empty in exactly that build -- so it only ever
+    appeared for users who already had the card working.
+    """
+    from arcana import gpu
+
+    monkeypatch.setattr(gpu, "_HW_CACHE", None, raising=False)
+    monkeypatch.setattr(gpu, "_nvidia_smi", lambda: {
+        "name": "NVIDIA GeForce RTX 4090", "vram_mb": 16376, "driver": "596.08"})
+
+    hw = gpu.hardware(refresh=True)
+    assert hw["nvidia"] is True
+    assert "4090" in hw["name"]
+
+
+def test_unused_gpu_reports_a_card_a_cpu_build_cannot_reach(monkeypatch):
+    """A card that is present but unusable is the case worth telling users about."""
+    from arcana import gpu
+
+    monkeypatch.setattr(gpu, "_HW_CACHE", None, raising=False)
+    monkeypatch.setattr(gpu, "_nvidia_smi", lambda: {
+        "name": "NVIDIA GeForce RTX 4090", "vram_mb": 16376, "driver": "596.08"})
+    monkeypatch.setattr(gpu, "available", lambda: False)
+
+    idle = gpu.unused_gpu()
+    assert idle is not None and "4090" in idle["name"]
+
+    # ...and stays quiet when the card is already in use.
+    monkeypatch.setattr(gpu, "available", lambda: True)
+    assert gpu.unused_gpu() is None
+
+
+def test_no_nvidia_card_is_not_an_error(monkeypatch):
+    """A machine with no NVIDIA driver reports absence rather than raising."""
+    from arcana import gpu
+
+    monkeypatch.setattr(gpu, "_HW_CACHE", None, raising=False)
+    monkeypatch.setattr(gpu, "_nvidia_smi", lambda: None)
+    monkeypatch.setattr(gpu, "available", lambda: False)
+
+    assert gpu.hardware(refresh=True)["nvidia"] is False
+    assert gpu.unused_gpu() is None
+    assert isinstance(gpu.hardware_note(), str)
+
+
+def test_nvidia_smi_failure_never_propagates(monkeypatch):
+    """nvidia-smi missing, hanging or erroring must not break the app."""
+    from arcana import gpu
+
+    def boom():
+        raise OSError("nvidia-smi not found")
+
+    monkeypatch.setattr(gpu, "_HW_CACHE", None, raising=False)
+    monkeypatch.setattr(gpu, "_nvidia_smi", boom)
+    monkeypatch.setattr(gpu, "available", lambda: False)
+
+    assert gpu.hardware(refresh=True)["nvidia"] is False

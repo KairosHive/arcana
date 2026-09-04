@@ -1073,14 +1073,27 @@ def register(app) -> None:
             return ""
         if _gpu.available():
             return line
-        # No usable GPU. Only mention the pip route to someone who has hardware
-        # that would actually benefit; telling a laptop owner to rebuild from
-        # source is noise.
-        extra = (" The packaged build ships CPU-only PyTorch to keep the "
-                 "download under a gigabyte. Installing Arcana from source into "
-                 "a CUDA environment uses the card instead.")
-        v = _gpu.verdict()
-        return line + (extra if v.get("name") else "")
+        # No usable GPU. Only mention the source route to someone who has
+        # hardware that would actually benefit; telling a laptop owner with no
+        # card to rebuild from source is noise.
+        #
+        # This used to gate on _gpu.verdict()["name"], which comes from torch --
+        # and the packaged build ships CPU-only torch, so the name is always
+        # empty there and the advice never appeared. It could only show up in a
+        # source install where torch already saw the card, which is exactly the
+        # user who does not need it. gpu.hardware() asks the driver through
+        # nvidia-smi instead, so it answers "is there a card" independently of
+        # whether this build can reach it.
+        idle = _gpu.unused_gpu()
+        if not idle:
+            return line
+        vram = f" ({idle['vram_mb'] // 1024} GB)" if idle.get("vram_mb") else ""
+        return line + (
+            f" This build cannot use the {idle['name']}{vram} in this machine: "
+            "it ships CPU-only PyTorch to keep the download near 200 MB rather "
+            "than 4 GB. Installing Arcana from source into a CUDA environment "
+            "uses the card -- worth it for the largest encoder and for Inject "
+            "Poetry, which is about 29x faster on a GPU.")
 
 
     @app.callback(

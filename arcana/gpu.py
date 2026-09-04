@@ -147,3 +147,99 @@ def describe() -> str:
     if v["ok"]:
         return f"Using {v['name']} ({v['capability']}, {precision()})."
     return f"Using the CPU — {v['reason']}."
+
+
+# --------------------------------------------------------------------------------------
+# Hardware present, as opposed to hardware usable
+# --------------------------------------------------------------------------------------
+# verdict() answers "can this build use a GPU". That is not the same question as
+# "does this machine have one", and the packaged build makes the difference
+# matter: it ships CPU-only torch, so torch.cuda.is_available() is False on a
+# machine with a perfectly good card. Someone with an RTX 4090 was told "Using
+# the CPU" and given no hint that a 29x faster path existed.
+#
+# nvidia-smi ships with the driver, so it answers the hardware question without
+# torch, without CUDA, and without a 4.3 GB download.
+
+_HW_CACHE: dict | None = None
+
+
+def _nvidia_smi() -> dict | None:
+    """Ask the driver what card is installed. None if there is no NVIDIA driver."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=6,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    first = out.stdout.strip().splitlines()[0]
+    parts = [p.strip() for p in first.split(",")]
+    if not parts or not parts[0]:
+        return None
+    vram = None
+    if len(parts) > 1:
+        digits = "".join(ch for ch in parts[1] if ch.isdigit())
+        if digits:
+            vram = int(digits)
+    return {"name": parts[0], "vram_mb": vram,
+            "driver": parts[2] if len(parts) > 2 else ""}
+
+
+def hardware(refresh: bool = False) -> dict:
+    """
+    What is physically installed, regardless of whether this build can use it.
+
+    Returns {"nvidia": bool, "name": str, "vram_mb": int|None, "driver": str}.
+    Never raises: a machine with no NVIDIA driver simply reports nvidia=False.
+    """
+    global _HW_CACHE
+    if _HW_CACHE is not None and not refresh:
+        return _HW_CACHE
+    info = None
+    try:
+        info = _nvidia_smi()
+    except Exception:
+        info = None
+    _HW_CACHE = ({"nvidia": True, **info} if info
+                 else {"nvidia": False, "name": "", "vram_mb": None, "driver": ""})
+    return _HW_CACHE
+
+
+def unused_gpu() -> dict | None:
+    """
+    A capable card this build cannot reach, if there is one.
+
+    This is the case worth telling the user about: the hardware is there, the
+    build is CPU-only, and the difference is large enough to matter -- measured
+    at 1024px and 4 steps, Inject Poetry is 37.5 s an image on the CPU against
+    1.3 s on the GPU. Returns None when the GPU is already in use, or when there
+    is no NVIDIA card to talk about.
+    """
+    if available():
+        return None
+    hw = hardware()
+    return hw if hw.get("nvidia") else None
+
+
+def hardware_note() -> str:
+    """
+    One line for the UI, honest in every case.
+
+    Says what is being used, and -- when a usable card is sitting idle because
+    this is the packaged CPU-only build -- says that too, rather than leaving
+    the user to wonder why everything is slow.
+    """
+    line = describe()
+    idle = unused_gpu()
+    if idle:
+        vram = f", {idle['vram_mb'] // 1024} GB" if idle.get("vram_mb") else ""
+        line += (f" This build cannot use the {idle['name']}{vram} installed on "
+                 f"this machine — it ships CPU-only PyTorch to keep the download "
+                 f"small. Running from source gets the card.")
+    return line

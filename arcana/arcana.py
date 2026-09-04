@@ -3331,8 +3331,11 @@ def _poetry_job(story_cache, folder, strength_val):
         os.makedirs(output_dir, exist_ok=True)
 
         device = _gpu.device()
+        # hardware_note(), not describe(): on the packaged build this is where
+        # a user first meets the 37.5 s-per-scene CPU path, and it should say
+        # plainly that the card in their machine is not being used.
         handle.update(fraction=0.0, message="Loading the image model",
-                      detail=_gpu.describe())
+                      detail=_gpu.hardware_note())
 
         from diffusers import StableDiffusionImg2ImgPipeline
         # fp16 is a CUDA thing: on CPU most fp16 kernels are unimplemented, so

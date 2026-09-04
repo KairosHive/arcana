@@ -1092,7 +1092,7 @@ def register(app) -> None:
             f" This build cannot use the {idle['name']}{vram} in this machine: "
             "it ships CPU-only PyTorch to keep the download near 200 MB rather "
             "than 4 GB. Installing Arcana from source into a CUDA environment "
-            "uses the card -- worth it for the largest encoder and for Inject "
+            "uses the card — worth it for the largest encoder and for Inject "
             "Poetry, which is about 29x faster on a GPU.")
 
 

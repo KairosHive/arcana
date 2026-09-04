@@ -36,9 +36,11 @@ from matplotlib import pyplot as plt
 try:
     from . import ui_datasets as _ui_datasets
     from . import ui_style as _ui
+    from . import jobs
 except ImportError:
     import ui_datasets as _ui_datasets
     import ui_style as _ui
+    import jobs
 
 # --- palette/style search ---
 try:
@@ -1706,6 +1708,33 @@ html.Div(
                             },
                         ),
 
+                        # Inject Poetry runs Stable Diffusion once per scene.
+                        # Measured at 1024px and 4 steps: 1.3 s an image on the
+                        # GPU, 37.5 s on the CPU -- and the packaged build is
+                        # CPU-only, so a five-scene story is about three minutes
+                        # there. It used to report nothing at all for that whole
+                        # time, which is indistinguishable from a dead button.
+                        html.Div(
+                            id="poetry-progress",
+                            style={"display": "none", "flexDirection": "column",
+                                   "gap": "6px", "minWidth": "220px"},
+                            children=[
+                                html.Div(id="poetry-progress-msg",
+                                         style={"fontSize": "11px", "color": "#bdbdbd"}),
+                                html.Div(
+                                    style={"height": "6px", "borderRadius": "3px",
+                                           "backgroundColor": "#333", "overflow": "hidden"},
+                                    children=html.Div(
+                                        id="poetry-progress-bar",
+                                        style={"height": "100%", "width": "0%",
+                                               "backgroundColor": "#00bcd4",
+                                               "transition": "width 0.3s"}),
+                                ),
+                            ],
+                        ),
+                        dcc.Interval(id="poetry-poll", interval=700, disabled=True),
+                        dcc.Store(id="poetry-job"),
+
                         # Grouping controls: vertical layout
                         html.Div(
                             [
@@ -3284,132 +3313,238 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
                          style={"color": "#e74c3c", "wordBreak": "break-word"}), "")
 
 
+def _poetry_job(story_cache, folder, strength_val):
+    """
+    The diffusion pass, as a function of a progress handle.
+
+    Kept free of Dash objects on purpose: it runs on the job manager's worker
+    thread and returns plain data, which the polling callback turns into
+    components. It reports once per scene and once per denoising step within a
+    scene, because on the CPU a single scene is over half a minute.
+    """
+    def run(handle):
+        import torch
+        from PIL import Image as _Image
+
+        subfolder = folder or "story"
+        output_dir = _safe_output_dir("stories", subfolder, "poetry_injected")
+        os.makedirs(output_dir, exist_ok=True)
+
+        device = _gpu.device()
+        handle.update(fraction=0.0, message="Loading the image model",
+                      detail=_gpu.describe())
+
+        from diffusers import StableDiffusionImg2ImgPipeline
+        # fp16 is a CUDA thing: on CPU most fp16 kernels are unimplemented, so
+        # asking for the fp16 variant made story mode raise on every machine
+        # without an NVIDIA GPU rather than merely being slow.
+        if device == "cuda":
+            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+                "stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16"
+            ).to(device)
+        else:
+            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+                "stabilityai/sd-turbo", torch_dtype=torch.float32
+            ).to(device)
+
+        # xformers is CUDA-only and optional; it raises when unavailable.
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception as e:
+            print(f"[INFO] xformers attention unavailable, continuing without it: {e}")
+        pipe.enable_vae_slicing()
+        pipe.safety_checker = None
+        pipe.watermark = None
+
+        strength = 0.72 if strength_val is None else max(0.0, min(1.0, float(strength_val)))
+        num_steps = 4
+        guidance_scale = 1.0
+        negative_prompt = "text, letters, watermark, logo, blurry, low quality"
+
+        scenes = story_cache["story"]
+        n = len(scenes)
+        out_items = []
+
+        for idx, item in enumerate(scenes):
+            handle.raise_if_cancelled()
+            img_path = resolve_path(item["path"])
+            prompt = item["text"]
+            handle.update(done=idx, total=n,
+                          message=f"Scene {idx + 1} of {n}",
+                          detail=prompt[:70])
+
+            init_img = _Image.open(img_path).convert("RGB")
+            max_width = 1024
+            w, h = init_img.size
+            if w > max_width:
+                scale = max_width / float(w)
+                new_w = (max_width // 8) * 8
+                new_h = (int(h * scale) // 8) * 8
+            else:
+                new_w, new_h = (w // 8) * 8, (h // 8) * 8
+            init_img = init_img.resize((new_w, new_h), _Image.LANCZOS)
+
+            # Within-scene reporting. Without it the bar would sit still for the
+            # ~37 s a single CPU scene takes, which is the whole complaint.
+            def _step_cb(pipe_ref, step, timestep, cbk, _idx=idx, _p=prompt):
+                frac = (_idx + (step + 1) / float(num_steps)) / float(n)
+                handle.update(fraction=frac,
+                              message=f"Scene {_idx + 1} of {n}",
+                              detail=f"step {step + 1}/{num_steps} · {_p[:50]}")
+                return cbk
+
+            gen = torch.manual_seed(2222 + idx)
+            out_img = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=init_img,
+                strength=strength,
+                num_inference_steps=num_steps,
+                guidance_scale=guidance_scale,
+                generator=gen,
+                callback_on_step_end=_step_cb,
+            ).images[0]
+
+            gen_name = _short_poetry_name(img_path, prompt, idx, ext="png")
+            poetry_img_path = os.path.join(output_dir, gen_name)
+            out_img.save(_win_longpath(poetry_img_path))
+            poetry_img_path = os.path.abspath(poetry_img_path)
+
+            buffered = BytesIO()
+            out_img.save(buffered, format="JPEG")
+            poetry_img_str = base64.b64encode(buffered.getvalue()).decode()
+
+            out_items.append({
+                "text": prompt,
+                "path": item["path"],
+                "original_img_str": item.get("img_str", ""),
+                "poetry_img_str": poetry_img_str,
+                "poetry_img_path": poetry_img_path,
+            })
+
+        pipe.to("cpu")
+        del pipe
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        handle.update(fraction=1.0, done=n, total=n, message="Done", detail="")
+        return {"items": out_items, "output_dir": output_dir}
+
+    return run
+
+
+_POETRY_BOX = {"display": "none", "flexDirection": "column",
+               "gap": "6px", "minWidth": "220px"}
+
+
+def _poetry_bar(pct):
+    return {"height": "100%", "width": f"{pct}%",
+            "backgroundColor": "#00bcd4", "transition": "width 0.3s"}
+
+
 @app.callback(
     [
-        Output("save-confirmation", "children", allow_duplicate=True),
-        Output("story-cache", "data", allow_duplicate=True),
-        Output("image-display", "children", allow_duplicate=True),
+        Output("poetry-job", "data"),
+        Output("poetry-poll", "disabled"),
+        Output("poetry-progress", "style"),
     ],
     Input("inject-poetry-btn", "n_clicks"),
     State("story-cache", "data"),
     State("save-folder", "value"),
-    State("poetry-strength", "value"),  # <— NEW
-    prevent_initial_call="initial_duplicate",
+    State("poetry-strength", "value"),
+    prevent_initial_call=True,
 )
 def inject_poetry(n_clicks, story_cache, folder, strength_val):
+    """
+    Start the diffusion pass and hand the polling callback a job id.
 
-    if not story_cache or "story" not in story_cache:
-        return "No story data available.", dash.no_update, dash.no_update
+    This used to do the whole thing inline and return the finished images, so
+    the browser sat on one request for minutes with no output of any kind. The
+    job manager already existed for indexing; this now uses it.
+    """
+    if not story_cache or "story" not in story_cache or not story_cache["story"]:
+        return None, True, dict(_POETRY_BOX)
 
-    subfolder = folder or "story"
-    output_dir = _safe_output_dir("stories", subfolder, "poetry_injected")
-    os.makedirs(output_dir, exist_ok=True)
-
-    device = _gpu.device()
-    from diffusers import StableDiffusionImg2ImgPipeline
-    # fp16 is a CUDA thing: on CPU most fp16 kernels are unimplemented, so asking
-    # for the fp16 variant here made story mode raise on every machine without an
-    # NVIDIA GPU rather than merely being slow.
-    if device == "cuda":
-        pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            "stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16"
-        ).to(device)
-    else:
-        pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            "stabilityai/sd-turbo", torch_dtype=torch.float32
-        ).to(device)
-
-    # xformers is CUDA-only and optional; it raises when unavailable.
-    try:
-        pipe.enable_xformers_memory_efficient_attention()
-    except Exception as e:
-        print(f"[INFO] xformers attention unavailable, continuing without it: {e}")
-    pipe.enable_vae_slicing()
-    pipe.safety_checker = None
-    pipe.watermark = None
-
-    # strength = 0.72
-    strength = 0.72 if strength_val is None else max(0.0, min(1.0, float(strength_val)))
-
-    num_steps = 4
-    guidance_scale = 1.0
-    negative_prompt = "text, letters, watermark, logo, blurry, low quality"
-
-    updated_story_images = []
-    new_image_display = []
-
-    for idx, item in enumerate(story_cache["story"]):
-        img_path = resolve_path(item["path"])
-        prompt = item["text"]
-        init_img = Image.open(img_path).convert("RGB")
-
-        max_width = 1024
-        w, h = init_img.size
-        if w > max_width:
-            scale = max_width / float(w)
-            new_w = (max_width // 8) * 8
-            new_h = (int(h * scale) // 8) * 8
-            init_img = init_img.resize((new_w, new_h), Image.LANCZOS)
-        else:
-            new_w, new_h = (w // 8) * 8, (h // 8) * 8
-            init_img = init_img.resize((new_w, new_h), Image.LANCZOS)
-
-        gen = torch.manual_seed(2222 + idx)
-
-        out_img = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=init_img,
-            strength=strength,
-            num_inference_steps=num_steps,
-            guidance_scale=guidance_scale,
-            generator=gen,
-        ).images[0]
-
-        gen_name = _short_poetry_name(img_path, prompt, idx, ext="png")
-        poetry_img_path = os.path.join(output_dir, gen_name)
-
-        # Save (optionally with long-path helper on Windows)
-        save_path = _win_longpath(poetry_img_path)  # or just poetry_img_path if not using the helper
-        out_img.save(save_path)
-
-        # ⬇️ Put this line here:
-        poetry_img_path = os.path.abspath(poetry_img_path)
-
-        # Then build the base64 and append to updated_story_images
-        buffered = BytesIO()
-        out_img.save(buffered, format="JPEG")
-        poetry_img_str = base64.b64encode(buffered.getvalue()).decode()
-
-        updated_story_images.append({
-            "text": prompt,
-            "path": item["path"],
-            "original_img_str": item["img_str"],
-            "poetry_img_str": poetry_img_str,
-            "poetry_img_path": poetry_img_path,  # now absolute
-        })
+    job_id = jobs.MANAGER.submit(
+        _poetry_job(story_cache, folder, strength_val),
+        kind="poetry", label="Injecting poetry",
+    )
+    return ({"id": job_id, "chunks": story_cache.get("chunks")}, False,
+            dict(_POETRY_BOX, display="flex"))
 
 
-        # Replace UI image with poetry-injected one
-        new_image_display.append(
+@app.callback(
+    [
+        Output("poetry-progress-msg", "children"),
+        Output("poetry-progress-bar", "style"),
+        Output("poetry-poll", "disabled", allow_duplicate=True),
+        Output("poetry-progress", "style", allow_duplicate=True),
+        Output("save-confirmation", "children", allow_duplicate=True),
+        Output("story-cache", "data", allow_duplicate=True),
+        Output("image-display", "children", allow_duplicate=True),
+    ],
+    Input("poetry-poll", "n_intervals"),
+    State("poetry-job", "data"),
+    prevent_initial_call=True,
+)
+def poll_poetry(_n, job_ref):
+    """Drive the bar, and swap in the finished images when the job lands."""
+    idle = (dash.no_update, dash.no_update, dash.no_update)
+
+    if not job_ref or not job_ref.get("id"):
+        return ("", _poetry_bar(0), True, dict(_POETRY_BOX)) + idle
+
+    snap = jobs.MANAGER.snapshot(job_ref["id"])
+    if snap is None:
+        return ("", _poetry_bar(0), True, dict(_POETRY_BOX)) + idle
+
+    frac = snap.get("fraction") or 0.0
+    msg = snap.get("message") or "Working"
+    detail = snap.get("detail") or ""
+    line = f"{msg} — {detail}" if detail else msg
+
+    if not jobs.MANAGER.get(job_ref["id"]).finished:
+        return ((line, _poetry_bar(round(frac * 100)), False,
+                 dict(_POETRY_BOX, display="flex")) + idle)
+
+    if snap.get("error"):
+        return (f"Poetry failed: {snap['error']}", _poetry_bar(0), True,
+                dict(_POETRY_BOX, display="flex"),
+                f"Poetry failed: {snap['error']}", dash.no_update, dash.no_update)
+
+    job = jobs.MANAGER.get(job_ref["id"])
+    result = getattr(job, "result", None) if job else None
+    if not result:
+        return ("", _poetry_bar(0), True, dict(_POETRY_BOX)) + idle
+
+    items = result["items"]
+    display = []
+    for it in items:
+        display.append(
             html.Div(
                 [
-                    html.H5(prompt, style={"marginBottom": "4px", "color": "#ffc107"}),
-                    html.Img(src=f"data:image/jpeg;base64,{poetry_img_str}", style={"width": "100%", "marginBottom": "10px"}),
-                    daq.BooleanSwitch(id={"type": "select-image", "index": item["path"]}, on=True, style={"display": "none"}),
+                    html.H5(it["text"], style={"marginBottom": "4px", "color": "#ffc107"}),
+                    html.Img(src=f"data:image/jpeg;base64,{it['poetry_img_str']}",
+                             style={"width": "100%", "marginBottom": "10px"}),
+                    html.Div([
+                        daq.BooleanSwitch(id={"type": "select-image", "index": it["path"]},
+                                          on=True, style={"display": "none"}),
+                        html.Button("+ Moodboard",
+                                    id={"type": "add-to-moodboard", "index": it["path"]},
+                                    n_clicks=0,
+                                    style={"fontSize": "12px", "padding": "2px 8px"}),
+                    ], style={"display": "flex", "alignItems": "center"}),
                 ],
-                style={"marginBottom": "24px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
+                style={"marginBottom": "24px", "padding": "10px",
+                       "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
             )
         )
 
-    pipe.to("cpu")
-    del pipe
-    torch.cuda.empty_cache()
+    updated_cache = {"story": items, "chunks": job_ref.get("chunks")}
+    return ("", _poetry_bar(100), True, dict(_POETRY_BOX),
+            f"Poetry-injected images saved successfully in {result['output_dir']}.",
+            updated_cache, display)
 
-    # Update the story_cache with poetry images included
-    updated_cache = {"story": updated_story_images, "chunks": story_cache["chunks"]}
-
-    return f"Poetry-injected images saved successfully in {output_dir}.", updated_cache, new_image_display
 
 @lru_cache(maxsize=40000)  # cache reads of files we've already written
 def _read_cached_spec(key: str) -> bytes | None:

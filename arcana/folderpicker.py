@@ -63,6 +63,22 @@ def _run(cmd: list[str], **kw) -> str:
 #      input queue to the current foreground window's thread, which makes the
 #      two threads share focus state, and only then call SetForegroundWindow.
 #      The attachment is released immediately afterwards.
+#   3. FolderBrowserDialog is the OLD dialog. WinForms on .NET Framework --
+#      which is what Windows PowerShell 5.1 runs on, and there is no pwsh on a
+#      stock Windows -- calls SHBrowseForFolder, the cramped tree from Windows
+#      95: no sidebar, no address bar, no search, no typing a path, no network
+#      shortcuts. .NET Core's FolderBrowserDialog switched to the modern dialog
+#      years ago, but that is not available here.
+#
+#      So this drives IFileOpenDialog directly, with FOS_PICKFOLDERS. That is
+#      the dialog Explorer itself uses: Quick Access and This PC in the
+#      sidebar, an address bar, search, and a path you can paste into. It needs
+#      the COM vtable declared in exact order, which is why the interface below
+#      lists methods it never calls -- each one is a slot, and a missing slot
+#      would silently call the wrong function.
+#
+#      FolderBrowserDialog stays as a fallback. If the COM route ever throws on
+#      some future Windows, a cramped dialog beats no dialog.
 _WIN_SCRIPT = r'''
 Add-Type -AssemblyName System.Windows.Forms | Out-Null
 Add-Type -AssemblyName System.Drawing | Out-Null
@@ -85,6 +101,87 @@ public static class Fg {
     if (other != mine) AttachThreadInput(other, mine, false);
   }
 }
+
+// Explorer's folder dialog. Every method below is a vtable slot and must stay
+// in this order even though most are never called -- COM dispatches by
+// position, so a missing entry calls the wrong function rather than failing.
+[ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IShellItem {
+  void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+  void GetParent(out IShellItem ppsi);
+  void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+  void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+  void Compare(IShellItem psi, uint hint, out int piOrder);
+}
+
+[ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IFileDialog {
+  [PreserveSig] int Show(IntPtr parent);
+  void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+  void SetFileTypeIndex(uint iFileType);
+  void GetFileTypeIndex(out uint piFileType);
+  void Advise(IntPtr pfde, out uint pdwCookie);
+  void Unadvise(uint dwCookie);
+  void SetOptions(uint fos);
+  void GetOptions(out uint pfos);
+  void SetDefaultFolder(IShellItem psi);
+  void SetFolder(IShellItem psi);
+  void GetFolder(out IShellItem ppsi);
+  void GetCurrentSelection(out IShellItem ppsi);
+  void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+  void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+  void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+  void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+  void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+  void GetResult(out IShellItem ppsi);
+  void AddPlace(IShellItem psi, int fdap);
+  void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+  void Close(int hr);
+  void SetClientGuid(ref Guid guid);
+  void ClearClientData();
+  void SetFilter(IntPtr pFilter);
+}
+
+public static class ArcanaPicker {
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+  static extern void SHCreateItemFromParsingName(
+      [MarshalAs(UnmanagedType.LPWStr)] string pszPath, IntPtr pbc,
+      ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out object ppv);
+
+  [DllImport("ole32.dll")] static extern void CoTaskMemFree(IntPtr p);
+
+  public static string Pick(IntPtr owner, string title, string initial) {
+    Guid clsid = new Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7");
+    IFileDialog dlg = (IFileDialog)Activator.CreateInstance(Type.GetTypeFromCLSID(clsid));
+    try {
+      uint opts;
+      dlg.GetOptions(out opts);
+      // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST
+      dlg.SetOptions(opts | 0x20 | 0x40 | 0x800);
+      if (!string.IsNullOrEmpty(title)) dlg.SetTitle(title);
+      if (!string.IsNullOrEmpty(initial) && System.IO.Directory.Exists(initial)) {
+        try {
+          Guid iid = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+          object si;
+          SHCreateItemFromParsingName(initial, IntPtr.Zero, ref iid, out si);
+          dlg.SetFolder((IShellItem)si);
+        } catch { /* a bad starting folder must not stop the dialog */ }
+      }
+      if (dlg.Show(owner) != 0) return null;          // cancelled
+      IShellItem res;
+      dlg.GetResult(out res);
+      IntPtr p;
+      res.GetDisplayName(0x80058000, out p);          // SIGDN_FILESYSPATH
+      string path = Marshal.PtrToStringUni(p);
+      CoTaskMemFree(p);
+      return path;
+    } finally {
+      Marshal.ReleaseComObject(dlg);
+    }
+  }
+}
 "@
 
 $t = New-Object System.Windows.Forms.Form
@@ -98,12 +195,19 @@ $t.Activate()
 [System.Windows.Forms.Application]::DoEvents()
 [Fg]::Steal($t.Handle)
 
-$d = New-Object System.Windows.Forms.FolderBrowserDialog
-$d.Description = 'Choose the folder to index'
-$d.ShowNewFolderButton = $false
-__SELECTED__
-if ($d.ShowDialog($t) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }
-$d.Dispose()
+$picked = $null
+try {
+  $picked = [ArcanaPicker]::Pick($t.Handle, 'Choose the folder to index', '__INITIAL__')
+} catch {
+  # Modern dialog unavailable: fall back to the old tree rather than nothing.
+  $d = New-Object System.Windows.Forms.FolderBrowserDialog
+  $d.Description = 'Choose the folder to index'
+  $d.ShowNewFolderButton = $false
+  __SELECTED__
+  if ($d.ShowDialog($t) -eq [System.Windows.Forms.DialogResult]::OK) { $picked = $d.SelectedPath }
+  $d.Dispose()
+}
+if ($picked) { Write-Output $picked }
 $t.Close()
 $t.Dispose()
 '''
@@ -118,8 +222,10 @@ def _pick_windows(initial: str | None) -> str:
         start = initial.replace("'", "''")
         seed = (f"if (Test-Path '{start}') {{ $d.SelectedPath = '{start}' }}")
     else:
-        seed = ""
-    script = _WIN_SCRIPT.replace("__SELECTED__", seed)
+        start, seed = "", ""
+    script = (_WIN_SCRIPT
+              .replace("__SELECTED__", seed)
+              .replace("__INITIAL__", start))
     # -EncodedCommand takes UTF-16LE base64, which sidesteps every quoting and
     # newline question between here and PowerShell's parser.
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")

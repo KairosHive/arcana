@@ -65,6 +65,14 @@ for the details.
 
 The installer needs nothing else. The other two need Python 3.10+.
 
+There is also `Arcana-Setup-<version>-GPU.exe`, the same application built with
+CUDA PyTorch. It is a much larger download and only worth it if you have an
+NVIDIA card — search never needs one. It matters most for indexing with the
+largest encoder and for Inject Poetry, which is about 29× faster on a GPU. Both
+installers share an identity, so installing one over the other swaps the build
+in place. If you take the CPU one and Arcana finds a card it cannot use, it says
+so rather than leaving you to wonder why things are slow.
+
 ## First run
 
 Arcana opens on the **Datasets** tab, which walks you through five steps:

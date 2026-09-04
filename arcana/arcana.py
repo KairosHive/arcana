@@ -3694,12 +3694,26 @@ def update_images(
                     html.Img(src=f"{preview_endpoint}?p={qpath}", style={"width": "100%", "marginBottom": "8px"}),
                     html.Audio(src=f"/audio?p={qpath}", controls=True, style={"width": "100%"}),
                 ])
-            images.append(  # unchanged wrapper...
-
+            # Story results are ordinary images from the same dataset, so they
+            # get the same "+ Moodboard" action the prompt-search cards have.
+            # Without it a picture found by writing a scene could only be
+            # collected by going back to Prompt Search and hunting for it
+            # again. The pattern id matches the one update_moodboard already
+            # listens to with ALL, so no new callback is needed.
+            images.append(
                 html.Div(
                     [
                         html.H5(img["text"], style={"marginBottom": "4px", "color": "#ffc107"}),
                         media,
+                        html.Div(
+                            html.Button(
+                                "+ Moodboard",
+                                id={"type": "add-to-moodboard", "index": img["path"]},
+                                n_clicks=0,
+                                style={"fontSize": "12px", "padding": "2px 8px"},
+                            ),
+                            style={"display": "flex", "alignItems": "center"},
+                        ),
                     ],
                     style={"marginBottom": "24px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
                 )

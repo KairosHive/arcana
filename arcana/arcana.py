@@ -1386,6 +1386,7 @@ app.layout = html.Div(
                             options=[
                                 {"label": "Find similar", "value": "search"},
                                 {"label": "Colour transfer", "value": "transfer"},
+                                {"label": "Style transfer", "value": "style"},
                             ],
                             value="search",
                             className="tool-switch",
@@ -1592,17 +1593,9 @@ app.layout = html.Div(
                                             html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
                                             dcc.Dropdown(
                                                 id="color-transfer-method",
-                                                # Colour first, because those keep the
-                                                # target's pixels and only remap them.
-                                                # The style methods below regenerate to
-                                                # varying degrees, which is a bigger
-                                                # thing to ask for by accident.
                                                 options=[
-                                                    {"label": "Colour · ModFlows", "value": "modflows"},
-                                                    {"label": "Colour · LAB", "value": "lab"},
-                                                    {"label": "Style · Texture", "value": "texture"},
-                                                    {"label": "Style · img2img", "value": "img2img"},
-                                                    {"label": "Style · IP-Adapter", "value": "ip_adapter"},
+                                                    {"label": "ModFlows (Neural)", "value": "modflows"},
+                                                    {"label": "LAB (Reinhard)", "value": "lab"},
                                                 ],
                                                 value="modflows",
                                                 clearable=False,
@@ -1732,6 +1725,66 @@ app.layout = html.Div(
                             ],
                             id="transfer-card",
                             style={"marginTop": "16px", "padding": "14px", "backgroundColor": "#1a1a2a", "borderRadius": "8px", "border": "1px solid #4a3a5a"},
+                        ),
+
+                        # ─────────────────────────────────────────────────────────
+                        # STYLE TRANSFER PANEL
+                        # ─────────────────────────────────────────────────────────
+                        # Its own tool, not a method inside Colour transfer.
+                        # These three move grain and appearance; two of them
+                        # regenerate the picture. Offering that under a control
+                        # labelled "colour" misrepresented what pressing it does.
+                        html.Div(
+                            [
+                                html.Div("Apply the look of [R] to [T]",
+                                         style={"fontSize": "12px", "color": "#bbb",
+                                                "marginBottom": "10px"}),
+                                html.Div([
+                                    html.Div("METHOD", style={"fontSize": "10px",
+                                                              "color": "#888",
+                                                              "letterSpacing": "0.5px",
+                                                              "marginBottom": "4px"}),
+                                    dcc.Dropdown(
+                                        id="style-method-pick",
+                                        options=[
+                                            {"label": "Texture — keeps your pixels",
+                                             "value": "texture"},
+                                            {"label": "IP-Adapter — strongest",
+                                             "value": "ip_adapter"},
+                                            {"label": "img2img — from words",
+                                             "value": "img2img"},
+                                        ],
+                                        value="texture", clearable=False,
+                                        style={"width": "100%", "minWidth": "0",
+                                               "fontSize": "12px"},
+                                    ),
+                                ], style={"marginBottom": "10px"}),
+                                html.Div(id="style-method-note",
+                                         style={"fontSize": "11px", "color": "#8a8a92",
+                                                "lineHeight": "1.5", "marginBottom": "10px",
+                                                "minHeight": "32px"}),
+                                html.Div([
+                                    html.Div("STRENGTH", style={"fontSize": "10px",
+                                                                "color": "#888",
+                                                                "letterSpacing": "0.5px"}),
+                                    dcc.Slider(id="style-strength", min=0.1, max=1.0,
+                                               step=0.05, value=0.6,
+                                               marks={0.1: "0.1", 0.5: "0.5", 1.0: "1"},
+                                               tooltip={"placement": "bottom",
+                                                        "always_visible": False}),
+                                ], style={"marginBottom": "6px"}),
+                                html.Button("Apply style", id="style-transfer-btn",
+                                            n_clicks=0,
+                                            style=_ui.button("success", width="100%",
+                                                             padding="7px 12px",
+                                                             fontSize="12.5px",
+                                                             marginTop="6px")),
+                                html.Div(id="style-transfer-status",
+                                         style={"fontSize": "11.5px", "marginTop": "8px",
+                                                "minHeight": "18px", "lineHeight": "1.4"}),
+                            ],
+                            id="style-transfer-card",
+                            style={"display": "none"},
                         ),
                     ],
                     id="moodboard-controls",
@@ -2027,6 +2080,7 @@ def refresh_dataset_options(_token, _mode):
         Output("moodboard-rail", "style"),
         Output("similarity-card", "style"),
         Output("transfer-card", "style"),
+        Output("style-transfer-card", "style"),
         Output("image-display", "style"),
         Output("transfer-preview", "style"),
     ],
@@ -2088,6 +2142,8 @@ def toggle_inputs(mode, tool):
                 "borderRadius": "8px", "border": "1px solid #2a4a4a"}
     xfer_card = {"padding": "14px", "backgroundColor": "#1a1a2a",
                  "borderRadius": "8px", "border": "1px solid #4a3a5a"}
+    style_card = {"padding": "14px", "backgroundColor": "#1a1508",
+                  "borderRadius": "8px", "border": "1px solid #5a4a2a"}
     results_list = {"overflowX": "hidden"}
     transfer_stage = {"display": "block", "overflowX": "hidden"}
     
@@ -2108,6 +2164,7 @@ def toggle_inputs(mode, tool):
             {"display": "none"},
             main_row_visible,
             rail_hidden,
+            hidden,
             hidden,
             hidden,
             results_list,
@@ -2132,6 +2189,7 @@ def toggle_inputs(mode, tool):
             rail_hidden,
             hidden,
             hidden,
+            hidden,
             results_list,
             hidden,
         )
@@ -2152,10 +2210,11 @@ def toggle_inputs(mode, tool):
             {"display": "none"},  # hide the dataset manager
             main_row_visible,
             rail_visible,
-            sim_card if tool != "transfer" else hidden,
+            sim_card if tool == "search" else hidden,
             xfer_card if tool == "transfer" else hidden,
-            hidden if tool == "transfer" else results_list,
-            transfer_stage if tool == "transfer" else hidden,
+            style_card if tool == "style" else hidden,
+            results_list if tool == "search" else hidden,
+            hidden if tool == "search" else transfer_stage,
         )
     else:  # datasets
         # The manager owns the whole width: there is no scatter to show, and
@@ -2180,6 +2239,7 @@ def toggle_inputs(mode, tool):
              "overflowY": "auto", "overflowX": "hidden"},
             main_row_hidden,
             rail_hidden,
+            hidden,
             hidden,
             hidden,
             hidden,
@@ -3366,6 +3426,114 @@ def describe_transfer_quality(quality, method):
 
 
 @app.callback(
+    Output("style-method-note", "children"),
+    Input("style-method-pick", "value"),
+)
+def _style_note(method):
+    """Say what each method will actually do before it is run."""
+    return {
+        "texture": ("Keeps every pixel of [T] and borrows how much detail [R] "
+                    "carries at each scale. Nothing is invented and the "
+                    "composition is exact. Subtle between two photographs from "
+                    "the same camera; strong from a painting or a film scan."),
+        "img2img": ("Regenerates [T], aimed by words CLIP finds for [R]. It "
+                    "never sees [R] itself, so it transfers mood rather than a "
+                    "specific look. The weakest of the three."),
+        "ip_adapter": ("Regenerates [T] conditioned on the [R] image itself. "
+                       "The strongest, and the only one that carries what "
+                       "language cannot name. Around 0.4-0.6 keeps the subject "
+                       "recognisable; higher and [R] takes over."),
+    }.get(method, "")
+
+
+@app.callback(
+    [Output("style-transfer-status", "children"),
+     Output("transfer-preview", "children", allow_duplicate=True)],
+    Input("style-transfer-btn", "n_clicks"),
+    [State("selected-moodboard-image", "data"),
+     State("selected-target-image", "data"),
+     State("style-method-pick", "value"),
+     State("style-strength", "value")],
+    prevent_initial_call=True,
+)
+def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
+    """
+    Apply the look of [R] to [T].
+
+    Deliberately not a method inside Colour transfer. Two of these regenerate
+    the picture rather than remapping its colours, which is a much larger thing
+    to do, and offering it under a control labelled "colour" misrepresented what
+    pressing the button does.
+    """
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    if not STYLE_TRANSFER_AVAILABLE:
+        return html.Div("Style transfer unavailable (check installation)",
+                        style={"color": "#e74c3c"}), dash.no_update
+    if not ref_path:
+        return html.Div("No source [R] selected", style={"color": "#f39c12"}), dash.no_update
+    if not target_path:
+        return html.Div("No target [T] selected", style={"color": "#f39c12"}), dash.no_update
+
+    ref_resolved = resolve_path(ref_path)
+    target_resolved = resolve_path(target_path)
+    if not os.path.exists(ref_resolved):
+        return html.Div("Source file not found", style={"color": "#e74c3c"}), dash.no_update
+    if not os.path.exists(target_resolved):
+        return html.Div("Target file not found", style={"color": "#e74c3c"}), dash.no_update
+
+    import time
+    started = time.time()
+    strength_val = float(strength or 0.6)
+    try:
+        source = Image.open(ref_resolved).convert("RGB")
+        target = Image.open(target_resolved).convert("RGB")
+        result = _style_transfer.transfer(
+            method, source, target,
+            strength=strength_val,
+            scale=strength_val,     # IP-Adapter reads this as its adapter scale
+        )
+    except Exception as e:
+        hint = ""
+        if method in ("img2img", "ip_adapter"):
+            hint = (" — the diffusion methods download their weights on first "
+                    "use, which takes a few minutes.")
+        return html.Div(f"{method}: {e}{hint}",
+                        style={"color": "#e74c3c"}), dash.no_update
+
+    out_dir = _safe_output_dir("transfers")
+    os.makedirs(out_dir, exist_ok=True)
+    out_name = _paths.fit_filename(
+        out_dir,
+        os.path.splitext(os.path.basename(target_resolved))[0],
+        os.path.splitext(os.path.basename(ref_resolved))[0],
+        method, ".jpg")
+    # fit_filename returns a NAME, not a path.
+    out_path = os.path.join(out_dir, out_name)
+    result.save(out_path, quality=95)
+
+    buf = BytesIO()
+    preview = result.copy()
+    preview.thumbnail((1600, 1600), Image.LANCZOS)
+    preview.save(buf, format="JPEG", quality=90)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    label = {"texture": "Texture", "img2img": "img2img",
+             "ip_adapter": "IP-Adapter"}[method]
+    # Texture is OpenCV arithmetic and never touches the GPU, so reporting one
+    # because the machine has one would be untrue about what just ran.
+    device = "CPU" if method == "texture" else ("GPU" if _gpu.available() else "CPU")
+    status = html.Div(
+        f"{label} · {device} · {time.time() - started:.1f}s · "
+        f"{result.size[0]}x{result.size[1]} · saved to {out_path}",
+        style={"color": "#4CAF50"})
+    return status, html.Img(
+        src=f"data:image/jpeg;base64,{b64}",
+        style={"maxWidth": "100%", "maxHeight": "78vh", "borderRadius": "6px",
+               "display": "block", "margin": "0 auto"})
+
+
+@app.callback(
     # Two outputs: a one-line receipt that stays in the card, and the picture
     # itself, which goes to the stage. The preview used to be a 640px image
     # rendered width:100% inside a ~300px card in the bench -- the result of the
@@ -3441,61 +3609,6 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
         elif kept_frac < 1.0:
             filter_note = f" — from {kept_frac * 100:.1f}% of the reference"
         
-        # The style methods move grain and appearance rather than colour, so
-        # they take the reference as given -- the lightness/saturation sliders
-        # narrow a colour DISTRIBUTION, which is not what these read.
-        if method in ("texture", "img2img", "ip_adapter"):
-            if not STYLE_TRANSFER_AVAILABLE:
-                return html.Div("⚠️ Style transfer unavailable (check installation)",
-                                style={"color": "#e74c3c"}), ""
-            style_source = Image.open(ref_resolved).convert("RGB")
-            try:
-                result_img = _style_transfer.transfer(
-                    method, style_source, content_img,
-                    strength=strength_val,
-                    scale=strength_val,
-                )
-            except Exception as e:
-                hint = ""
-                if method in ("img2img", "ip_adapter"):
-                    hint = (" — the diffusion methods need the sd-turbo or "
-                            "SD-1.5 weights, which download on first use.")
-                return html.Div(f"⚠️ {method}: {e}{hint}",
-                                style={"color": "#e74c3c"}), ""
-            method_label = {"texture": "Texture", "img2img": "img2img",
-                            "ip_adapter": "IP-Adapter"}[method]
-            # Texture is OpenCV arithmetic and never touches the GPU, so saying
-            # "GPU" because one is present would be a plain untruth about what
-            # just ran.
-            device_str = ("CPU" if method == "texture"
-                          else ("GPU" if _gpu.available() else "CPU"))
-            elapsed = time.time() - start_time
-            out_dir = _safe_output_dir("transfers")
-            os.makedirs(out_dir, exist_ok=True)
-            out_name = _paths.fit_filename(
-                out_dir, os.path.splitext(os.path.basename(target_resolved))[0],
-                os.path.splitext(os.path.basename(ref_resolved))[0],
-                method, ".jpg")
-            # fit_filename returns a NAME, not a path -- saving it directly
-            # wrote the result to the working directory instead of the output
-            # folder the status line then claimed it was in.
-            out_path = os.path.join(out_dir, out_name)
-            result_img.save(out_path, quality=95)
-            buf = BytesIO()
-            preview = result_img.copy()
-            preview.thumbnail((1600, 1600), Image.LANCZOS)
-            preview.save(buf, format="JPEG", quality=90)
-            b64 = base64.b64encode(buf.getvalue()).decode()
-            status = html.Div(
-                f"{method_label} · {device_str} · {elapsed:.1f}s · "
-                f"{result_img.size[0]}x{result_img.size[1]} · saved to {out_path}",
-                style={"color": "#4CAF50", "fontSize": "11.5px"})
-            return status, html.Img(
-                src=f"data:image/jpeg;base64,{b64}",
-                style={"maxWidth": "100%", "maxHeight": "78vh",
-                       "borderRadius": "6px", "display": "block",
-                       "margin": "0 auto"})
-
         # Perform transfer based on method
         if method == "lab":
             result_img = lab_color_transfer_pil(content_img, style_img, strength=strength_val)

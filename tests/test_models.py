@@ -482,3 +482,79 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ------------------------------------------------------------------------------------
+# A half-downloaded model must not report itself ready
+# ------------------------------------------------------------------------------------
+def _safetensors_bytes(n_data: int = 1000) -> bytes:
+    """A minimal, well-formed .safetensors payload."""
+    import json, struct
+    header = {"w": {"dtype": "F32", "shape": [n_data // 4],
+                    "data_offsets": [0, n_data]}}
+    hb = json.dumps(header).encode()
+    return struct.pack("<Q", len(hb)) + hb + b"\x00" * n_data
+
+
+def test_truncated_safetensors_is_detected(tmp):
+    """
+    A download cut off part-way leaves a file that exists but is short. The
+    safetensors header states exactly how many bytes of tensor data must
+    follow, so this is detectable from the file alone -- no network, no
+    checksum, and without reading four gigabytes of weights.
+    """
+    import os
+    from arcana import models as M
+
+    whole = _safetensors_bytes()
+    good = os.path.join(tmp, "good.safetensors")
+    with open(good, "wb") as fh:
+        fh.write(whole)
+    assert M._safetensors_missing_bytes(good) == 0
+
+    cut = os.path.join(tmp, "cut.safetensors")
+    with open(cut, "wb") as fh:
+        fh.write(whole[:-400])
+    assert M._safetensors_missing_bytes(cut) == 400
+
+    stub = os.path.join(tmp, "stub.safetensors")
+    with open(stub, "wb") as fh:
+        fh.write(whole[:10])
+    assert M._safetensors_missing_bytes(stub) > 0
+
+
+def test_weights_without_config_is_not_downloaded(monkeypatch):
+    """
+    The old check asked for ONE weight file and returned True if it existed.
+
+    An interrupted download -- closing the app, a reboot, restarting to run as
+    administrator -- can leave the weights present and the tokenizer or config
+    absent. The app then reported the encoder ready and failed later, somewhere
+    less obvious than the download it actually needed to finish.
+    """
+    from arcana import models as M
+    import huggingface_hub as hh
+
+    def only_weights(repo_id, filename, **kw):
+        return "/fake/model.safetensors" if filename.endswith(
+            (".safetensors", ".bin")) else None
+
+    monkeypatch.setattr(hh, "try_to_load_from_cache", only_weights)
+    monkeypatch.setattr(M.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(M, "_VERIFY_CACHE", {})
+
+    ok, why = M.verify_model("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+    assert ok is False
+    assert "config.json" in why
+    assert M.is_downloaded("laion/CLIP-ViT-H-14-laion2B-s32B-b79K") is False
+
+
+def test_missing_weights_reports_plainly(monkeypatch):
+    """Nothing downloaded at all is still reported as nothing downloaded."""
+    from arcana import models as M
+    import huggingface_hub as hh
+
+    monkeypatch.setattr(hh, "try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(M, "_VERIFY_CACHE", {})
+    ok, why = M.verify_model("laion/clap-htsat-fused")
+    assert ok is False and "weights" in why

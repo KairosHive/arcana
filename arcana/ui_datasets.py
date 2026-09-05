@@ -723,12 +723,23 @@ def model_rows() -> list:
             pass
     rows = []
     for i, m in enumerate(_models.MODELS):
-        downloaded = _models.is_downloaded(m.id)
+        # verify_model, not just "are there weights". A download interrupted
+        # part-way -- a reboot, or restarting to run as administrator -- can
+        # leave the weights present and the config or tokenizer missing, or the
+        # weights themselves truncated. That used to show as "downloaded" and
+        # fail later, somewhere further from the cause.
+        downloaded, why_not = _models.verify_model(m.id)
+        partial = (not downloaded) and any(
+            w in why_not for w in ("incomplete", "truncated"))
         labels_ready = status.get(m.id, {}).get("ready", False)
         complete = downloaded and labels_ready
 
-        pills = [_pill("downloaded", OK) if downloaded
-                 else _pill(f"{m.download_mb:,} MB", INK_FAINT)]
+        if downloaded:
+            pills = [_pill("downloaded", OK)]
+        elif partial:
+            pills = [_pill("incomplete", BAD)]
+        else:
+            pills = [_pill(f"{m.download_mb:,} MB", INK_FAINT)]
         pills.append(_pill("labels ready", OK) if labels_ready
                      else _pill("labels pending", WARN))
 

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, asdict
 
@@ -226,25 +227,124 @@ def measure_decode_ms(paths: list[str], sample: int = 6) -> float | None:
 # --------------------------------------------------------------------------------------
 # is it already downloaded?
 # --------------------------------------------------------------------------------------
-def is_downloaded(model_id: str) -> bool:
-    """
-    True when the weights are in the local HuggingFace cache.
+# What a usable encoder needs on disk. All four models Arcana offers ship the
+# same core set; the weights may be either format.
+_REQUIRED_FILES = ("config.json", "preprocessor_config.json", "tokenizer_config.json")
+_WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
 
-    Checked without importing transformers -- this runs while building UI, and
-    importing transformers costs seconds.
+# verify_model() reads a few KB per call and is called on every UI rebuild, so
+# results are cached against the weight file's identity.
+_VERIFY_CACHE: dict = {}
+
+
+def _safetensors_missing_bytes(path: str) -> int:
+    """
+    How many bytes a .safetensors file is short of what its own header says.
+
+    A safetensors file starts with an 8-byte little-endian header length,
+    followed by a JSON header giving each tensor's [start, end) byte offsets
+    into the data that follows. The largest end offset is therefore exactly how
+    much data the file must contain, so a truncated download is detectable from
+    the file itself -- no network, no checksum, no reading 4 GB of weights.
+
+    Returns 0 when the file is whole and a positive count when it is short.
+
+    A header that claims more bytes than the file holds counts as short, since
+    that is what a cut-off download looks like. A header that parses but is not
+    laid out as expected returns 0 -- unknown rather than broken, because
+    forcing a re-download over an unfamiliar format would be worse than letting
+    the loader try.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            raw = fh.read(8)
+            if len(raw) < 8:
+                return 1
+            n = int.from_bytes(raw, "little")
+            if n <= 0 or n > 100_000_000 or 8 + n > size:
+                return 1 if 8 + n > size else 0
+            head = fh.read(n)
+        if len(head) < n:
+            return 1
+        meta = json.loads(head.decode("utf-8"))
+        end = 0
+        for key, val in meta.items():
+            if key == "__metadata__" or not isinstance(val, dict):
+                continue
+            off = val.get("data_offsets")
+            if isinstance(off, (list, tuple)) and len(off) == 2:
+                end = max(end, int(off[1]))
+        return max(0, (8 + n + end) - size)
+    except Exception:
+        return 0
+
+
+def verify_model(model_id: str) -> tuple[bool, str]:
+    """
+    Whether a cached model is actually usable, and why not when it is not.
+
+    This used to ask try_to_load_from_cache for ONE weight file and return True
+    if it existed. That is not the same question. A download interrupted
+    part-way -- closing the app, a reboot, restarting to run as administrator --
+    leaves a cache that answers yes to "are there weights" and no to "can this
+    model load": the tokenizer or config may be absent, or the weights
+    themselves truncated. The app then reported the encoder as ready and failed
+    later, somewhere less obvious.
+
+    Checked without importing transformers, because this runs while building UI
+    and importing transformers costs seconds.
     """
     try:
         from huggingface_hub import try_to_load_from_cache
     except ImportError:
-        return False
-    for fname in ("model.safetensors", "pytorch_model.bin"):
+        return False, "huggingface_hub is not installed"
+
+    def cached(fname: str) -> str | None:
         try:
             hit = try_to_load_from_cache(model_id, fname)
         except Exception:
-            continue
-        if isinstance(hit, str) and os.path.exists(hit):
-            return True
-    return False
+            return None
+        return hit if isinstance(hit, str) and os.path.exists(hit) else None
+
+    weights = None
+    for fname in _WEIGHT_FILES:
+        weights = cached(fname)
+        if weights:
+            break
+    if not weights:
+        return False, "weights not downloaded"
+
+    # Everything must come from the SAME revision. A cache can hold several,
+    # and this one has held a snapshot containing only model.safetensors with
+    # no config and no tokenizer beside it.
+    for fname in _REQUIRED_FILES:
+        if not cached(fname):
+            return False, f"incomplete download: {fname} is missing"
+
+    key = None
+    try:
+        st = os.stat(weights)
+        key = (weights, st.st_size, st.st_mtime_ns)
+        hit = _VERIFY_CACHE.get(key)
+        if hit is not None:
+            return hit
+    except OSError:
+        pass
+
+    result: tuple[bool, str] = (True, "")
+    if weights.endswith(".safetensors"):
+        short = _safetensors_missing_bytes(weights)
+        if short > 0:
+            result = (False, f"weights are truncated by {short / 1e6:,.0f} MB")
+    if key is not None:
+        _VERIFY_CACHE[key] = result
+    return result
+
+
+def is_downloaded(model_id: str) -> bool:
+    """True when the model is present AND complete enough to load."""
+    return verify_model(model_id)[0]
 
 
 def cache_dir() -> str:

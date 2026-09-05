@@ -1366,6 +1366,15 @@ app.layout = html.Div(
                             style={"width": "70%", "height": "70px", "marginRight": "10px"},
                         ),
                         html.Button("Search", id="main-action-btn", n_clicks=0, style=_ui.button("primary")),
+                        # A search over a large index takes seconds and the
+                        # button gave no sign of it. `running` on the callback
+                        # fills this for as long as the work takes; it cannot
+                        # write the button's own label, because toggle_inputs
+                        # owns that and sets it per mode -- restoring a fixed
+                        # "Search" would mislabel Generate Story.
+                        html.Span(id="search-status",
+                                  style={"marginLeft": "10px", "fontSize": "12px",
+                                         "color": "#00bcd4", "minWidth": "84px"}),
                     ],
                     id="controls-bar",
                     style={"display": "flex", "alignItems": "center",
@@ -1753,6 +1762,8 @@ app.layout = html.Div(
                                              "value": "ip_adapter"},
                                             {"label": "img2img — from words",
                                              "value": "img2img"},
+                                            {"label": "ControlNet — follows a map",
+                                             "value": "controlnet"},
                                         ],
                                         value="texture", clearable=False,
                                         style={"width": "100%", "minWidth": "0",
@@ -1763,6 +1774,40 @@ app.layout = html.Div(
                                          style={"fontSize": "11px", "color": "#8a8a92",
                                                 "lineHeight": "1.5", "marginBottom": "10px",
                                                 "minHeight": "32px"}),
+                                # Only ControlNet reads these two. Hidden
+                                # otherwise, because a control that does
+                                # nothing is worse than one that is absent.
+                                html.Div(id="cn-controls",
+                                         style={"display": "none"},
+                                         children=[
+                                    html.Div("MAP FROM [T]",
+                                             style={"fontSize": "10px", "color": "#888",
+                                                    "letterSpacing": "0.5px",
+                                                    "marginBottom": "4px"}),
+                                    dcc.Dropdown(
+                                        id="cn-map",
+                                        options=[
+                                            {"label": "Depth — texture follows the form",
+                                             "value": "depth"},
+                                            {"label": "Canny — holds edges hardest",
+                                             "value": "canny"},
+                                            {"label": "Luminance — no extra model",
+                                             "value": "luminance"},
+                                        ],
+                                        value="depth", clearable=False,
+                                        style={"width": "100%", "minWidth": "0",
+                                               "fontSize": "12px"},
+                                    ),
+                                    html.Div("HOW STRICTLY IT FOLLOWS",
+                                             style={"fontSize": "10px", "color": "#888",
+                                                    "letterSpacing": "0.5px",
+                                                    "marginTop": "10px"}),
+                                    dcc.Slider(id="cn-strength", min=0.1, max=1.5,
+                                               step=0.05, value=0.9,
+                                               marks={0.1: "0.1", 0.8: "0.8", 1.5: "1.5"},
+                                               tooltip={"placement": "bottom",
+                                                        "always_visible": False}),
+                                ]),
                                 html.Div([
                                     html.Div("STRENGTH", style={"fontSize": "10px",
                                                                 "color": "#888",
@@ -2201,7 +2246,7 @@ def toggle_inputs(mode, tool):
             "Search",
             controls_hidden,
             moodboard_controls_visible,
-            moodboard_section_visible if tool != "transfer" else moodboard_section_hidden,
+            moodboard_section_visible if tool == "search" else moodboard_section_hidden,
             scatter_hidden,
             left_col_moodboard,
             right_col_moodboard,
@@ -3435,6 +3480,16 @@ def describe_transfer_quality(quality, method):
 
 
 @app.callback(
+    Output("cn-controls", "style"),
+    Input("style-method-pick", "value"),
+)
+def _cn_controls(method):
+    if method == "controlnet":
+        return {"display": "block", "marginBottom": "10px"}
+    return {"display": "none"}
+
+
+@app.callback(
     Output("style-method-note", "children"),
     Input("style-method-pick", "value"),
 )
@@ -3452,6 +3507,11 @@ def _style_note(method):
                        "The strongest, and the only one that carries what "
                        "language cannot name. Around 0.4-0.6 keeps the subject "
                        "recognisable; higher and [R] takes over."),
+        "controlnet": ("The look of [R] applied along a map of [T], so the "
+                       "texture follows the form instead of lying flat over "
+                       "it. [T]'s geometry is held while its surface is "
+                       "restyled — which is what keeps a face a face at "
+                       "strengths where IP-Adapter alone would dissolve it."),
     }.get(method, "")
 
 
@@ -3462,7 +3522,9 @@ def _style_note(method):
     [State("selected-moodboard-image", "data"),
      State("selected-target-image", "data"),
      State("style-method-pick", "value"),
-     State("style-strength", "value")],
+     State("style-strength", "value"),
+     State("cn-map", "value"),
+     State("cn-strength", "value")],
     # A transfer blocks for seconds. Without this the button sat unchanged the
     # whole time and the only way to tell anything had happened was the result
     # appearing. Dash flips these for the life of the callback.
@@ -3474,7 +3536,8 @@ def _style_note(method):
     ],
     prevent_initial_call=True,
 )
-def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
+def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
+                           cn_map, cn_strength):
     """
     Apply the look of [R] to [T].
 
@@ -3506,11 +3569,28 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
     try:
         source = Image.open(ref_resolved).convert("RGB")
         target = Image.open(target_resolved).convert("RGB")
-        result = _style_transfer.transfer(
-            method, source, target,
-            strength=strength_val,
-            scale=strength_val,     # IP-Adapter reads this as its adapter scale
-        )
+        control_png = None
+        if method == "controlnet":
+            result, cmap = _style_transfer.controlnet_transfer(
+                source, target,
+                control=cn_map or "depth",
+                scale=strength_val,
+                control_scale=float(cn_strength or 0.9),
+            )
+            # Show the map. "The result looks wrong" and "the depth is wrong"
+            # are different problems, and only the second is one the user can
+            # do anything about.
+            mbuf = BytesIO()
+            mprev = cmap.copy()
+            mprev.thumbnail((360, 360), Image.LANCZOS)
+            mprev.save(mbuf, format="JPEG", quality=85)
+            control_png = base64.b64encode(mbuf.getvalue()).decode()
+        else:
+            result = _style_transfer.transfer(
+                method, source, target,
+                strength=strength_val,
+                scale=strength_val,  # IP-Adapter reads this as its adapter scale
+            )
     except Exception as e:
         # Print the traceback. Returning only str(e) into the UI is how a
         # dtype mismatch reached a user as one unattributable line with no
@@ -3543,7 +3623,8 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
     b64 = base64.b64encode(buf.getvalue()).decode()
 
     label = {"texture": "Texture", "img2img": "img2img",
-             "ip_adapter": "IP-Adapter"}[method]
+             "ip_adapter": "IP-Adapter",
+             "controlnet": f"ControlNet · {cn_map or 'depth'}"}[method]
     # Texture is OpenCV arithmetic and never touches the GPU, so reporting one
     # because the machine has one would be untrue about what just ran.
     device = "CPU" if method == "texture" else ("GPU" if _gpu.available() else "CPU")
@@ -3551,11 +3632,23 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
         f"{label} · {device} · {time.time() - started:.1f}s · "
         f"{result.size[0]}x{result.size[1]} · saved to {out_path}",
         style={"color": "#4CAF50"})
-    return status, html.Div([
+    panel = [
         html.Img(
             src=f"data:image/jpeg;base64,{b64}",
             style={"maxWidth": "100%", "maxHeight": "72vh", "borderRadius": "6px",
                    "display": "block", "margin": "0 auto"}),
+    ]
+    if control_png:
+        panel.append(html.Div([
+            html.Div(f"{cn_map or 'depth'} map of [T]",
+                     style={"fontSize": "10.5px", "color": "#8a8a92",
+                            "letterSpacing": "0.4px", "marginBottom": "4px"}),
+            html.Img(src=f"data:image/jpeg;base64,{control_png}",
+                     style={"maxWidth": "260px", "borderRadius": "4px",
+                            "border": "1px solid #333"}),
+        ], style={"marginTop": "12px", "display": "inline-block"}))
+
+    return status, html.Div(panel + [
         html.Button("+ Collection",
                     id={"type": "add-to-moodboard", "index": out_path},
                     n_clicks=0,
@@ -4111,6 +4204,10 @@ def make_melspec_png(
         State("group-similar", "on"),
         State("sim-thresh", "value"),
         State("spec-toggle", "on"),
+    ],
+    running=[
+        (Output("main-action-btn", "disabled"), True, False),
+        (Output("search-status", "children"), "Searching…", ""),
     ],
 )
 def update_images(

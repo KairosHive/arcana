@@ -2469,11 +2469,12 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
 
 @app.callback(
     Output("selected-moodboard-image", "data"),
-    Input({"type": "set-ref-badge", "index": ALL}, "n_clicks"),
+    [Input({"type": "set-ref-badge", "index": ALL}, "n_clicks"),
+     Input({"type": "step-to", "index": ALL}, "n_clicks")],
     State("selected-moodboard-image", "data"),
     prevent_initial_call=True,
 )
-def select_moodboard_ref(clicks, current_ref):
+def select_moodboard_ref(clicks, step_clicks, current_ref):
     """
     Set the Reference image from an [R] badge click.
 
@@ -2493,6 +2494,14 @@ def select_moodboard_ref(clicks, current_ref):
     triggered_prop = ctx.triggered[0].get("prop_id", "")
     triggered_value = ctx.triggered[0].get("value")
     
+    # A "Step here" click always sets, never toggles: the point is to move to
+    # that picture, and toggling it off would leave the search with no
+    # reference at all.
+    if isinstance(triggered, dict) and triggered.get("type") == "step-to":
+        if triggered_value is None or triggered_value == 0:
+            return dash.no_update
+        return triggered["index"]
+
     # Handle [R] badge click - toggle behavior
     if isinstance(triggered, dict) and triggered.get("type") == "set-ref-badge":
         # Only act on actual clicks (value > 0), not component recreation
@@ -2753,7 +2762,8 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name):
         Output("carousel-state", "data", allow_duplicate=True),
         Output("carousel-order", "data", allow_duplicate=True),
     ],
-    Input("moodboard-search-btn", "n_clicks"),
+    [Input("moodboard-search-btn", "n_clicks"),
+     Input({"type": "step-to", "index": ALL}, "n_clicks")],
     [
         State("selected-moodboard-image", "data"),
         State("moodboard-palette-check", "value"),
@@ -2772,10 +2782,24 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name):
     ],
     prevent_initial_call=True,
 )
-def moodboard_similarity_search(n_clicks, ref_image, use_palette, palette_method, use_style, style_method, 
+def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, palette_method, use_style, style_method, 
                                  n_colors, show_swatches, prompt, num_results, img_size, columns, dataset_value, group_on, sim_thresh):
     """Search for similar images using palette/style, optionally constrained by prompt."""
-    if not n_clicks or not ref_image or not dataset_value:
+    # A "Step here" click carries the new reference in its own id, so this
+    # does not wait for selected-moodboard-image to come back from the
+    # browser. Both callbacks fire from the same click and their order is
+    # not guaranteed; reading the trigger removes the question.
+    trig = ctx.triggered_id
+    stepped = isinstance(trig, dict) and trig.get("type") == "step-to"
+    if stepped:
+        fired = ctx.triggered[0].get("value")
+        if fired is None or fired == 0:
+            return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        ref_image = trig.get("index") or ref_image
+    elif not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    if not ref_image or not dataset_value:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     if not PALETTE_STYLE_AVAILABLE:
@@ -2941,6 +2965,20 @@ def moodboard_similarity_search(n_clicks, ref_image, use_palette, palette_method
                     daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
                     html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
                                n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": "#333", "border": "none", "borderRadius": "3px", "color": "#aaa", "cursor": "pointer"}),
+                                    # Finding a picture is a walk: you land near it and then
+                    # step. Stepping used to mean adding the image to the
+                    # collection, switching to the Moodboard, clicking its [R]
+                    # badge and hitting Find Similar again -- four actions to
+                    # move one notch. This does the whole step.
+                    html.Button("Step here",
+                                id={"type": "step-to", "index": first},
+                                n_clicks=0,
+                                title="Make this the reference and search again",
+                                style={"marginLeft": "6px", "fontSize": "11px",
+                                       "padding": "3px 8px",
+                                       "backgroundColor": "#00bcd4", "border": "none",
+                                       "borderRadius": "3px", "color": "#04222a",
+                                       "fontWeight": "600", "cursor": "pointer"}),
                 ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"})
             )
             

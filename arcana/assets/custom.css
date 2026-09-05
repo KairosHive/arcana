@@ -284,3 +284,68 @@ body.arc-resizing {
 body.arc-resizing .arc-splitter {
     background: rgba(0, 188, 212, 0.3);
 }
+
+/* ---- slider tooltips ----
+   Dash 4 gives .dash-slider-tooltip a white background AND white text, so the
+   value it exists to show was an empty white square hovering over the slider.
+   Both are set here rather than only the colour, so it does not depend on
+   which of the two a future Dash version changes. */
+.dash-slider-tooltip {
+    background-color: #1e1e28 !important;
+    color: #f0f0f0 !important;
+    border: 1px solid #3d3d4a !important;
+    border-radius: 4px !important;
+    padding: 2px 7px !important;
+    font-size: 11px !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+/* ---- the header band ----
+   #mode-select was 176px tall on its own. labelStyle asks for inline-block,
+   but Dash 4 renders each option as a block-level flex item and its own class
+   wins, so the four tabs stacked into a column and the band cost more vertical
+   room than the plot below it. Laying them in a row brings the whole header to
+   about 44px. */
+#mode-select {
+    display: flex !important;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 22px;
+}
+
+#mode-select .dash-options-list-option {
+    display: inline-flex !important;
+    align-items: center;
+    white-space: nowrap;
+    margin: 0 !important;
+}
+
+/* Folded: the band goes away entirely and a slim strip brings it back. Mode
+   switching needs it expanded, which is fine -- modes change rarely and the
+   space matters continuously. */
+body.arc-chrome-folded #arc-header-row {
+    display: none !important;
+}
+
+#arc-fold {
+    position: fixed;
+    top: 4px;
+    right: 10px;
+    z-index: 60;
+    height: 20px;
+    padding: 0 9px;
+    font-size: 11px;
+    line-height: 18px;
+    letter-spacing: 0.4px;
+    color: #9a9aa2;
+    background: #1a1a22;
+    border: 1px solid #33333f;
+    border-radius: 10px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+#arc-fold:hover {
+    color: #00bcd4;
+    border-color: #00bcd4;
+}

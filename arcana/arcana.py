@@ -1236,7 +1236,7 @@ app.layout = html.Div(
                 # the column lands here rather than clipping the footer.
                 html.Div(id="moodboard-gallery", style={
                     "display": "grid",
-                    "gridTemplateColumns": "repeat(auto-fill, minmax(78px, 1fr))",
+                    "gridTemplateColumns": "repeat(auto-fill, minmax(104px, 1fr))",
                     "gap": "8px",
                     "flex": "1 1 0",
                     "minHeight": "0",
@@ -2130,7 +2130,7 @@ def toggle_inputs(mode, tool):
     # The rail exists only in moodboard mode. Fixed width, full height, its own
     # flex column so the gallery inside it is the single flexible item.
     rail_visible = {"display": "flex", "flexDirection": "column",
-                    "flex": "0 0 240px", "minHeight": "0",
+                    "flex": "0 0 280px", "minHeight": "0",
                     "backgroundColor": _ui.BG, "border": f"1px solid {_ui.LINE}",
                     "borderRadius": "10px", "padding": "10px",
                     "boxSizing": "border-box"}
@@ -2353,8 +2353,14 @@ def show_moodboard_added_notification(clicks):
     """Show brief feedback when an image is added to moodboard."""
     triggered = ctx.triggered_id
     if isinstance(triggered, dict) and triggered.get("type") == "add-to-moodboard":
-        # Check if this was an actual click (not initial load)
-        if any(c and c > 0 for c in clicks if c is not None):
+        # The value of the button that FIRED, not whether any button in the
+        # grid has ever been clicked. Dash recreates these with n_clicks=0
+        # whenever the results re-render, which fires this callback; the old
+        # test then found some earlier button still sitting at n_clicks>0 and
+        # announced an addition that never happened -- most visibly right
+        # after a colour transfer, which rebuilds the grid.
+        fired = ctx.triggered[0].get("value") if ctx.triggered else None
+        if fired:
             return html.Div(
                 "Image added to moodboard",
                 style={
@@ -2485,7 +2491,7 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
             border_image = None
         
         img_style = {
-            "width": "90px", "height": "90px", "objectFit": "cover", 
+            "width": "116px", "height": "116px", "objectFit": "cover", 
             "borderRadius": "6px", "border": border, "display": "block",
         }
         if border_image:
@@ -3454,6 +3460,15 @@ def _style_note(method):
      State("selected-target-image", "data"),
      State("style-method-pick", "value"),
      State("style-strength", "value")],
+    # A transfer blocks for seconds. Without this the button sat unchanged the
+    # whole time and the only way to tell anything had happened was the result
+    # appearing. Dash flips these for the life of the callback.
+    running=[
+        (Output("style-transfer-btn", "disabled"), True, False),
+        (Output("style-transfer-btn", "children"), "Working…", "Apply style"),
+        (Output("style-transfer-status", "children"),
+         html.Div("Working…", style={"color": "#00bcd4"}), dash.no_update),
+    ],
     prevent_initial_call=True,
 )
 def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
@@ -3494,6 +3509,12 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
             scale=strength_val,     # IP-Adapter reads this as its adapter scale
         )
     except Exception as e:
+        # Print the traceback. Returning only str(e) into the UI is how a
+        # dtype mismatch reached a user as one unattributable line with no
+        # record of where it came from.
+        import traceback
+        print(f"[style-transfer] {method} failed:", flush=True)
+        traceback.print_exc()
         hint = ""
         if method in ("img2img", "ip_adapter"):
             hint = (" — the diffusion methods download their weights on first "
@@ -3527,10 +3548,20 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
         f"{label} · {device} · {time.time() - started:.1f}s · "
         f"{result.size[0]}x{result.size[1]} · saved to {out_path}",
         style={"color": "#4CAF50"})
-    return status, html.Img(
-        src=f"data:image/jpeg;base64,{b64}",
-        style={"maxWidth": "100%", "maxHeight": "78vh", "borderRadius": "6px",
-               "display": "block", "margin": "0 auto"})
+    return status, html.Div([
+        html.Img(
+            src=f"data:image/jpeg;base64,{b64}",
+            style={"maxWidth": "100%", "maxHeight": "72vh", "borderRadius": "6px",
+                   "display": "block", "margin": "0 auto"}),
+        html.Button("+ Collection",
+                    id={"type": "add-to-moodboard", "index": out_path},
+                    n_clicks=0,
+                    title="Add this result to the collection",
+                    style={"marginTop": "10px", "fontSize": "11.5px",
+                           "padding": "5px 11px", "borderRadius": "4px",
+                           "backgroundColor": "#2a7a5a", "color": "#eafff5",
+                           "border": "none", "cursor": "pointer"}),
+    ], style={"textAlign": "center"})
 
 
 @app.callback(
@@ -3549,6 +3580,12 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength):
     State("color-transfer-quality", "value"),
     State("ct-lightness", "value"),
     State("ct-saturation", "value"),
+    running=[
+        (Output("color-transfer-btn", "disabled"), True, False),
+        (Output("color-transfer-btn", "children"), "Working…", "Transfer colors"),
+        (Output("color-transfer-status", "children"),
+         html.Div("Working…", style={"color": "#00bcd4"}), dash.no_update),
+    ],
     prevent_initial_call=True,
 )
 def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
@@ -3699,10 +3736,24 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
             html.Div(output_filename,
                      style={"color": _ui.INK_FAINT, "fontSize": "10px",
                             "wordBreak": "break-all"}),
+            html.Button("+ Collection",
+                        id={"type": "add-to-moodboard", "index": output_path},
+                        n_clicks=0,
+                        title="Add this result to the collection",
+                        style={"marginTop": "10px", "fontSize": "11.5px",
+                               "padding": "5px 11px", "borderRadius": "4px",
+                               "backgroundColor": "#2a7a5a", "color": "#eafff5",
+                               "border": "none", "cursor": "pointer"}),
         ])
         return receipt, stage
 
     except Exception as e:
+        # Print the traceback. Returning only str(e) is how a dtype mismatch
+        # reached a user as one unattributable line, with nothing in the log to
+        # say which call raised it or from where.
+        import traceback
+        print(f"[colour-transfer] {method} failed:", flush=True)
+        traceback.print_exc()
         return (html.Div(f"✗ Error: {str(e)}",
                          style={"color": "#e74c3c", "wordBreak": "break-word"}), "")
 

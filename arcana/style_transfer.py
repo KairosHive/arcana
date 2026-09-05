@@ -248,6 +248,16 @@ def _sd_pipe(kind: str):
     if kind == "ip_adapter":
         pipe.load_ip_adapter(IP_ADAPTER_REPO, subfolder="models",
                              weight_name="ip-adapter_sd15.bin")
+        # The adapter and its image encoder arrive AFTER the pipeline was moved
+        # and cast, and they do not inherit either. Left alone that gives an
+        # fp16 UNet talking to fp32 adapter weights, which fails at the first
+        # cross-attention layer with "Input type (struct c10::Half) and bias
+        # type (float) should be the same". Re-unify everything here rather
+        # than trusting each component to have been built the same way.
+        pipe = pipe.to(device, dtype)
+        enc = getattr(pipe, "image_encoder", None)
+        if enc is not None:
+            pipe.image_encoder = enc.to(device=device, dtype=dtype)
 
     _PIPE_CACHE[kind] = pipe
     return pipe

@@ -218,3 +218,63 @@ button.dash-dropdown .dash-dropdown-trigger-icon {
     color: #9a9aa2;
     flex: none;
 }
+
+/* ---- resizable columns ----
+   The widths live in custom properties so splitter.js can move them. Dash
+   writes these columns' `flex` as an INLINE style and rewrites it on every
+   mode change, and an inline style beats a stylesheet -- so these carry
+   !important, which it does not beat. Without that the layout would snap back
+   to its defaults the moment the user switched tools.
+
+   The fallbacks are the values the layout itself uses, so with no override
+   stored, and with JavaScript disabled entirely, nothing changes. */
+#main-row > #moodboard-rail {
+    flex: 0 0 var(--arc-rail-w, 280px) !important;
+}
+
+#main-row > #left-column {
+    flex: 0 0 var(--arc-bench-w, 26%) !important;
+}
+
+/* The drag handles live in <body>, not in #main-row: that container belongs to
+   React, which may replace its children at any time and would take them with
+   it. They are positioned over the boundaries instead. */
+.arc-splitter {
+    position: fixed;
+    width: 7px;
+    z-index: 40;
+    cursor: col-resize;
+    display: none;
+    border-radius: 4px;
+    background: transparent;
+    transition: background 0.12s;
+}
+
+.arc-splitter::after {
+    content: "";
+    position: absolute;
+    left: 3px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: #333;
+}
+
+.arc-splitter:hover {
+    background: rgba(0, 188, 212, 0.22);
+}
+
+.arc-splitter:hover::after {
+    background: #00bcd4;
+}
+
+/* While dragging, stop the pointer selecting text under it and keep the
+   resize cursor even when it slips off the 7px handle. */
+body.arc-resizing {
+    cursor: col-resize;
+    user-select: none;
+}
+
+body.arc-resizing .arc-splitter {
+    background: rgba(0, 188, 212, 0.3);
+}

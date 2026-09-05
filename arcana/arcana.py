@@ -37,10 +37,12 @@ try:
     from . import ui_datasets as _ui_datasets
     from . import ui_style as _ui
     from . import jobs
+    from . import boards as _boards
 except ImportError:
     import ui_datasets as _ui_datasets
     import ui_style as _ui
     import jobs
+    import boards as _boards
 
 # --- palette/style search ---
 try:
@@ -1237,21 +1239,74 @@ app.layout = html.Div(
                     "alignContent": "start",
                     "alignItems": "start",
                 }),
+                # A board is the collection plus which picture is [R] and which
+                # is [T], saved by name in the data directory. The collection
+                # used to live only in browser localStorage: one unnamed list,
+                # no way back to yesterday's, and Clear emptied it with no undo.
+                html.Div(
+                    [
+                        html.Div("BOARD", style={"fontSize": "10px", "color": "#888",
+                                                 "letterSpacing": "0.5px",
+                                                 "marginBottom": "4px"}),
+                        dcc.Dropdown(
+                            id="board-picker", placeholder="Saved boards...",
+                            options=[], value=None, clearable=True,
+                            style={"width": "100%", "minWidth": "0",
+                                   "fontSize": "12px"},
+                        ),
+                        html.Div(
+                            [
+                                html.Button("Load", id="board-load-btn", n_clicks=0,
+                                            style=_ui.button("secondary",
+                                                             padding="4px 10px",
+                                                             fontSize="12px")),
+                                html.Button("Delete", id="board-delete-btn", n_clicks=0,
+                                            style=_ui.button("secondary",
+                                                             padding="4px 10px",
+                                                             fontSize="12px")),
+                            ],
+                            style={"display": "flex", "gap": "6px",
+                                   "marginTop": "6px"},
+                        ),
+                        dcc.Input(
+                            id="board-name", type="text",
+                            placeholder="Name this board...",
+                            style=_ui.input_box(width="100%", marginTop="8px",
+                                                padding="6px 9px", fontSize="12px",
+                                                boxSizing="border-box"),
+                        ),
+                        html.Button("Save board", id="board-save-btn", n_clicks=0,
+                                    style=_ui.button("success", padding="5px 11px",
+                                                     fontSize="12px",
+                                                     marginTop="6px", width="100%")),
+                        html.Div(id="board-status",
+                                 style={"fontSize": "11.5px", "color": _ui.INK_DIM,
+                                        "minHeight": "16px", "marginTop": "6px",
+                                        "lineHeight": "1.4"}),
+                    ],
+                    style={"flex": "0 0 auto", "marginTop": "10px",
+                           "paddingTop": "10px",
+                           "borderTop": "1px solid #333"},
+                ),
                 html.Div(
                     [
                         html.Button("Clear", id="clear-moodboard-btn", n_clicks=0,
                                     style=_ui.button("secondary", padding="5px 11px",
                                                      fontSize="12px")),
-                        html.Button("Save collection", id="save-moodboard-btn", n_clicks=0,
-                                    style=_ui.button("success", padding="5px 11px",
+                        # Renamed: this copies the image FILES out to a folder,
+                        # which is a different thing from saving a board, and
+                        # calling both "save" is how it read before.
+                        html.Button("Export copies", id="save-moodboard-btn", n_clicks=0,
+                                    style=_ui.button("secondary", padding="5px 11px",
                                                      fontSize="12px")),
                     ],
-                    style={"display": "flex", "gap": "8px", "flex": "0 0 auto"},
+                    style={"display": "flex", "gap": "8px", "flex": "0 0 auto",
+                           "marginTop": "10px"},
                 ),
                 dcc.Input(
                     id="moodboard-save-folder",
                     type="text",
-                    placeholder="Folder name...",
+                    placeholder="Export folder name...",
                     style=_ui.input_box(width="100%", marginTop="8px",
                                         padding="6px 9px", fontSize="12px",
                                         boxSizing="border-box"),
@@ -2479,6 +2534,120 @@ def select_moodboard_target(clicks, current_target):
         return clicked_path
     
     return dash.no_update
+
+
+def _board_options():
+    """Saved boards, newest first, labelled with what is in them."""
+    opts = []
+    for b in _boards.listing():
+        bits = f"{b['count']} image" + ("s" if b["count"] != 1 else "")
+        if b["missing"]:
+            bits += f", {b['missing']} missing"
+        opts.append({"label": f"{b['name']}  ·  {bits}", "value": b["slug"]})
+    return opts
+
+
+@app.callback(
+    Output("board-picker", "options"),
+    [Input("mode-select", "value"), Input("board-status", "children")],
+)
+def refresh_board_list(mode, _status):
+    """
+    Rebuild the picker whenever a board is written, deleted, or the tab opens.
+
+    board-status is an Input rather than a State on purpose: every action that
+    changes the set of boards writes to it, so this needs no separate signal.
+    """
+    return _board_options()
+
+
+@app.callback(
+    [Output("board-status", "children"),
+     Output("board-picker", "value", allow_duplicate=True)],
+    Input("board-save-btn", "n_clicks"),
+    [State("board-name", "value"),
+     State("moodboard-store", "data"),
+     State("selected-moodboard-image", "data"),
+     State("selected-target-image", "data"),
+     State("dataset-dropdown", "value")],
+    prevent_initial_call=True,
+)
+def save_board(n, name, items, reference, target, dataset):
+    """Write the collection, plus which image is [R] and which is [T]."""
+    if not n:
+        return dash.no_update, dash.no_update
+    if not (name or "").strip():
+        return "Give the board a name first.", dash.no_update
+    if not items:
+        return "Nothing in the collection to save.", dash.no_update
+    try:
+        rec = _boards.save((name or "").strip(), list(items),
+                           reference=reference or "", transfer=target or "",
+                           dataset=(dataset or ""))
+    except Exception as e:
+        return f"Could not save: {e}", dash.no_update
+    n_items = len(rec["items"])
+    return (f"Saved “{rec['name']}” — {n_items} image"
+            + ("s" if n_items != 1 else "") + ".", rec["slug"])
+
+
+@app.callback(
+    [Output("moodboard-store", "data", allow_duplicate=True),
+     Output("selected-moodboard-image", "data", allow_duplicate=True),
+     Output("selected-target-image", "data", allow_duplicate=True),
+     Output("board-name", "value"),
+     Output("board-status", "children", allow_duplicate=True)],
+    Input("board-load-btn", "n_clicks"),
+    State("board-picker", "value"),
+    prevent_initial_call=True,
+)
+def load_board(n, slug):
+    """
+    Restore a board, and say plainly if any of its files have gone.
+
+    A board records paths, so moving or deleting originals leaves holes.
+    Loading the pictures that are still there and naming the count that is not
+    beats dropping them silently.
+    """
+    if not n or not slug:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    rec = _boards.load(slug)
+    if not rec:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, "That board could not be read."
+
+    here, gone = _boards.present(rec)
+    ref = rec.get("reference") or ""
+    tgt = rec.get("transfer") or ""
+    if ref and ref not in here:
+        ref = ""
+    if tgt and tgt not in here:
+        tgt = ""
+
+    msg = f"Loaded “{rec['name']}” — {len(here)} image" + ("s" if len(here) != 1 else "")
+    if gone:
+        msg += (f". {len(gone)} could not be found; "
+                "run arcana-relocate if the files moved.")
+    else:
+        msg += "."
+    return here, ref, tgt, rec.get("name", ""), msg
+
+
+@app.callback(
+    [Output("board-status", "children", allow_duplicate=True),
+     Output("board-picker", "value", allow_duplicate=True)],
+    Input("board-delete-btn", "n_clicks"),
+    State("board-picker", "value"),
+    prevent_initial_call=True,
+)
+def delete_board(n, slug):
+    """Delete a saved board. The collection on screen is left alone."""
+    if not n or not slug:
+        return dash.no_update, dash.no_update
+    rec = _boards.load(slug)
+    label = rec.get("name", slug) if rec else slug
+    if _boards.delete(slug):
+        return f"Deleted “{label}”.", None
+    return f"Could not delete “{label}”.", dash.no_update
 
 
 @app.callback(

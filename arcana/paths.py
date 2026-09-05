@@ -31,7 +31,11 @@ ENV_DATA_DIR = "ARCANA_DATA_DIR"
 ENV_MEDIA_ROOTS = "ARCANA_MEDIA_ROOTS"
 
 # Subdirectories of the data directory.
-_SUBDIRS = ("databases", "latents", "bundles", "output", "cache", "models")
+# "boards" holds saved moodboards as JSON. They live here rather than in
+# browser localStorage so they survive clearing site data, and so two
+# machines sharing ARCANA_DATA_DIR share their boards along with datasets.
+_SUBDIRS = ("databases", "latents", "bundles", "output", "cache", "models",
+            "boards")
 
 # Legacy in-package locations, kept working for existing checkouts.
 _LEGACY = {

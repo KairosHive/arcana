@@ -368,3 +368,177 @@ def transfer(method: str, source, target, progress=None, **kw) -> Image.Image:
                                    steps=int(kw.get("steps", 12)),
                                    prompt=kw.get("prompt", ""))
     raise ValueError(f"unknown style transfer method: {method!r}")
+
+
+# --------------------------------------------------------------------------------------
+# 5. ControlNet — style from one picture, structure from a map of another
+# --------------------------------------------------------------------------------------
+# IP-Adapter says WHAT it should look like. ControlNet says WHERE things go. Used
+# together, the source's appearance is applied while the target's geometry is
+# held in place -- which is what "apply this texture as a function of my
+# target's depth" actually asks for.
+#
+# Each map answers a different question about the target:
+#
+#   depth      how far away each pixel is. Texture then follows the form
+#              rather than being pasted flat across it.
+#   canny      where the edges are. Holds outlines hard; the strictest.
+#   luminance  how light each pixel is, used as a pseudo-depth. Needs no model
+#              at all, and is a reasonable stand-in for a lit scene.
+
+CONTROLNETS = {
+    "depth": "lllyasviel/control_v11f1p_sd15_depth",
+    "canny": "lllyasviel/control_v11p_sd15_canny",
+    "luminance": "lllyasviel/control_v11f1p_sd15_depth",   # a depth-shaped map
+}
+
+DEPTH_MODEL = "Intel/dpt-hybrid-midas"
+
+CONTROL_MAPS = ("depth", "canny", "luminance")
+
+_DEPTH_PIPE = None
+
+
+def _depth_map(img: Image.Image) -> Image.Image:
+    """Estimate depth, as the 3-channel greyscale the depth ControlNet expects."""
+    global _DEPTH_PIPE
+    if _DEPTH_PIPE is None:
+        from transformers import pipeline as _hf_pipeline
+        _DEPTH_PIPE = _hf_pipeline("depth-estimation", model=DEPTH_MODEL,
+                                   device=0 if _gpu.available() else -1)
+    raw = _DEPTH_PIPE(img)["depth"]
+    a = np.asarray(raw, dtype=np.float32)
+    lo, hi = float(a.min()), float(a.max())
+    a = (a - lo) / max(hi - lo, 1e-6)
+    return Image.fromarray((np.stack([a] * 3, -1) * 255).astype(np.uint8))
+
+
+def control_map(kind: str, image) -> Image.Image:
+    """
+    Build the map a ControlNet will read, from the TARGET.
+
+    Returned as an ordinary image so the UI can show it: seeing the map is the
+    difference between "the result looks wrong" and "the depth is wrong", and
+    the second is something a user can act on.
+    """
+    img = _load_rgb(image)
+    if kind == "depth":
+        return _depth_map(img)
+    if kind == "canny":
+        if cv2 is None:
+            raise ImportError("OpenCV is required for the canny map")
+        g = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(g, 100, 200)
+        return Image.fromarray(np.stack([edges] * 3, -1))
+    if kind == "luminance":
+        # Perceptual luminance, blurred so it reads as form rather than
+        # texture, and inverted: nearer things in a lit scene are usually
+        # brighter, and depth maps put nearer at the bright end too.
+        a = np.asarray(img, dtype=np.float32)
+        lum = 0.2126 * a[:, :, 0] + 0.7152 * a[:, :, 1] + 0.0722 * a[:, :, 2]
+        if cv2 is not None:
+            k = max(3, (min(img.size) // 64) | 1)
+            lum = cv2.GaussianBlur(lum, (k, k), 0)
+        lo, hi = float(lum.min()), float(lum.max())
+        lum = (lum - lo) / max(hi - lo, 1e-6)
+        return Image.fromarray((np.stack([lum] * 3, -1) * 255).astype(np.uint8))
+    raise ValueError(f"unknown control map: {kind!r}")
+
+
+_CN_CACHE: dict = {}
+
+
+def _controlnet_pipe(kind: str):
+    """
+    A ControlNet img2img pipeline with IP-Adapter attached, built once.
+
+    Same SD-1.5 base as ip_adapter_transfer, so the two share their download.
+    """
+    hit = _CN_CACHE.get(kind)
+    if hit is not None:
+        return hit
+
+    import torch
+    from diffusers import (ControlNetModel,
+                           StableDiffusionControlNetImg2ImgPipeline)
+
+    device = _gpu.device()
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    net = ControlNetModel.from_pretrained(CONTROLNETS[kind], torch_dtype=dtype)
+    pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+        IP_BASE_MODEL, controlnet=net, torch_dtype=dtype)
+    pipe.safety_checker = None
+    pipe.watermark = None
+    pipe.load_ip_adapter(IP_ADAPTER_REPO, subfolder="models",
+                         weight_name="ip-adapter_sd15.bin")
+    # Cast AFTER the adapter and its image encoder are attached: neither
+    # inherits the pipeline's dtype, and an fp16 UNet talking to fp32 adapter
+    # weights fails at the first cross-attention layer.
+    pipe = pipe.to(device, dtype)
+    enc = getattr(pipe, "image_encoder", None)
+    if enc is not None:
+        pipe.image_encoder = enc.to(device=device, dtype=dtype)
+    try:
+        pipe.enable_vae_slicing()
+    except Exception:
+        pass
+
+    _CN_CACHE[kind] = pipe
+    return pipe
+
+
+def controlnet_transfer(source, target, control: str = "depth",
+                        scale: float = 0.7, control_scale: float = 0.8,
+                        strength: float = 0.7, steps: int = 16,
+                        guidance: float = 5.0, seed: int = 2222,
+                        prompt: str = "", progress=None):
+    """
+    Apply the look of the source while the target's geometry holds it in place.
+
+    Two conditions at once. IP-Adapter carries the source's appearance;
+    ControlNet carries a map of the target -- its depth, its edges, its
+    luminance -- and holds the generation to it. That is the difference between
+    a texture pasted flat over a picture and one that follows its form.
+
+    `scale` is how loudly the source speaks, `control_scale` how strictly the
+    map is obeyed. They pull against each other: a high control_scale with a
+    high strength keeps the composition while still restyling it, which is
+    usually what is wanted. Turning control_scale down approaches plain
+    ip_adapter_transfer.
+
+    Returns (image, map) so the caller can show what the geometry actually was.
+    """
+    import torch
+
+    if control not in CONTROLNETS:
+        raise ValueError(f"unknown control map: {control!r}")
+
+    tgt = _load_rgb(target)
+    init = _fit_for_diffusion(tgt)
+    src = _load_rgb(source)
+
+    if progress:
+        progress(0.1, f"Building the {control} map")
+    cmap = control_map(control, init).resize(init.size, Image.LANCZOS)
+
+    if progress:
+        progress(0.3, f"Loading ControlNet ({control})")
+    pipe = _controlnet_pipe(control)
+    pipe.set_ip_adapter_scale(float(np.clip(scale, 0.0, 1.0)))
+
+    if progress:
+        progress(0.55, "Transferring")
+    out = pipe(
+        prompt=prompt or "",
+        negative_prompt="text, letters, watermark, logo, lowres",
+        image=init,
+        control_image=cmap,
+        ip_adapter_image=src,
+        strength=float(np.clip(strength, 0.05, 0.95)),
+        num_inference_steps=int(max(1, steps)),
+        guidance_scale=guidance,
+        controlnet_conditioning_scale=float(np.clip(control_scale, 0.0, 2.0)),
+        generator=torch.manual_seed(seed),
+    ).images[0]
+    return out.resize(tgt.size, Image.LANCZOS), cmap

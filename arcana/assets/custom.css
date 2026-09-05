@@ -228,11 +228,17 @@ button.dash-dropdown .dash-dropdown-trigger-icon {
 
    The fallbacks are the values the layout itself uses, so with no override
    stored, and with JavaScript disabled entirely, nothing changes. */
-#main-row > #moodboard-rail {
+/* Scoped to the moodboard. These carry !important so Dash's inline style
+   cannot beat them, which also means they beat the DIFFERENT widths the layout
+   sets for Prompt Search and Generate Story -- where left-column holds the
+   scatter plot and is meant to be wide. Unscoped, those two tabs came out with
+   the plot squeezed into a 26% column. splitter.js puts arc-moodboard on the
+   body only while that mode is showing. */
+body.arc-moodboard #main-row > #moodboard-rail {
     flex: 0 0 var(--arc-rail-w, 280px) !important;
 }
 
-#main-row > #left-column {
+body.arc-moodboard #main-row > #left-column {
     flex: 0 0 var(--arc-bench-w, 26%) !important;
 }
 

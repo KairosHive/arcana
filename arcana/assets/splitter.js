@@ -103,6 +103,11 @@
                getComputedStyle(row).display !== "none" &&
                getComputedStyle(rail).display !== "none" &&
                rail.getBoundingClientRect().width > 0;
+    // The rail exists only in moodboard mode, so it is the honest test for
+    // whether the column overrides should apply at all. Prompt Search and
+    // Generate Story give left-column a different width for the scatter plot,
+    // and an unscoped !important rule overrode that too.
+    document.body.classList.toggle("arc-moodboard", !!live);
     if (!live) {
       handles.rail.style.display = "none";
       handles.bench.style.display = "none";

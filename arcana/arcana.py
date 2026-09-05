@@ -1762,7 +1762,7 @@ app.layout = html.Div(
                                              "value": "ip_adapter"},
                                             {"label": "img2img — from words",
                                              "value": "img2img"},
-                                            {"label": "ControlNet — follows a map",
+                                            {"label": "IP-Adapter + ControlNet — style along a map",
                                              "value": "controlnet"},
                                         ],
                                         value="texture", clearable=False,
@@ -3507,11 +3507,14 @@ def _style_note(method):
                        "The strongest, and the only one that carries what "
                        "language cannot name. Around 0.4-0.6 keeps the subject "
                        "recognisable; higher and [R] takes over."),
-        "controlnet": ("The look of [R] applied along a map of [T], so the "
-                       "texture follows the form instead of lying flat over "
-                       "it. [T]'s geometry is held while its surface is "
-                       "restyled — which is what keeps a face a face at "
-                       "strengths where IP-Adapter alone would dissolve it."),
+        "controlnet": ("Both conditions at once. IP-Adapter carries what [R] "
+                       "looks like; ControlNet carries a map of [T] and holds "
+                       "the result to it, so the texture follows the form "
+                       "instead of lying flat over it. This is what keeps a "
+                       "face a face at strengths where IP-Adapter alone "
+                       "dissolves it. Strength is how loudly [R] speaks; the "
+                       "slider below is how strictly the map is obeyed. Turn "
+                       "that down and it approaches plain IP-Adapter."),
     }.get(method, "")
 
 

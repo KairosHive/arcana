@@ -1236,7 +1236,7 @@ app.layout = html.Div(
                 # the column lands here rather than clipping the footer.
                 html.Div(id="moodboard-gallery", style={
                     "display": "grid",
-                    "gridTemplateColumns": "repeat(auto-fill, minmax(104px, 1fr))",
+                    "gridTemplateColumns": "repeat(auto-fill, minmax(var(--arc-thumb, 104px), 1fr))",
                     "gap": "8px",
                     "flex": "1 1 0",
                     "minHeight": "0",
@@ -2491,7 +2491,10 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
             border_image = None
         
         img_style = {
-            "width": "116px", "height": "116px", "objectFit": "cover", 
+            # Fill the grid cell rather than a fixed box: the cell is what
+            # grows when the rail is widened, and a 116px image inside a 190px
+            # cell is why widening it used to change nothing but the count.
+            "width": "100%", "aspectRatio": "1", "objectFit": "cover", 
             "borderRadius": "6px", "border": border, "display": "block",
         }
         if border_image:

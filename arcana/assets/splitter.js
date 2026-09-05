@@ -21,6 +21,7 @@
   "use strict";
 
   var RAIL = "--arc-rail-w";
+  var THUMB = "--arc-thumb";
   var BENCH = "--arc-bench-w";
   var STORE = "arcana.columns.v1";
   var MIN_RAIL = 140, MAX_RAIL = 560;
@@ -63,6 +64,36 @@
   var handles = { rail: makeHandle("rail"), bench: makeHandle("bench") };
   var dragging = null;
 
+  /* How big a thumbnail should be for a rail of this width.
+   *
+   * The grid is auto-fill, so the TRACK MINIMUM decides how many columns fit
+   * and therefore how large each picture is. Left fixed, widening the rail
+   * only ever added another column and every thumbnail stayed the same size --
+   * which is the opposite of what dragging it wider is asking for.
+   *
+   * Aiming at two columns keeps them growing with the rail; the clamp stops a
+   * very narrow rail from producing a single tiny column, or a very wide one
+   * from producing two enormous pictures. */
+  var COLS = 2, GAP = 8;
+
+  function sizeThumbs() {
+    var g = el("moodboard-gallery");
+    if (!g) return;
+    // clientWidth, measured: it already excludes the scrollbar and the
+    // element's own border. Deriving this from the rail width instead meant
+    // guessing at padding, and being a few pixels out made auto-fill drop to a
+    // single column -- so widening the rail jumped the thumbnails from 129px
+    // to 345px and back rather than growing them.
+    var cs = getComputedStyle(g);
+    var avail = g.clientWidth
+              - parseFloat(cs.paddingLeft || 0)
+              - parseFloat(cs.paddingRight || 0);
+    if (avail <= 0) return;
+    var px = Math.floor((avail - (COLS - 1) * GAP) / COLS);
+    px = Math.max(88, Math.min(240, px));
+    document.documentElement.style.setProperty(THUMB, px + "px");
+  }
+
   function place() {
     var row = el("main-row");
     var rail = el("moodboard-rail");
@@ -79,6 +110,7 @@
     }
     var rb = rail.getBoundingClientRect();
     var lb = left.getBoundingClientRect();
+    sizeThumbs();
     [["rail", rb.right], ["bench", lb.right]].forEach(function (pair) {
       var h = handles[pair[0]];
       h.style.display = "block";

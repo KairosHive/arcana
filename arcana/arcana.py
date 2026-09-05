@@ -71,6 +71,17 @@ except ImportError:
 
 # --- LAB color transfer (Reinhard) ---
 try:
+    from . import style_transfer as _style_transfer
+    STYLE_TRANSFER_AVAILABLE = True
+except ImportError:
+    try:
+        import style_transfer as _style_transfer
+        STYLE_TRANSFER_AVAILABLE = True
+    except ImportError:
+        _style_transfer = None
+        STYLE_TRANSFER_AVAILABLE = False
+
+try:
     from .lab_transfer import lab_color_transfer_pil
     LAB_TRANSFER_AVAILABLE = True
 except ImportError:
@@ -1581,9 +1592,17 @@ app.layout = html.Div(
                                             html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
                                             dcc.Dropdown(
                                                 id="color-transfer-method",
+                                                # Colour first, because those keep the
+                                                # target's pixels and only remap them.
+                                                # The style methods below regenerate to
+                                                # varying degrees, which is a bigger
+                                                # thing to ask for by accident.
                                                 options=[
-                                                    {"label": "ModFlows (Neural)", "value": "modflows"},
-                                                    {"label": "LAB (Reinhard)", "value": "lab"},
+                                                    {"label": "Colour · ModFlows", "value": "modflows"},
+                                                    {"label": "Colour · LAB", "value": "lab"},
+                                                    {"label": "Style · Texture", "value": "texture"},
+                                                    {"label": "Style · img2img", "value": "img2img"},
+                                                    {"label": "Style · IP-Adapter", "value": "ip_adapter"},
                                                 ],
                                                 value="modflows",
                                                 clearable=False,
@@ -3422,6 +3441,61 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
         elif kept_frac < 1.0:
             filter_note = f" — from {kept_frac * 100:.1f}% of the reference"
         
+        # The style methods move grain and appearance rather than colour, so
+        # they take the reference as given -- the lightness/saturation sliders
+        # narrow a colour DISTRIBUTION, which is not what these read.
+        if method in ("texture", "img2img", "ip_adapter"):
+            if not STYLE_TRANSFER_AVAILABLE:
+                return html.Div("⚠️ Style transfer unavailable (check installation)",
+                                style={"color": "#e74c3c"}), ""
+            style_source = Image.open(ref_resolved).convert("RGB")
+            try:
+                result_img = _style_transfer.transfer(
+                    method, style_source, content_img,
+                    strength=strength_val,
+                    scale=strength_val,
+                )
+            except Exception as e:
+                hint = ""
+                if method in ("img2img", "ip_adapter"):
+                    hint = (" — the diffusion methods need the sd-turbo or "
+                            "SD-1.5 weights, which download on first use.")
+                return html.Div(f"⚠️ {method}: {e}{hint}",
+                                style={"color": "#e74c3c"}), ""
+            method_label = {"texture": "Texture", "img2img": "img2img",
+                            "ip_adapter": "IP-Adapter"}[method]
+            # Texture is OpenCV arithmetic and never touches the GPU, so saying
+            # "GPU" because one is present would be a plain untruth about what
+            # just ran.
+            device_str = ("CPU" if method == "texture"
+                          else ("GPU" if _gpu.available() else "CPU"))
+            elapsed = time.time() - start_time
+            out_dir = _safe_output_dir("transfers")
+            os.makedirs(out_dir, exist_ok=True)
+            out_name = _paths.fit_filename(
+                out_dir, os.path.splitext(os.path.basename(target_resolved))[0],
+                os.path.splitext(os.path.basename(ref_resolved))[0],
+                method, ".jpg")
+            # fit_filename returns a NAME, not a path -- saving it directly
+            # wrote the result to the working directory instead of the output
+            # folder the status line then claimed it was in.
+            out_path = os.path.join(out_dir, out_name)
+            result_img.save(out_path, quality=95)
+            buf = BytesIO()
+            preview = result_img.copy()
+            preview.thumbnail((1600, 1600), Image.LANCZOS)
+            preview.save(buf, format="JPEG", quality=90)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            status = html.Div(
+                f"{method_label} · {device_str} · {elapsed:.1f}s · "
+                f"{result_img.size[0]}x{result_img.size[1]} · saved to {out_path}",
+                style={"color": "#4CAF50", "fontSize": "11.5px"})
+            return status, html.Img(
+                src=f"data:image/jpeg;base64,{b64}",
+                style={"maxWidth": "100%", "maxHeight": "78vh",
+                       "borderRadius": "6px", "display": "block",
+                       "margin": "0 auto"})
+
         # Perform transfer based on method
         if method == "lab":
             result_img = lab_color_transfer_pil(content_img, style_img, strength=strength_val)

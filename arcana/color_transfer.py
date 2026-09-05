@@ -315,30 +315,31 @@ def _get_encoder():
     
     if _encoder is not None:
         return _encoder, _device
-    
-    _ensure_modflows_available()
-    
+
     if _torch is None:
         import torch
         _torch = torch
-    
-    from src.encoder import Encoder
-    
-    # Determine device
+
+    # Our own implementation, not the upstream src/. That code carries no
+    # licence and was being bundled into the installer; see LICENSING.md item
+    # A0. The CHECKPOINT is MIT and is still fetched exactly as before -- only
+    # the code that runs it changed, and tests/test_modflows_net.py pins that
+    # the two produce identical images.
+    try:
+        from . import modflows_net as _mn
+    except ImportError:
+        import modflows_net as _mn
+
     _device = _torch.device(_gpu.device())
-    
-    # Load encoder. Build it in a local first: assigning the module-level
-    # _encoder before load_state_dict lets a second concurrent request see a
-    # non-None encoder whose weights are still random, and silently colour an
-    # image with an untrained network.
+
+    # Build in a local first: assigning the module-level _encoder before the
+    # weights are in lets a second concurrent request see a non-None encoder
+    # whose weights are still random, and silently colour an image with an
+    # untrained network.
     checkpoint_path = _find_checkpoint()
-    enc = Encoder(k_dim=8195, input_dim=4, hidden=1024, output_dim=3, device=_device)
-    enc.load_state_dict(_torch.load(str(checkpoint_path), map_location=_device, weights_only=True))
-    enc.eval()
-    _encoder = enc
+    _encoder = _mn.ColorFlowEncoder.from_checkpoint(checkpoint_path, _device)
 
     return _encoder, _device
-
 
 def transfer_colors(
     content: Union[str, Path, Image.Image],
@@ -362,8 +363,10 @@ def transfer_colors(
     Returns:
         PIL.Image.Image with transferred colors
     """
-    _ensure_modflows_available()
-    from src.inference import run_inference
+    try:
+        from . import modflows_net as _mn
+    except ImportError:
+        import modflows_net as _mn
     
     encoder, device = _get_encoder()
     
@@ -395,9 +398,12 @@ def transfer_colors(
             compress = max(orig_w, orig_h) / max_size
         
         # Run the flow
-        _, _, styled, _ = run_inference(
-            encoder, device, content_path, style_path,
-            compress=compress, enc_steps=steps, strength=strength
+        styled = _mn.transfer(
+            encoder,
+            Image.open(content_path).convert("RGB"),
+            Image.open(style_path).convert("RGB"),
+            device, steps=steps, strength=strength,
+            max_side=(max_size if compress else None),
         )
         
         # Optionally upscale to full resolution using 1D LUT

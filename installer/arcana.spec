@@ -67,19 +67,21 @@ datas = [
     (os.path.join(ROOT, "arcana", "assets"), os.path.join("arcana", "assets")),
 ]
 
-# ModFlows is not a package we import normally: color_transfer adds its
-# directory to sys.path and does `import src.encoder`. PyInstaller cannot see
-# through that, so the source ships as plain files next to the executable --
-# 120 KB, and color_transfer._candidate_dirs() already looks in
-# <exe dir>/modflows. The 229 MB checkpoint deliberately does NOT ship; it is
-# downloaded once into the user's writable data directory on first use, which
-# is also the only place it could survive a reinstall.
-_modflows_src = os.path.join(ROOT, "modflows", "src")
-if os.path.isdir(_modflows_src):
-    datas.append((_modflows_src, os.path.join("modflows", "src")))
-else:
-    print("[spec] WARNING: modflows/src not found -- the built app will offer "
-          "LAB colour transfer only.")
+# ModFlows source is NOT bundled, deliberately.
+#
+# The upstream at github.com/maria-larchenko/modflows has no LICENSE, so
+# default copyright applies and there is no right to redistribute it. Builds
+# before 5 September 2026 shipped five of its files inside _internal/modflows.
+# See LICENSING.md, item A0.
+#
+# arcana/modflows_net.py is our own implementation of the same inference path
+# and ships as ordinary package code. It is verified against the checkpoint
+# with strict state_dict loading and produces bit-identical output to what it
+# replaced; see tests/test_modflows_net.py.
+#
+# The 229 MB checkpoint still does not ship: it is MIT, and downloaded once
+# into the user's writable data directory on first use, which is also the only
+# place it could survive a reinstall.
 for pkg in ("dash", "dash_daq", "plotly", "librosa", "usearch"):
     try:
         datas += collect_data_files(pkg)
@@ -108,10 +110,11 @@ hiddenimports = [
     # media
     "PIL.PngImagePlugin", "PIL.WebPImagePlugin", "PIL.JpegImagePlugin",
     "soundfile", "librosa", "numba",
-    # modflows/src/encoder.py needs these, and it is shipped as data rather
-    # than analysed, so nothing else pulls them in.
+    # arcana/modflows_net.py builds its encoder from torchvision and resizes
+    # with transforms.v2. Those are reachable by analysis now that it is
+    # ordinary package code rather than bundled data, but naming them costs
+    # nothing and survives a refactor that hides the import.
     "torchvision", "torchvision.transforms", "torchvision.transforms.v2",
-    "einops",
     # models
     "usearch.index",
     "transformers", "transformers.models.clip", "transformers.models.clap",

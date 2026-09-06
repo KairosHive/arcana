@@ -41,11 +41,12 @@ with open(_verfile, "w", encoding="utf-8") as _fh:
                     OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('040904B0', [
-      StringStruct('CompanyName', 'Antoine Bellemare'),
+      StringStruct('CompanyName', 'Kairos Hive'),
       StringStruct('FileDescription', 'Arcana'),
       StringStruct('FileVersion', '{VERSION}'),
       StringStruct('InternalName', 'Arcana'),
       StringStruct('OriginalFilename', 'Arcana.exe'),
+      StringStruct('LegalCopyright', 'Copyright (C) 2026 Kairos Hive'),
       StringStruct('ProductName', 'Arcana'),
       StringStruct('ProductVersion', '{VERSION}')])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

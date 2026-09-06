@@ -68,7 +68,11 @@ the project has no users yet, so nothing is closed off by choosing AGPL now.
 - `pyproject.toml` under `[project]`: `license = "AGPL-3.0-or-later"` — the SPDX
   expression string, not the deprecated `{file = ...}` table form — plus the
   OSI classifier.
-- SPDX header on each file in `arcana/`.
+- SPDX header on each file in `arcana/`:
+  ```python
+  # SPDX-License-Identifier: AGPL-3.0-or-later
+  # Copyright (C) 2026 Kairos Hive
+  ```
 - README replaces "Not yet declared" with AGPL and a pointer to
   `THIRD_PARTY.md`.
 

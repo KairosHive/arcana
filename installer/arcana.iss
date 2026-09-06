@@ -25,7 +25,7 @@
 #include "version.iss"
 
 #define AppName        "Arcana"
-#define AppPublisher   "Antoine Bellemare"
+#define AppPublisher   "Kairos Hive"
 #define AppExeName     "Arcana.exe"
 
 ; Which torch went into the bundle. The default build ships CPU-only PyTorch

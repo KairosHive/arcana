@@ -8,6 +8,7 @@ try:
 except ImportError:
     from cvio import imread_unicode, imwrite_unicode
 import base64
+import math
 import os
 import pickle
 import torch
@@ -38,11 +39,13 @@ try:
     from . import ui_style as _ui
     from . import jobs
     from . import boards as _boards
+    from . import on1 as _on1
 except ImportError:
     import ui_datasets as _ui_datasets
     import ui_style as _ui
     import jobs
     import boards as _boards
+    import on1 as _on1
 
 # --- palette/style search ---
 try:
@@ -631,6 +634,412 @@ def load_index(name, modality="image"):
     return Index.restore(idx_blob), idx2path
 
 
+# ------------- MARKS: STARS, COLOUR TAGS, CAPTURE DATES -------------
+# Read from ON1 sidecars at index time and carried in the latent frame (see
+# db.attach_marks). A dataset indexed before this existed has none of these
+# columns, so everything here treats a missing column as "nothing known" and
+# leaves the dataset behaving exactly as it did.
+MARK_COLUMNS = ("rating", "colour", "captured")
+
+# The colour dropdown needs a value meaning "no tag at all", and "" cannot be
+# one: Dash treats an empty string as no selection and silently drops it.
+NO_COLOUR = "(none)"
+
+# The star control is a floor -- "three and up" -- so it needs one value that is
+# not a floor at all, for the pictures nothing has ever been decided about.
+# Negative, so it can never be mistaken for a star count.
+UNRATED = -1
+
+
+def has_marks(df) -> bool:
+    """Does this dataset carry anything worth filtering on?"""
+    if df is None or not len(df):
+        return False
+    if "rating" in df.columns and df["rating"].notna().any():
+        return True
+    if "colour" in df.columns and (df["colour"].astype(str) != "").any():
+        return True
+    return "captured" in df.columns and df["captured"].notna().any()
+
+
+def marks_mask(df, stars=0, colours=None, date_from=None, date_to=None):
+    """
+    Boolean mask over `df` for the active filters. All-True when none are set.
+
+    An unrated file fails a star filter: "three stars and up" is a request for
+    pictures somebody chose, and a file ON1 has never opened is not one of them.
+    The same file passes a colour filter of ["(none)"], which is the way to ask
+    for exactly the unsorted remainder.
+    """
+    mask = pd.Series(True, index=df.index)
+
+    if stars and "rating" in df.columns:
+        if int(stars) == UNRATED:
+            mask &= df["rating"].isna()
+        else:
+            mask &= df["rating"].fillna(UNRATED) >= int(stars)
+
+    if colours and "colour" in df.columns:
+        col = df["colour"].astype(str)
+        wanted = set(colours)
+        picked = pd.Series(False, index=df.index)
+        if NO_COLOUR in wanted:
+            picked |= col == ""
+            wanted.discard(NO_COLOUR)
+        if wanted:
+            picked |= col.isin(wanted)
+        mask &= picked
+
+    if (date_from or date_to) and "captured" in df.columns:
+        when = df["captured"]
+        # An undated file cannot satisfy a date range, and NaT comparisons are
+        # False anyway -- being explicit keeps that from looking accidental.
+        dated = when.notna()
+        if date_from:
+            dated &= when >= pd.Timestamp(date_from)
+        if date_to:
+            # The picker gives a day; the user means the whole of it.
+            dated &= when < pd.Timestamp(date_to) + pd.Timedelta(days=1)
+        mask &= dated
+
+    return mask
+
+
+def colour_options(df) -> list:
+    """Colour-tag choices for this dataset, commonest first, ON1's order breaking ties."""
+    if "colour" not in df.columns:
+        return []
+    counts = df["colour"].astype(str).value_counts()
+    order = {name: i for i, name in enumerate(_on1.LABELS)}
+    tags = [c for c in counts.index if c]
+    tags.sort(key=lambda c: (-int(counts[c]), order.get(c, len(order)), c))
+    opts = [{"label": f"{c} · {int(counts[c]):,}", "value": c} for c in tags]
+    untagged = int(counts.get("", 0))
+    if untagged and tags:
+        opts.append({"label": f"No tag · {untagged:,}", "value": NO_COLOUR})
+    return opts
+
+
+def star_options(df) -> list:
+    """Star choices, each labelled with how many files it would leave."""
+    opts = [{"label": "Any rating", "value": 0}]
+    if "rating" not in df.columns:
+        return opts
+    rating = df["rating"].fillna(UNRATED)
+    for n in range(1, 6):
+        count = int((rating >= n).sum())
+        if count:
+            opts.append({"label": f"{'★' * n} and up · {count:,}", "value": n})
+    never = int(df["rating"].isna().sum())
+    if never:
+        # Worth its own entry: "what have I never looked at" is a real question
+        # about an archive, and no star floor can ask it.
+        opts.append({"label": f"Never rated · {never:,}", "value": UNRATED})
+    return opts
+
+
+def stars_text(rating) -> str:
+    """Five glyphs, so a three-star and a four-star card are the same width."""
+    if rating is None or (isinstance(rating, float) and math.isnan(rating)):
+        return ""
+    n = max(0, min(5, int(rating)))
+    return "★" * n + "☆" * (5 - n)
+
+
+# ON1's tag names are the only colour vocabulary here, and its swatches are what
+# the photographer has been looking at while culling, so the badge uses them.
+COLOUR_SWATCH = {"Red": "#e05252", "Yellow": "#d9b234", "Green": "#43b581",
+                 "Blue": "#4a90d9", "Purple": "#a982d9"}
+
+
+def mark_results_on(fig, hits, is_3d: bool):
+    """
+    Put the crosses on the map for the rows in `hits`.
+
+    Shared by the search itself and by a filter change, so the two cannot draw
+    the highlight differently -- the filter redraw is a fresh figure, and
+    without this the crosses would simply vanish the moment you touched a
+    dropdown, as if the search had been thrown away.
+    """
+    if hits is None or not len(hits):
+        return fig
+    # Never stack two: each redraw re-adds this trace.
+    fig.data = tuple(t for t in fig.data if getattr(t, "name", None) != "Search Results")
+    if is_3d:
+        fig.add_trace(go.Scatter3d(
+            x=hits["x"], y=hits["y"], z=hits["z"], mode="markers",
+            marker=dict(size=10, symbol="cross", opacity=1), name="Search Results"))
+    else:
+        # The base scatter is WebGL. Plotly draws the GL canvas ABOVE the SVG
+        # trace layer, so an SVG go.Scatter overlay ends up hidden behind the
+        # dots. Scattergl puts the highlight in the same GL layer, where trace
+        # order decides what is on top.
+        fig.add_trace(go.Scattergl(
+            x=hits["x"].to_list(), y=hits["y"].to_list(), mode="markers",
+            marker=dict(symbol="x", size=20, color="#33C3F0",
+                        line=dict(width=2, color="#ffffff")),
+            name="Search Results", hoverinfo="skip", showlegend=True, opacity=1.0))
+    return fig
+
+
+def _allowed_keys(idx2path: dict, keep) -> set:
+    """
+    usearch keys the filter left standing.
+
+    The latent frame is built by walking idx2path in insertion order, so row i
+    of the frame is the i-th key -- the same correspondence the search-result
+    highlighting relies on, and the reason neither can use the key as a row
+    label directly.
+    """
+    flags = list(keep)
+    return {k for i, k in enumerate(idx2path.keys()) if i < len(flags) and flags[i]}
+
+
+def _marks_lookup(df) -> dict:
+    """path -> (rating, colour, captured), for putting a badge on a result card."""
+    if not any(c in df.columns for c in MARK_COLUMNS):
+        return {}
+    ratings = df["rating"] if "rating" in df.columns else None
+    colours = df["colour"] if "colour" in df.columns else None
+    dates = df["captured"] if "captured" in df.columns else None
+    out = {}
+    for i, path in enumerate(df["path"].tolist()):
+        r = ratings.iloc[i] if ratings is not None else None
+        out[path] = (None if r is None or pd.isna(r) else int(r),
+                     colours.iloc[i] if colours is not None else "",
+                     dates.iloc[i] if dates is not None else None)
+    return out
+
+
+def marks_fields(rating, colour, captured) -> list:
+    """
+    A card's marks as three plain strings.
+
+    Strings rather than the values themselves because these ride in a dcc.Store
+    so the carousel can relabel itself without re-reading the dataset, and a
+    pandas Timestamp does not survive the trip to JSON.
+    """
+    when = ""
+    if captured is not None and not pd.isna(captured):
+        when = pd.Timestamp(captured).strftime("%d %b %Y")
+    return [stars_text(rating), str(colour or ""), when]
+
+
+def marks_badge_from_fields(fields) -> "html.Div | None":
+    """The small strip on a result card saying what was already decided about it."""
+    stars, colour, when = (list(fields) + ["", "", ""])[:3] if fields else ("", "", "")
+    bits = []
+    if stars:
+        bits.append(html.Span(stars, style={
+            # Grey for a rating of zero: it is a decision, but not a promotion,
+            # and lighting five hollow stars up amber reads as one.
+            "color": _ui.WARN if stars.startswith("★") else _ui.INK_FAINT,
+            "letterSpacing": "1px", "fontSize": "12px"}))
+    if colour:
+        bits.append(html.Span([
+            html.Span(style={"display": "inline-block", "width": "8px", "height": "8px",
+                             "borderRadius": "50%", "marginRight": "5px",
+                             "backgroundColor": COLOUR_SWATCH.get(colour, _ui.MUTED)}),
+            colour,
+        ], style={"fontSize": "11.5px", "color": _ui.INK_DIM, "display": "inline-flex",
+                  "alignItems": "center"}))
+    if when:
+        bits.append(html.Span(when, style={"fontSize": "11.5px", "color": _ui.INK_FAINT}))
+    if not bits:
+        return None
+    return html.Div(bits, style=_ui.row("12px", marginTop="6px"))
+
+
+def marks_badge(rating, colour, captured):
+    return marks_badge_from_fields(marks_fields(rating, colour, captured))
+
+
+# ------------- WHAT IS MARKED: THE SUMMARY PANEL -------------
+# A collection's marks are a two-dimensional decision -- how good, and which
+# pile -- so the summary is a matrix rather than two bar charts that cannot
+# answer "how many red four-star frames". Every cell is a button that sets the
+# filter to itself: the panel is a way of steering the search, not a report to
+# read and then act on somewhere else.
+ALL_STARS = "all"
+
+
+def _matrix_counts(df):
+    """(stars, colour) -> count, plus the row and column vocabularies present."""
+    ratings = df["rating"] if "rating" in df.columns else pd.Series(dtype="Int64")
+    colours = df["colour"].astype(str) if "colour" in df.columns else pd.Series(dtype=str)
+    if not len(colours):
+        colours = pd.Series([""] * len(df), index=df.index)
+
+    present = {c for c in colours.unique() if c}
+    cols = [c for c in _on1.LABELS if c in present]
+    cols += sorted(present - set(cols))
+    cols.append(NO_COLOUR)
+
+    rows = []
+    for s in range(5, -1, -1):
+        if (ratings == s).any():
+            rows.append(s)
+    if ratings.isna().any():
+        rows.append(UNRATED)
+
+    grid = {}
+    for s in rows:
+        sel = ratings.isna() if s == UNRATED else (ratings == s)
+        for c in cols:
+            hit = (colours == "") if c == NO_COLOUR else (colours == c)
+            grid[(s, c)] = int((sel & hit).sum())
+    return grid, rows, cols
+
+
+def _cell(count, colour, frac, stars):
+    """One matrix cell: a square whose area is the count, over the number itself."""
+    side = 10 + 30 * frac
+    clickable = count > 0
+    return html.Div(
+        [
+            html.Span(style={
+                "position": "absolute", "width": f"{side:.0f}px", "height": f"{side:.0f}px",
+                "borderRadius": "2px", "opacity": f"{0.30 + 0.55 * frac:.2f}",
+                "backgroundColor": COLOUR_SWATCH.get(colour, _ui.MUTED)}),
+            html.Span(f"{count:,}" if count else "·", style={
+                "position": "relative", "zIndex": 1, "fontWeight": "600",
+                "fontSize": "12px",
+                "color": _ui.INK if count else _ui.INK_FAINT,
+                "textShadow": "0 1px 3px rgba(0,0,0,.75)" if count else "none"}),
+        ],
+        id={"type": "marks-cell", "stars": str(stars), "colour": colour},
+        n_clicks=0,
+        title=(f"{count:,} frames — click to search only these" if clickable else "none"),
+        style={
+            "position": "relative", "display": "flex", "alignItems": "center",
+            "justifyContent": "center", "minHeight": "46px",
+            "backgroundColor": _ui.SURFACE_2 if clickable else "transparent",
+            "border": f"1px solid {_ui.LINE}", "borderRadius": "3px",
+            "cursor": "pointer" if clickable else "default",
+            "opacity": "1" if clickable else "0.4"},
+    )
+
+
+def _timeline(df):
+    """When the collection was shot, stacked by colour tag."""
+    if "captured" not in df.columns or not df["captured"].notna().any():
+        return None
+    dated = df[df["captured"].notna()].copy()
+    span_days = (dated["captured"].max() - dated["captured"].min()).days
+    # A decade of shooting binned per day is 3,650 bars two pixels wide, which
+    # reads as noise; a fortnight binned per month is one. Pick the unit from
+    # the span so the shape of the archive is legible either way.
+    freq, fmt = (("D", "%d %b %Y") if span_days <= 120 else
+                 ("W", "week of %d %b %Y") if span_days <= 730 else
+                 ("MS", "%b %Y"))
+    dated["bin"] = dated["captured"].dt.to_period(
+        {"D": "D", "W": "W", "MS": "M"}[freq]).dt.start_time
+    tags = dated["colour"].astype(str) if "colour" in dated.columns else pd.Series("", index=dated.index)
+    dated["tag"] = tags.where(tags != "", "No tag")
+
+    order = [c for c in _on1.LABELS if (dated["tag"] == c).any()] + ["No tag"]
+    fig = go.Figure()
+    for tag in order:
+        part = dated[dated["tag"] == tag]
+        if not len(part):
+            continue
+        counts = part.groupby("bin").size().sort_index()
+        fig.add_trace(go.Bar(
+            x=counts.index, y=counts.values, name=tag,
+            marker_color=COLOUR_SWATCH.get(tag, _ui.MUTED),
+            hovertemplate="%{x|" + fmt + "}<br>%{y:,} frames<extra>" + tag + "</extra>",
+        ))
+    fig.update_layout(
+        barmode="stack", height=150, showlegend=False,
+        margin=dict(l=8, r=8, t=6, b=6),
+        plot_bgcolor=_ui.BG, paper_bgcolor=_ui.BG,
+        font=dict(color=_ui.INK_DIM, size=10),
+        # Bars are read against a baseline, so a faint horizontal rule earns its
+        # place here in a way the scatter's grid does not; vertical lines only
+        # slice the bars up.
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(gridcolor=_ui.LINE, zeroline=False, title=None),
+        bargap=0.1,
+    )
+    return dcc.Graph(figure=fig, config={"displayModeBar": False},
+                     style={"height": "150px"})
+
+
+def _chip(value, caption):
+    return html.Div([
+        html.Div(f"{value}", style={"fontSize": "15px", "fontWeight": "600", "color": _ui.INK}),
+        html.Div(caption, style={"fontSize": "10.5px", "color": _ui.INK_FAINT,
+                                 "textTransform": "uppercase", "letterSpacing": "0.6px"}),
+    ], style={"backgroundColor": _ui.SURFACE_2, "border": f"1px solid {_ui.LINE}",
+              "borderRadius": "6px", "padding": "8px 12px"})
+
+
+def marks_panel(df):
+    """The whole summary: counts, the stars x colour matrix, and the timeline."""
+    grid, rows, cols = _matrix_counts(df)
+    if not rows:
+        return html.Div("Nothing marked in this dataset.", style=_ui.hint())
+    cell_max = max(grid.values()) or 1
+
+    ratings = df["rating"] if "rating" in df.columns else pd.Series(dtype="Int64")
+    rated = int((ratings.fillna(0) > 0).sum())
+    tagged = int((df["colour"].astype(str) != "").sum()) if "colour" in df.columns else 0
+    keepers = int((ratings.fillna(0) >= 3).sum())
+
+    chips = [_chip(f"{len(df):,}", "frames"),
+             _chip(f"{rated:,}", "rated"),
+             _chip(f"{tagged:,}", "colour tagged"),
+             _chip(f"{keepers:,}", "three stars and up")]
+    if "captured" in df.columns and df["captured"].notna().any():
+        lo, hi = df["captured"].min(), df["captured"].max()
+        chips.append(_chip(f"{lo:%b %Y} – {hi:%b %Y}", "shot between"))
+    if "camera" in df.columns:
+        cams = df.loc[df["camera"].astype(str) != "", "camera"]
+        if len(cams):
+            chips.append(_chip(cams.value_counts().index[0], "mostly shot on"))
+
+    header = [html.Div(style={})]                      # empty corner
+    header += [html.Div("No tag" if c == NO_COLOUR else c, style=_ui.field_label(
+        marginBottom="0", textAlign="center")) for c in cols]
+    header.append(html.Div("all", style=_ui.field_label(marginBottom="0", textAlign="center")))
+
+    cells = list(header)
+    for s in rows:
+        cells.append(html.Div("unrated" if s == UNRATED else ("★" * s if s else "zero"),
+                              style={"fontSize": "12px", "color": _ui.INK_DIM,
+                                     "textAlign": "right", "paddingRight": "10px",
+                                     "alignSelf": "center", "whiteSpace": "nowrap"}))
+        for c in cols:
+            n = grid[(s, c)]
+            cells.append(_cell(n, c, math.sqrt(n / cell_max) if n else 0.0, s))
+        total = sum(grid[(s, c)] for c in cols)
+        cells.append(_cell(total, "", math.sqrt(total / max(1, len(df))), s))
+
+    cells.append(html.Div())
+    for c in cols:
+        total = sum(grid[(s, c)] for s in rows)
+        cells.append(_cell(total, c, math.sqrt(total / max(1, len(df))), ALL_STARS))
+    cells.append(html.Div(f"{len(df):,}", style={
+        "display": "flex", "alignItems": "center", "justifyContent": "center",
+        "fontSize": "12px", "fontWeight": "600", "color": _ui.INK_DIM}))
+
+    matrix = html.Div(cells, style={
+        "display": "grid", "gap": "3px", "marginTop": "10px",
+        "gridTemplateColumns": f"76px repeat({len(cols) + 1}, minmax(58px, 1fr))"})
+
+    body = [
+        html.Div(chips, style=_ui.row("8px")),
+        html.Div("Every cell is a filter. Click one to search only those frames.",
+                 style=_ui.hint(marginTop="14px", marginBottom="0")),
+        matrix,
+    ]
+    timeline = _timeline(df)
+    if timeline is not None:
+        body += [html.Div("When it was shot", style=_ui.field_label(marginTop="18px")),
+                 timeline]
+    return html.Div(body)
+
+
 
 # ------------- CLIP TEXT ENCODER (lazy) -------------
 # Searching only ever encodes the prompt, so only the text tower is needed:
@@ -703,7 +1112,18 @@ def load_clap(device="cpu"):
     return _CLAP["model"], _CLAP["proc"]
 
 
-def search(index, idx2path, query, n, modality="image"):
+def search(index, idx2path, query, n, modality="image", allowed=None):
+    """
+    Top `n` matches for `query`.
+
+    `allowed`, when given, is the set of usearch keys the stars/colour/date
+    filter left standing. The search runs over the whole index and the losers
+    are dropped afterwards rather than usearch being asked to skip them: the
+    search is already `exact=True`, so every distance is computed either way and
+    the only extra cost is sorting a longer list. Asking for `n` and hoping
+    enough of them survive is what does not work -- a four-star filter over an
+    archive that is 5% four-star returns an empty page perhaps 19 times in 20.
+    """
     if modality == "image":
         # Match the encoder to the index. This used to always load ViT-H/14
         # while an index built with ViT-B/32 holds 512-d vectors, so every
@@ -729,8 +1149,18 @@ def search(index, idx2path, query, n, modality="image"):
                 emb = clap_model(**inputs).text_embeds
         vec = emb.squeeze().detach().cpu().numpy().flatten()
 
-    idxs = index.search(vec, n, exact=True)
-    return [(idx.key, idx2path[idx.key], idx.distance) for idx in idxs]
+    if allowed is None:
+        idxs = index.search(vec, n, exact=True)
+        return [(idx.key, idx2path[idx.key], idx.distance) for idx in idxs]
+
+    idxs = index.search(vec, len(idx2path), exact=True)
+    out = []
+    for idx in idxs:
+        if idx.key in allowed and idx.key in idx2path:
+            out.append((idx.key, idx2path[idx.key], idx.distance))
+            if len(out) >= n:
+                break
+    return out
 
 
 
@@ -1342,44 +1772,141 @@ app.layout = html.Div(
                                   style={"height": "100%"},
                                   config={"responsive": True}),
                         html.Img(id="hover-thumb", style=HOVER_THUMB_HIDDEN),
+                        # Over the map rather than under it. Below the map it
+                        # would be a flex sibling of a Plotly graph that does
+                        # not shrink, so it overflowed the column and the plot
+                        # was drawn straight over the matrix. Covering the map
+                        # is also the honest arrangement: the panel is a way of
+                        # deciding what the map should show.
+                        html.Div(id="marks-panel", style={"display": "none"}),
                     ],
                 ),
+                # One panel under the map, not a scatter of loose widgets. What
+                # you type, how much you want back and what you are willing to
+                # look at are one thought, and they were three unrelated
+                # controls floating at different heights with dead space
+                # between them. Inside a single bordered surface, aligned to one
+                # left edge, the second row reads as a qualification of the
+                # first rather than an unrelated form.
                 html.Div(
                     [
-                        dcc.Input(
-                            id="search-box",
-                            type="text",
-                            placeholder="Enter a prompt...",
-                            style={"width": "60%", "marginRight": "10px"},
+                        html.Div(
+                            [
+                                # The prompt takes the room. It was fixed at 60%
+                                # of the bar, which on a wide window left the
+                                # count and the button stranded mid-air.
+                                html.Div(
+                                    dcc.Input(
+                                        id="search-box", type="text",
+                                        placeholder="Describe what you are looking for…",
+                                        style=_ui.input_box(width="100%", padding="9px 12px",
+                                                            boxSizing="border-box"),
+                                    ),
+                                    id="search-box-wrap",
+                                    style={"display": "none"},
+                                ),
+                                html.Div(
+                                    dcc.Textarea(
+                                        id="story-box",
+                                        placeholder="One scene per line.",
+                                        style=_ui.input_box(width="100%", height="66px",
+                                                            padding="9px 12px", resize="vertical",
+                                                            boxSizing="border-box"),
+                                    ),
+                                    id="story-box-wrap",
+                                    style={"display": "none"},
+                                ),
+                                # A bare "4" in a box said nothing. The word is
+                                # what makes it a quantity rather than a setting.
+                                html.Div(
+                                    [
+                                        dcc.Input(
+                                            id="num-images", type="number", value=4,
+                                            min=1, max=1000,
+                                            style=_ui.input_box(width="64px", padding="9px 8px",
+                                                                textAlign="center",
+                                                                boxSizing="border-box"),
+                                        ),
+                                        html.Span("results", style={"fontSize": "12px",
+                                                                    "color": _ui.INK_DIM}),
+                                    ],
+                                    id="num-images-wrap",
+                                    style={"display": "none"},
+                                ),
+                                html.Button("Search", id="main-action-btn", n_clicks=0,
+                                            style=_ui.button("primary", padding="9px 20px")),
+                                # A search over a large index takes seconds and the
+                                # button gave no sign of it. `running` on the callback
+                                # fills this for as long as the work takes; it cannot
+                                # write the button's own label, because toggle_inputs
+                                # owns that and sets it per mode -- restoring a fixed
+                                # "Search" would mislabel Generate Story.
+                                html.Span(id="search-status",
+                                          style={"fontSize": "12px", "color": _ui.ACCENT,
+                                                 "minWidth": "70px"}),
+                            ],
+                            id="search-row",
+                            style=_ui.row("10px", flexWrap="nowrap"),
                         ),
-                        dcc.Input(
-                            id="num-images",
-                            type="number",
-                            value=4,
-                            min=1,
-                            max=1000,
-                            style={"width": "15%", "marginRight": "10px"},
+                        # Stars, colour tags and dates the photographer already
+                        # assigned elsewhere. Hidden entirely for a dataset that
+                        # has none, so it costs nothing to look at a collection
+                        # ON1 never touched.
+                        html.Div(
+                            [
+                                # No "Narrow to" label: every control here already
+                                # says what it does when it is empty -- "Any rating",
+                                # "Any colour tag", "From / To" -- so the label was
+                                # a word naming three words.
+                                # Each control is wrapped so it can be hidden on
+                                # its own: a collection nobody has starred should
+                                # not be offered a star filter, and one with no
+                                # colour tags should not be asked about colours.
+                                html.Div(
+                                    dcc.Dropdown(
+                                        id="filter-stars", value=0, clearable=False,
+                                        options=[{"label": "Any rating", "value": 0}],
+                                        style={"width": "150px"},
+                                    ),
+                                    id="filter-stars-wrap", style={"display": "none"},
+                                ),
+                                html.Div(
+                                    dcc.Dropdown(
+                                        id="filter-colour", multi=True, options=[],
+                                        placeholder="Any colour tag",
+                                        style={"width": "178px"},
+                                    ),
+                                    id="filter-colour-wrap", style={"display": "none"},
+                                ),
+                                html.Div(
+                                    dcc.DatePickerRange(
+                                        id="filter-dates", display_format="D MMM",
+                                        start_date_placeholder_text="From",
+                                        end_date_placeholder_text="To",
+                                        clearable=True, minimum_nights=0,
+                                    ),
+                                    id="filter-dates-wrap", style={"display": "none"},
+                                ),
+                                html.Button("Clear", id="filter-clear", n_clicks=0,
+                                            style=_ui.button("ghost", padding="6px 10px")),
+                                html.Span(id="filter-count",
+                                          style={"fontSize": "12px", "color": _ui.INK_DIM}),
+                                # Pushed to the panel's own right edge, which now
+                                # exists to be pushed to. Floating in an unbounded
+                                # row it read as abandoned.
+                                html.Button("What's marked", id="marks-panel-toggle",
+                                            n_clicks=0,
+                                            style=_ui.button("secondary", padding="6px 10px",
+                                                             marginLeft="auto")),
+                            ],
+                            id="marks-bar",
+                            style={"display": "none"},
                         ),
-                        dcc.Textarea(
-                            id="story-box",
-                            placeholder="Enter your story, one scene per line. (Press ENTER after each scene.)",
-                            style={"width": "70%", "height": "70px", "marginRight": "10px"},
-                        ),
-                        html.Button("Search", id="main-action-btn", n_clicks=0, style=_ui.button("primary")),
-                        # A search over a large index takes seconds and the
-                        # button gave no sign of it. `running` on the callback
-                        # fills this for as long as the work takes; it cannot
-                        # write the button's own label, because toggle_inputs
-                        # owns that and sets it per mode -- restoring a fixed
-                        # "Search" would mislabel Generate Story.
-                        html.Span(id="search-status",
-                                  style={"marginLeft": "10px", "fontSize": "12px",
-                                         "color": "#00bcd4", "minWidth": "84px"}),
                     ],
                     id="controls-bar",
-                    style={"display": "flex", "alignItems": "center",
-                           "marginTop": "10px", "flex": "0 0 auto"},
+                    style={"display": "flex"},   # toggle_inputs owns this
                 ),
+                dcc.Store(id="marks-panel-open", data=False),
                 # Moodboard controls (hidden by default)
                 html.Div(
                     [
@@ -2108,9 +2635,199 @@ def refresh_dataset_options(_token, _mode):
 
 @app.callback(
     [
-        Output("search-box", "style"),
-        Output("num-images", "style"),
-        Output("story-box", "style"),
+        Output("marks-bar", "style"),
+        Output("filter-stars-wrap", "style"),
+        Output("filter-colour-wrap", "style"),
+        Output("filter-dates-wrap", "style"),
+        Output("marks-panel-toggle", "style"),
+        Output("filter-stars", "options"),
+        Output("filter-stars", "value"),
+        Output("filter-colour", "options"),
+        Output("filter-colour", "value"),
+        Output("filter-dates", "min_date_allowed"),
+        Output("filter-dates", "max_date_allowed"),
+        Output("filter-dates", "start_date"),
+        Output("filter-dates", "end_date"),
+    ],
+    [
+        Input("dataset-dropdown", "value"),
+        Input("mode-select", "value"),
+        Input("filter-clear", "n_clicks"),
+    ],
+)
+def refresh_marks_filters(dataset_value, mode, _clear):
+    """
+    Fit the filter bar to the dataset in front of you, control by control.
+
+    A collection ON1 has never been shown gets no star control and no colour
+    control -- an empty dropdown is a promise the dataset cannot keep, and three
+    of them in a row read as a broken feature rather than an absent one. Capture
+    dates are separate: they come from the files' own EXIF as well as from
+    sidecars, so a dataset with no ON1 history at all can still be filtered by
+    when it was shot, and only that control appears.
+
+    Options carry counts, because "★★★ and up · 1,240" answers the question the
+    control exists to raise -- how much of this did I ever mark -- without
+    needing a search first. Changing dataset resets the values: a star floor
+    that made sense over one archive silently returning nothing over the next is
+    the worst kind of empty result, the kind that looks like a bug.
+    """
+    off = {"display": "none"}
+    hidden = (off, off, off, off, off,
+              [{"label": "Any rating", "value": 0}], 0, [], [], None, None, None, None)
+    if not dataset_value or mode not in ("prompt", "story"):
+        return hidden
+
+    try:
+        name, dim, modality = _parse_dataset_value(dataset_value)
+        df = load_data(name, n_dim=dim, modality=modality)
+    except Exception as e:
+        print(f"[marks] could not read {dataset_value!r}: {type(e).__name__}: {e}")
+        return hidden
+    if not has_marks(df):
+        return hidden
+
+    has_stars = "rating" in df.columns and df["rating"].notna().any()
+    has_colour = "colour" in df.columns and (df["colour"].astype(str) != "").any()
+    has_dates = "captured" in df.columns and df["captured"].notna().any()
+
+    lo = hi = None
+    if has_dates:
+        lo = df["captured"].min().date()
+        hi = df["captured"].max().date()
+
+    on = {"display": "block"}
+    # The summary is a stars-against-colours matrix, so it has nothing to show
+    # for a dataset that has neither.
+    panel_btn = (_ui.button("secondary", padding="6px 10px", marginLeft="auto")
+                 if (has_stars or has_colour) else off)
+    # A hairline and a little air, so this reads as a qualification of the
+    # prompt above it rather than a second, unrelated bar.
+    bar = _ui.row("10px", marginTop="10px", paddingTop="10px",
+                  borderTop=f"1px solid {_ui.LINE}", flex="0 0 auto")
+    return (bar,
+            on if has_stars else off,
+            on if has_colour else off,
+            on if has_dates else off,
+            panel_btn,
+            star_options(df), 0, colour_options(df), [], lo, hi, None, None)
+
+
+@app.callback(
+    Output("filter-count", "children"),
+    [
+        Input("dataset-dropdown", "value"),
+        Input("filter-stars", "value"),
+        Input("filter-colour", "value"),
+        Input("filter-dates", "start_date"),
+        Input("filter-dates", "end_date"),
+    ],
+)
+def show_filter_count(dataset_value, stars, colours, date_from, date_to):
+    """How much of the collection a search will be allowed to draw from."""
+    if not dataset_value:
+        return ""
+    if not (stars or colours or date_from or date_to):
+        return ""
+    try:
+        name, dim, modality = _parse_dataset_value(dataset_value)
+        df = load_data(name, n_dim=dim, modality=modality)
+    except Exception:
+        return ""
+    kept = int(marks_mask(df, stars, colours, date_from, date_to).sum())
+    if not kept:
+        return "nothing matches — searching would return an empty page"
+    return f"searching {kept:,} of {len(df):,}"
+
+
+@app.callback(
+    [Output("marks-panel", "children"), Output("marks-panel", "style"),
+     Output("marks-panel-open", "data")],
+    [Input("marks-panel-toggle", "n_clicks"),
+     Input("dataset-dropdown", "value"),
+     Input("mode-select", "value"),
+     Input({"type": "marks-cell", "stars": ALL, "colour": ALL}, "n_clicks")],
+    State("marks-panel-open", "data"),
+    prevent_initial_call=True,
+)
+def toggle_marks_panel(_toggle, dataset_value, mode, _cells, is_open):
+    """
+    Open and close the summary, and get out of the way once it has been used.
+
+    Open state lives in a store rather than being read off the toggle's click
+    parity, because a matrix cell also closes the panel: with parity, one such
+    close would invert the button for the rest of the session.
+
+    The panel is built on demand -- it means reading the latent frame and
+    counting every row, which on a large archive is work nobody asked for if it
+    were mounted with the layout.
+    """
+    overlay = _ui.card(position="absolute", top="0", left="0", right="0", bottom="0",
+                       overflowY="auto", zIndex=6, marginBottom="0")
+    hidden = (None, {"display": "none"}, False)
+
+    trigger = ctx.triggered_id
+    if isinstance(trigger, dict):
+        # A cell was clicked: it has just set the filter, and what you want to
+        # see next is the result of that, not the matrix you clicked it in.
+        return hidden
+    if trigger in ("dataset-dropdown", "mode-select"):
+        # The panel would be describing the collection you just left.
+        return hidden
+    if is_open or not dataset_value or mode not in ("prompt", "story"):
+        return hidden
+
+    try:
+        name, dim, modality = _parse_dataset_value(dataset_value)
+        df = load_data(name, n_dim=dim, modality=modality)
+    except Exception as e:
+        return html.Div(f"Could not read this dataset: {e}", style=_ui.hint()), overlay, True
+    if not has_marks(df):
+        return hidden
+    return marks_panel(df), overlay, True
+
+
+@app.callback(
+    [Output("filter-stars", "value", allow_duplicate=True),
+     Output("filter-colour", "value", allow_duplicate=True)],
+    Input({"type": "marks-cell", "stars": ALL, "colour": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def filter_from_matrix(_clicks):
+    """
+    A matrix cell is a filter, so clicking one sets it.
+
+    The star control is a floor ("three and up") while a cell is one exact row,
+    so the two cannot express the same thing. The floor is what the rest of the
+    app is built on, so a cell sets the nearest honest version of itself: its
+    star row as a floor, and its colour exactly. The row and column totals set
+    only the axis they summarise and leave the other alone.
+    """
+    trig = ctx.triggered_id
+    if not isinstance(trig, dict):
+        return dash.no_update, dash.no_update
+    # Dash fires this for every mounted cell when the panel is built; only a
+    # real click has a count on the cell that triggered it.
+    if not any((c or 0) for c in (_clicks or [])):
+        return dash.no_update, dash.no_update
+
+    stars = trig.get("stars")
+    colour = trig.get("colour")
+    star_value = dash.no_update
+    if stars != ALL_STARS:
+        try:
+            star_value = int(stars)
+        except (TypeError, ValueError):
+            star_value = dash.no_update
+    colour_value = [colour] if colour else dash.no_update
+    return star_value, colour_value
+
+
+@app.callback(
+    [
+        Output("search-box-wrap", "style"),
+        Output("num-images-wrap", "style"),
+        Output("story-box-wrap", "style"),
         Output("main-action-btn", "children"),
         Output("controls-bar", "style"),
         Output("moodboard-controls", "style"),
@@ -2132,8 +2849,21 @@ def refresh_dataset_options(_token, _mode):
     [Input("mode-select", "value"), Input("moodboard-tool", "value")],
 )
 def toggle_inputs(mode, tool):
-    controls_visible = {"display": "flex", "alignItems": "center", "marginTop": "10px"}
+    # The command panel: one bordered surface holding the prompt row and, under
+    # a hairline, the filter row. A column, because its two rows are one thought
+    # at two levels of detail.
+    controls_visible = {"display": "flex", "flexDirection": "column", "gap": "0",
+                        "marginTop": "8px", "flex": "0 0 auto",
+                        "backgroundColor": _ui.SURFACE, "border": f"1px solid {_ui.LINE}",
+                        "borderRadius": "10px", "padding": "10px 12px"}
     controls_hidden = {"display": "none"}
+
+    # The prompt field and the story field are the same slot at different
+    # heights, so each takes the whole width and only one is ever mounted.
+    field_visible = {"display": "block", "flex": "1 1 240px", "minWidth": "160px"}
+    field_hidden = {"display": "none"}
+    count_visible = {"display": "flex", "alignItems": "center", "gap": "7px",
+                     "flex": "0 0 auto"}
     moodboard_controls_visible = {"display": "block", "marginTop": "10px", "padding": "10px", "backgroundColor": "#1a1a1a", "borderRadius": "5px"}
     # The results bar. This callback owns moodboard-section's style, so the
     # sticky geometry has to be stated here too -- the style set in the layout
@@ -2194,9 +2924,9 @@ def toggle_inputs(mode, tool):
     
     if mode == "prompt":
         return (
-            {"display": "block", "width": "60%", "marginRight": "10px"},
-            {"display": "block", "width": "15%", "marginRight": "10px"},
-            {"display": "none"},
+            field_visible,
+            count_visible,
+            field_hidden,
             "Search",
             controls_visible,
             controls_hidden,
@@ -2217,9 +2947,9 @@ def toggle_inputs(mode, tool):
         )
     elif mode == "story":
         return (
-            {"display": "none"},
-            {"display": "none"},
-            {"display": "block", "width": "70%", "height": "70px", "marginRight": "10px"},
+            field_hidden,
+            count_visible,
+            field_visible,
             "Generate Story",
             controls_visible,
             controls_hidden,
@@ -4198,6 +4928,14 @@ def make_melspec_png(
         Input("scatter-plot", "clickData"),
         Input("mode-select", "value"),
         Input("dataset-dropdown", "value"),
+        # Inputs, not State: narrowing to four stars should redraw the map as
+        # you choose it. Waiting for the next search to show which points are
+        # still in play makes the filter feel like a form to submit rather than
+        # a way of looking at the collection.
+        Input("filter-stars", "value"),
+        Input("filter-colour", "value"),
+        Input("filter-dates", "start_date"),
+        Input("filter-dates", "end_date"),
     ],
     [
         State("search-box", "value"),
@@ -4207,6 +4945,7 @@ def make_melspec_png(
         State("group-similar", "on"),
         State("sim-thresh", "value"),
         State("spec-toggle", "on"),
+        State("grouped-results", "data"),
     ],
     running=[
         (Output("main-action-btn", "disabled"), True, False),
@@ -4214,7 +4953,9 @@ def make_melspec_png(
     ],
 )
 def update_images(
-    n_action, clickData, mode, dataset_value, search_value, num_images, relayoutData, story_value, group_on, sim_thresh, spec_on
+    n_action, clickData, mode, dataset_value, f_stars, f_colour, f_from, f_to,
+    search_value, num_images, relayoutData, story_value, group_on, sim_thresh, spec_on,
+    prior_groups=None,
 ):
     # Switching tabs must not throw away what you already found. mode-select is
     # an Input here only so the callback knows which branch to run when the
@@ -4244,7 +4985,19 @@ def update_images(
 
 
     # Load coordinates only; DO NOT load the search index yet
-    df = load_data(latent_name, n_dim=dim, modality=modality)
+    df_all = load_data(latent_name, n_dim=dim, modality=modality)
+
+    # The stars, colour tags and dates filter. `df` is what everything downstream
+    # sees, so a filtered search and a filtered map cannot disagree; the excluded
+    # points are still drawn, faintly, because a selection is only legible
+    # against the shape of the whole collection.
+    filtering = bool(f_stars or f_colour or f_from or f_to)
+    keep = marks_mask(df_all, f_stars, f_colour, f_from, f_to) if filtering else None
+    df = df_all[keep] if (keep is not None and keep.any()) else df_all
+    if filtering and keep is not None and not keep.any():
+        print("[marks] filter matches nothing; showing the whole dataset instead")
+        filtering = False
+    marks_by_path = _marks_lookup(df_all)
 
     is_3d = all(c in df.columns for c in ["x", "y", "z"])
     color_seq = px.colors.qualitative.Dark24
@@ -4263,16 +5016,43 @@ def update_images(
             df, x="x", y="y", render_mode="webgl", **scatter_kwargs
         )
 
+    if filtering:
+        excluded = df_all[~keep]
+        if len(excluded):
+            # Prepended, not appended: trace order is paint order, so building it
+            # first would still leave it drawn over the points it exists to
+            # recede behind.
+            ghost = (go.Scatter3d if is_3d else go.Scattergl)(
+                x=excluded["x"], y=excluded["y"],
+                **({"z": excluded["z"]} if is_3d else {}),
+                mode="markers", name="filtered out", hoverinfo="skip",
+                showlegend=False, opacity=0.12,
+                marker=dict(size=3 if is_3d else 6, color=_ui.MUTED),
+            )
+            fig.add_trace(ghost)
+            fig.data = (fig.data[-1],) + tuple(fig.data[:-1])
+
     fig.update_traces(marker=dict(size=4 if is_3d else 8))
+    # No grid, no axis furniture. t-SNE coordinates have no units and no
+    # meaningful origin -- x = -18.4 says nothing about a photograph -- so ruled
+    # lines and numbered ticks invite reading a measurement that is not there,
+    # and they cut across the clusters that are the only real content.
+    bare_axis = dict(showgrid=False, zeroline=False, showline=False,
+                     showticklabels=False, title=None, ticks="")
     fig.update_layout(
         plot_bgcolor="#121212",
         paper_bgcolor="#121212",
         font=dict(color="white"),
+        margin=dict(l=8, r=8, t=8, b=8),
+        xaxis=({} if is_3d else bare_axis),
+        yaxis=({} if is_3d else bare_axis),
         scene=(
             dict(
-                xaxis=dict(backgroundcolor="#121212", color="white"),
-                yaxis=dict(backgroundcolor="#121212", color="white"),
-                zaxis=dict(backgroundcolor="#121212", color="white"),
+                # In 3-D the panes are what gives the cloud its depth, so they
+                # stay -- but as the faintest hint of a box rather than a ruler.
+                xaxis=dict(backgroundcolor="#121212", color="#3a3a42", **bare_axis),
+                yaxis=dict(backgroundcolor="#121212", color="#3a3a42", **bare_axis),
+                zaxis=dict(backgroundcolor="#121212", color="#3a3a42", **bare_axis),
             )
             if is_3d
             else {}
@@ -4290,6 +5070,16 @@ def update_images(
     trigger = ctx.triggered_id if hasattr(ctx, "triggered_id") else None
     print(f"[update_images] trigger={trigger} mode={mode} dataset={dataset_value}")
 
+    if trigger in ("filter-stars", "filter-colour", "filter-dates"):
+        # A filter moved. The map above already reflects it; nothing else should
+        # change -- re-running the search would throw away results you are in the
+        # middle of reading, and the point of watching the constellation narrow
+        # is to decide what to search for next.
+        shown = [p for g in (prior_groups or []) for p in g.get("paths", [])]
+        if shown:
+            mark_results_on(fig, df_all[df_all["path"].isin(shown)], is_3d)
+        return ((dash.no_update, fig) + (dash.no_update,) * 5)
+
     images = []
     show_save_story = {"display": "none"}
     story_cache = {}
@@ -4303,8 +5093,10 @@ def update_images(
         story_chunks = [chunk.strip() for chunk in story_value.split("\n") if chunk.strip()]
         print(f"[DEBUG] Story chunks: {story_chunks}")
         story_images = []
+        allowed = _allowed_keys(idx2path, keep) if filtering else None
         for i, chunk in enumerate(story_chunks):
-            results = search(index, idx2path, chunk, 1, modality=modality)
+            results = search(index, idx2path, chunk, 1, modality=modality,
+                             allowed=allowed)
             print(f"[DEBUG] Search results for chunk '{chunk}': {results}")
             if results:
                 _, path, _ = results[0]
@@ -4313,7 +5105,7 @@ def update_images(
         if story_images:
             coords, story_texts = [], []
             for s in story_images:
-                row = df[df["path"] == s["path"]]
+                row = df_all[df_all["path"] == s["path"]]
                 story_texts.append(s["text"])
                 if is_3d:
                     coords.append((row["x"].values[0], row["y"].values[0], row["z"].values[0]))
@@ -4413,7 +5205,9 @@ def update_images(
     if mode == "prompt" and trigger == "main-action-btn" and search_value:
         print("[DEBUG] PROMPT mode triggered")
         index, idx2path = load_index(db_name, modality=modality)
-        results = search(index, idx2path, search_value, num_images, modality=modality)
+        allowed = _allowed_keys(idx2path, keep) if filtering else None
+        results = search(index, idx2path, search_value, num_images,
+                         modality=modality, allowed=allowed)
 
         print(f"[DEBUG] Search results: {results}")
         if len(results):
@@ -4428,48 +5222,12 @@ def update_images(
             if dropped:
                 print(f"[WARN] {dropped} search result(s) have no row in the latent space; "
                       f"the index and latent file are out of sync for '{db_name}'.")
-            highlighted_df = df.iloc[rows]
+            # Positional against the full frame: key_to_row counts through
+            # idx2path, so these are rows of the dataset as indexed, not of the
+            # filtered view sitting in `df`.
+            highlighted_df = df_all.iloc[rows]
             print(f"[DEBUG] Highlighted DataFrame: {highlighted_df.shape[0]} rows")
-
-            if is_3d:
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=highlighted_df["x"], y=highlighted_df["y"], z=highlighted_df["z"],
-                        mode="markers",
-                        marker=dict(size=10, symbol="cross", opacity=1),
-                        name="Search Results",
-                    )
-                )
-            else:
-                # remove any previous "Search Results" trace so you don't stack them
-                fig.data = tuple(t for t in fig.data if getattr(t, "name", None) != "Search Results")
-
-                xs = highlighted_df["x"].to_list()
-                ys = highlighted_df["y"].to_list()
-
-                # The base scatter is WebGL. Plotly draws the GL canvas ABOVE the
-                # SVG trace layer, so an SVG go.Scatter overlay ends up hidden
-                # behind the dots. Use Scattergl so the highlight lives in the
-                # same GL layer, where trace order decides what is on top.
-                fig.add_trace(
-                    go.Scattergl(
-                        x=xs, y=ys,
-                        mode="markers",
-                        marker=dict(
-                            symbol="x",
-                            size=20,
-                            color="#33C3F0",
-                            line=dict(width=2, color="#ffffff"),
-                        ),
-                        name="Search Results",
-                        hoverinfo="skip",
-                        showlegend=True,
-                        opacity=1.0,
-                    )
-                )
-
-
-
+            mark_results_on(fig, highlighted_df, is_3d)
 
         keys = [k for (k, p, d) in results]
         paths = [p for (k, p, d) in results]
@@ -4481,6 +5239,12 @@ def update_images(
         else:
             groups = [{"gid": f"g{i}", "keys": [keys[i]], "paths": [paths[i]]} for i in range(len(keys))]
             print(f"[DEBUG] Ungrouped results: {groups}")
+
+        # Carried in the group store so the carousel can relabel its badge from
+        # the arrows alone, without re-reading the dataset on every click.
+        for g in groups:
+            g["marks"] = [marks_fields(*marks_by_path.get(p, (None, "", None)))
+                          for p in g["paths"]]
 
         car_state = {g["gid"]: 0 for g in groups}
         carousel_order = [g["gid"] for g in groups if len(g.get("paths", [])) > 1]
@@ -4512,10 +5276,11 @@ def update_images(
                             preview,
                             html.Div([
                                 daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
-                                html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                                html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first},
                                            n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                             ], style={"display": "flex", "alignItems": "center"}),
                             html.Span(" (no twins)", style={"marginLeft": "10px", "opacity": 0.7}),
+                            marks_badge(*marks_by_path.get(first, (None, "", None))),
                         ],
                         style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
                     )
@@ -4571,6 +5336,11 @@ def update_images(
                                            n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                             ], style={"display": "flex", "alignItems": "center"}),
                             html.Span(f" twins: {n}", style={"marginLeft": "10px", "opacity": 0.7}),
+                            # The badge follows the frame on screen, which the
+                            # arrows change, so it is the carousel's to keep in
+                            # step -- see nav_carousel.
+                            html.Div(id={"type": "carousel-marks", "gid": g["gid"]},
+                                     children=marks_badge(*marks_by_path.get(first, (None, "", None)))),
                         ],
                         style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e",
                             "borderRadius": "5px", "overflowX": "hidden"},
@@ -4644,6 +5414,7 @@ def update_images(
         Output({"type": "carousel-img", "gid": ALL}, "src"),
         Output({"type": "carousel-img", "gid": ALL}, "srcSet"),
         Output({"type": "carousel-counter", "gid": ALL}, "children"),
+        Output({"type": "carousel-marks", "gid": ALL}, "children"),
         Output({"type": "carousel-audio", "gid": ALL}, "src"),
     ],
     [
@@ -4679,7 +5450,7 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
     n_components = len(left_clicks or [])  # equals number of left/right buttons & imgs
     if not car_groups or n_components == 0:
         # No carousels to drive → return empty lists of the correct size
-        return car_state, [], [], [], []
+        return car_state, [], [], [], [], []
 
     # Determine in which order the carousels appear in the layout
     # Prefer the stored "order" (built when cards are created), but
@@ -4721,12 +5492,18 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
     srcsets = []
     counters = []
     audios = []
+    badges = []
 
     for gid in gid_list:
         g = car_groups[gid]
         paths = g["paths"]
         cur = car_state.get(gid, 0) % len(paths)
         qp = urllib.parse.quote(paths[cur])
+        # update_images stashed one field triple per frame, so stepping through
+        # twins relabels the badge without re-reading the dataset.
+        frame_marks = (g.get("marks") or [])
+        badges.append(marks_badge_from_fields(frame_marks[cur])
+                      if cur < len(frame_marks) else None)
 
         if is_audio_dataset:
             # Image is a spectrogram or waveform, plus an <audio> element
@@ -4757,6 +5534,7 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
     srcs = _pad(srcs, n_components)
     srcsets = _pad(srcsets, n_components)
     counters = _pad(counters, n_components)
+    badges = _pad(badges, n_components)
 
     if is_audio_dataset:
         audios = _pad(audios, n_components)
@@ -4765,7 +5543,7 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
         # so the output list must be empty.
         audios = []
 
-    return car_state, srcs, srcsets, counters, audios
+    return car_state, srcs, srcsets, counters, badges, audios
 
 
 @app.callback(

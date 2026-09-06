@@ -46,6 +46,8 @@ dev = ["pytest>=7.0"]
 [project.scripts]
 arcana = "arcana.arcana:main"
 arcana-build-latent = "arcana.db:main"
+arcana-extend = "arcana.db:extend_main"
+arcana-marks = "arcana.db:marks_main"
 arcana-migrate = "arcana.legacy:main"
 arcana-relocate = "arcana.relocate:main"
 

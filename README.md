@@ -41,6 +41,28 @@ that finds images by colour palette or texture and transfers the colours of one
 onto another, and a **story mode** that assembles a visual narrative from a
 sequence of scene descriptions.
 
+## What you already decided
+
+If you cull in **ON1 Photo RAW**, Arcana reads the sidecars it leaves beside
+your photographs: star ratings, colour tags, and the date each frame was shot.
+Those become filters — *four stars and up*, *the red pile*, *that week in June* —
+which narrow the map as you set them and constrain what a prompt can return.
+Adobe-format `.xmp` sidecars are read too, and a file with no sidecar at all
+still contributes its capture date from its own EXIF.
+
+Nothing is re-guessed and nothing is written back: this metadata records
+decisions you already made, and the machine should defer to them. **What's
+marked** shows the whole collection as stars against colour tags, and every cell
+of it is a filter you can click.
+
+## Adding to a dataset
+
+An archive grows every week. `arcana-extend`, or **Add new** beside a dataset,
+encodes only the files that were not there last time — the rest is reused, so it
+costs the price of the new pictures rather than of the whole collection. The map
+is then laid out again over everything, which does mean clusters can move and be
+renamed.
+
 It is meant for people with more images than they can remember — photographers,
 researchers, artists, anyone with an archive.
 
@@ -118,12 +140,15 @@ The GUI covers everything, but each piece is also a command:
 ```bash
 arcana                                   # the app
 arcana-build-latent --path ./photos --name holiday
+arcana-extend --path ./photos --name holiday    # last weekend's shoot
+arcana-marks --name holiday              # re-read ON1 stars and colour tags
 arcana-relocate --name holiday           # after moving your files
 arcana-migrate                           # older datasets to the portable format
 ```
 
 `arcana-build-latent --help` lists the indexing options — cluster count, label
-vocabulary, which features to extract.
+vocabulary, which features to extract. `arcana-extend --dry_run` says what it
+would add without adding it.
 
 ## Requires
 

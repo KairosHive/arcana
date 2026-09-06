@@ -14,17 +14,26 @@ something new.
 
 Three ideas that came first, kept here so the rest can be judged against them.
 
-### Timeline and time filters
-Filter and arrange by capture date from file metadata. Pairs with almost
-everything below: a lasso region narrowed to a date range, "new since last
-sync", colouring the map by date to see how the archive filled up.
+### Timeline and time filters — *filtering is done*
+A capture-date range filter ships with the ON1 marks below, and the
+**What's marked** panel draws the archive's shape over time. What is left is
+*arranging* by date: colouring the map by it to see how the archive filled up,
+"new since last sync", and a lasso region narrowed to a date range.
 
-### ON1 sidecars: stars and colour tags
-Read ON1 sidecar files so existing star ratings and colour labels become
-filters. The value is that this metadata already exists and represents
-decisions already made — the machine should defer to it rather than re-guess.
-Reading it in is the first half; writing marks back out (see **7**) is what
-makes Arcana part of a real workflow instead of a side trip.
+### ON1 sidecars: stars and colour tags — *reading is done*
+`on1.py` reads `.on1` and Adobe `.xmp` sidecars; `db.attach_marks` puts stars,
+colour tags and capture dates in the latent frame and in `Item.extra` in the
+bundle; the search tab filters on all three and the map narrows as the filter
+is set. `arcana-marks` re-reads them without touching the index.
+
+Writing marks back out (see **7**) is what would make Arcana part of a real
+workflow rather than a side trip, and is still open.
+
+Two things the format punishes a naive reader for: a RAW+JPEG pair shares one
+sidecar with two entries keyed by GUID, so the right entry has to be matched on
+`name`; and ON1's Thursday is `Thur`, which `%a` rejects — 7,739 of the 55,783
+sidecars in the archive this was built against, every one of which would have
+silently lost its capture date.
 
 ### Image-to-image style transfer
 A sibling to the existing palette transfer: take the look of one image and
@@ -154,15 +163,21 @@ prefilter and an expensive re-score so the walk stays fast as the archive grows.
 A style transfer is only as good as the source you found, and finding it is
 currently the slow half.
 
-## 9. Add newly-shot files without re-indexing — *large*
+## 9. Add newly-shot files without re-indexing — *done*
 
-A personal archive grows every week and Arcana has no concept of adding to a
-dataset. Today the only route is re-encoding everything — which also re-runs
-t-SNE and KMeans, so every cluster moves and gets renamed and the mental map the
-latent view exists to build is destroyed.
+A personal archive grows every week, and the only route used to be re-encoding
+all of it.
 
-Adding files should cost the price of the new files. Needs stable cluster
-assignment across runs, which is the hard part and why this is *large*.
+`arcana-extend`, and **Add new** beside each dataset, encode only the files that
+were not there last time; palette and style are extracted for those files alone
+and appended, with new Gram rows projected through the dataset's existing PCA
+basis rather than a freshly fitted one.
+
+Stable cluster assignment was named here as the hard part. It is not solved: the
+layout is recomputed over the whole collection, so the map does move and groups
+can be renamed. That was a deliberate choice for a better global layout, and it
+leaves the original idea — new points wedged into a shape decided before
+they existed — available as a future option.
 
 ## 10. Evidence under every result — *medium*
 

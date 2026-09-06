@@ -108,8 +108,9 @@ pip install .
 arcana
 ```
 
-That installs the package, its dependencies and four commands: `arcana`,
-`arcana-build-latent`, `arcana-relocate`, `arcana-migrate`.
+That installs the package, its dependencies and six commands: `arcana`,
+`arcana-build-latent`, `arcana-extend`, `arcana-marks`, `arcana-relocate` and
+`arcana-migrate`.
 
 Use `pip install -e .` instead if you want your edits to take effect without
 reinstalling.

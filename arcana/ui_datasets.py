@@ -688,6 +688,27 @@ def dataset_rows() -> list:
                     style={"display": "flex", "gap": "5px"},
                 ),
                 pill,
+                # Adding to a dataset costs the price of the new files, so it is
+                # a row action rather than a trip back through the five steps
+                # above -- which would re-encode everything already indexed.
+                html.Button("Add new",
+                            id={"type": "dm-extend", "index": f"{d.name}::{d.modality}"},
+                            n_clicks=0,
+                            disabled=(not has_map or bool(h.get("error"))),
+                            title=(f"Look in {h.get('root') or 'the dataset folder'} for "
+                                   f"files that were not there when {d.name} was indexed, "
+                                   f"and add them. Only the new files are encoded. "
+                                   f"The map is then laid out again over everything, so "
+                                   f"clusters can move and be renamed."),
+                            style=_btn("secondary", padding="4px 10px", fontSize="11px")),
+                html.Button("Refresh marks",
+                            id={"type": "dm-marks", "index": f"{d.name}::{d.modality}"},
+                            n_clicks=0,
+                            disabled=(not has_map or d.modality != "image"),
+                            title="Re-read ON1 stars, colour tags and capture dates. "
+                                  "Seconds, and nothing is re-encoded -- for when you "
+                                  "have been culling since this was indexed.",
+                            style=_btn("secondary", padding="4px 10px", fontSize="11px")),
                 html.Button("Remove",
                             id={"type": "dm-del", "index": f"{d.name}::{d.modality}"},
                             n_clicks=0,
@@ -1188,6 +1209,115 @@ def register(app) -> None:
 
         jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
         return jid, False, html.Span("Started.", style={"color": "#4caf50"})
+
+    @app.callback(
+        [Output("dm-job", "data", allow_duplicate=True),
+         Output("dm-poll", "disabled", allow_duplicate=True),
+         Output("dm-start-status", "children", allow_duplicate=True)],
+        Input({"type": "dm-extend", "index": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _extend(clicks):
+        """
+        Add files that appeared in a dataset's folder since it was indexed.
+
+        The folder is not asked for: it is where this dataset's files already
+        are, read back off the index. Being asked to re-type a path in order to
+        add to something Arcana already knows the location of is the kind of
+        question a tool should answer for itself -- and a typo would index a
+        second folder into the same name.
+        """
+        trig = ctx.triggered_id
+        if not isinstance(trig, dict) or not any(c for c in (clicks or []) if c):
+            return no_update, no_update, no_update
+        if MANAGER.active():
+            return no_update, no_update, html.Span(
+                "Something is already running. Wait for it, or cancel it.",
+                style={"color": "#e74c3c"})
+
+        name, _, modality = str(trig["index"]).partition("::")
+        modality = modality or "image"
+        try:
+            from .relocate import dataset_health
+        except ImportError:
+            from relocate import dataset_health
+        root = (dataset_health(name, modality, sample=1) or {}).get("root") or ""
+        if not root or not os.path.isdir(root):
+            return no_update, no_update, html.Span(
+                f"Cannot find {root or 'the folder'} for {name}. If the files moved, "
+                f"relocate the dataset first.", style={"color": "#e74c3c"})
+
+        def job(handle):
+            handle.update(fraction=0.0, message="Looking for new files")
+            result = _db.extend_dataset(
+                root, name, modality=modality,
+                progress=lambda f, m, d, t: handle.update(
+                    fraction=f, message=(m or None),
+                    detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),
+                should_cancel=lambda: handle.cancelled,
+            )
+            added = result.get("added", 0)
+            handle.update(fraction=1.0,
+                          message=(f"Added {added:,} file(s)" if added
+                                   else "Nothing new to add"))
+            return result
+
+        jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
+        return jid, False, html.Span(f"Checking {root} for new files…",
+                                     style={"color": "#4caf50"})
+
+    @app.callback(
+        [Output("dm-job", "data", allow_duplicate=True),
+         Output("dm-poll", "disabled", allow_duplicate=True),
+         Output("dm-start-status", "children", allow_duplicate=True)],
+        Input({"type": "dm-marks", "index": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _refresh_marks(clicks):
+        """
+        Re-read ON1 sidecars for a dataset that is already indexed.
+
+        Culling happens in ON1 long after indexing, so the stars Arcana holds go
+        stale within a week of real use. This reads them again without loading
+        an encoder or decoding an image.
+        """
+        trig = ctx.triggered_id
+        if not isinstance(trig, dict) or not any(c for c in (clicks or []) if c):
+            return no_update, no_update, no_update
+        if MANAGER.active():
+            return no_update, no_update, html.Span(
+                "Something is already running. Wait for it, or cancel it.",
+                style={"color": "#e74c3c"})
+
+        name, _, modality = str(trig["index"]).partition("::")
+        modality = modality or "image"
+
+        def job(handle):
+            handle.update(fraction=0.0, message="Reading sidecars")
+            summary = {}
+            # Every 2-D and 3-D layout of this dataset holds its own copy of the
+            # columns, so refreshing one and not the other would leave the two
+            # views disagreeing about which pictures are worth looking at.
+            for n_components in (2, 3):
+                try:
+                    summary = _db.refresh_marks(
+                        name, modality=modality, n_components=n_components,
+                        progress=lambda d, t: handle.update(
+                            fraction=(d / t if t else 0.0),
+                            detail=f"{d:,} of {t:,}", done=d, total=t),
+                    ) or summary
+                except FileNotFoundError:
+                    continue
+            stars = summary.get("stars") or {}
+            rated = sum(v for k, v in stars.items() if k)
+            handle.update(fraction=1.0,
+                          message=(f"{summary.get('sidecars', 0):,} sidecars, "
+                                   f"{rated:,} rated"))
+            return summary
+
+        jid = MANAGER.submit(job, kind="index", label="Reading marks for " + name)
+        return jid, False, html.Span(f"Re-reading ON1 marks for {name}…",
+                                     style={"color": "#4caf50"})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),

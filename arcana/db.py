@@ -72,6 +72,10 @@ except ImportError:
         STYLE_AVAILABLE = True
     except ImportError:
         STYLE_AVAILABLE = False
+try:
+    from . import on1
+except ImportError:
+    import on1
 
 torch.set_grad_enabled(False)
 
@@ -631,10 +635,41 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
     index = Index(ndim=ndim, metric="cos", dtype="f32")
     idx2path: dict[int, str] = {}
 
-    # Keys must stay contiguous. They are used downstream as positional row
-    # indices into the latent DataFrame, so a gap left by an unreadable file
-    # silently shifts every later item onto the wrong point.
-    next_key = 0
+    encode_into(index, idx2path, paths, 0, batch_size=batch_size,
+                modality=modality, model_id=model_id, progress=progress)
+
+    if not idx2path:
+        raise SystemExit(f"No {modality} files could be read; nothing to index.")
+    skipped = len(paths) - len(idx2path)
+    if skipped:
+        print(f"[INFO] Indexed {len(idx2path)} of {len(paths)} files ({skipped} unreadable).")
+
+    _paths.ensure_dir(os.path.dirname(os.path.abspath(index_path)))
+    with open(index_path, "wb") as f:
+        pickle.dump((index.save(), idx2path), f)
+
+    return index, idx2path
+
+
+def encode_into(index, idx2path: dict, paths, next_key: int, batch_size: int = 32,
+                modality: str = "image", model_id: str | None = None,
+                progress=None) -> int:
+    """
+    Encode `paths` into an existing index, in order. Returns the next free key.
+
+    Split out of build() so adding files to a dataset runs the same encoder over
+    the same batching as building one from scratch. A second copy of this loop
+    would be a second place for the fp16 overflow check and the
+    keep-the-lists-aligned rule to be got wrong.
+
+    Keys ascend and are never reused. Downstream, a key is turned into a row by
+    counting through idx2path, not by its value, so a key skipped for an
+    unreadable file costs nothing -- but a key reused for a different photograph
+    would put every feature block on the wrong image.
+    """
+    def _report(done, total, message=""):
+        if progress is not None:
+            progress(done, total, message)
 
     if modality == "image":
       # OpenCV threads inside a single decode by default, which fights the pool
@@ -699,17 +734,8 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
     if modality == "image":
         cv2.setNumThreads(_cv_threads)
 
-    if not idx2path:
-        raise SystemExit(f"No {modality} files could be read; nothing to index.")
-    skipped = len(paths) - len(idx2path)
-    if skipped:
-        print(f"[INFO] Indexed {len(idx2path)} of {len(paths)} files ({skipped} unreadable).")
-
-    _paths.ensure_dir(os.path.dirname(os.path.abspath(index_path)))
-    with open(index_path, "wb") as f:
-        pickle.dump((index.save(), idx2path), f)
-
-    return index, idx2path
+    _report(len(paths), len(paths), "Encoded")
+    return next_key
 
 
 # --------------------------------------------------------------------------------------
@@ -1438,6 +1464,437 @@ def latent_space(
 
 
 # --------------------------------------------------------------------------------------
+# Adding new files to a dataset that already exists
+# --------------------------------------------------------------------------------------
+# An archive grows every week, and the only way to get last weekend into a
+# dataset used to be re-encoding all of it. Encoding is the expensive phase --
+# minutes to hours -- and it is also the only phase that has to look at the new
+# files at all, so this does that phase for the new files and reuses the rest.
+FEATURE_BLOCKS = ("palette", "style")
+
+
+def _norm(path: str) -> str:
+    """Compare paths the way the filesystem does: absolute, and case as it cares."""
+    return os.path.normcase(os.path.abspath(path))
+
+
+def model_for_dim(ndim: int, modality: str = "image") -> str:
+    """
+    Which encoder produced vectors of this width.
+
+    An extend must use the encoder the dataset was built with, or the new
+    pictures land in a space unrelated to the old ones. Nothing in the index
+    records which model made it -- but the vector width does, because Arcana's
+    image encoders have distinct dimensions (512 / 768 / 1024).
+    """
+    try:
+        from . import models as _models
+    except ImportError:
+        import models as _models
+    for m in _models.MODELS:
+        if m.modality == modality and m.dim == ndim:
+            return m.id
+    raise RuntimeError(
+        f"This dataset's vectors are {ndim}-dimensional, which matches no encoder "
+        f"Arcana knows about. Re-index the folder rather than extending it.")
+
+
+def existing_feature_paths(name: str) -> dict:
+    """Feature blocks already on disk for this dataset."""
+    out = {}
+    for block in FEATURE_BLOCKS:
+        path = os.path.join(db_dir, f"features_{name}_{block}.npz")
+        if os.path.exists(path):
+            out[block] = path
+    return out
+
+
+def survey_new_media(media_path: str, name: str, modality: str = "image") -> dict:
+    """
+    What extending this dataset would do, without doing any of it.
+
+    Cheap: a glob and a set difference, no encoder and no image decoded. The GUI
+    shows this before offering the button, because "add new images" is a
+    question about a folder, and the useful answer is a number.
+    """
+    index_name = os.path.join(db_dir, f"index_{name}_{modality}.pkl")
+    if not os.path.exists(index_name):
+        raise FileNotFoundError(f"no index for {name!r} ({modality})")
+    with open(index_name, "rb") as fh:
+        _saved, idx2path = pickle.load(fh)
+
+    root = os.path.abspath(media_path)
+    if not os.path.isdir(root) and not any(ch in media_path for ch in "*?[]"):
+        # A drive that is not mounted globs to nothing, which is
+        # indistinguishable from "every file was deleted". Refuse instead.
+        raise FileNotFoundError(f"{root} is not there; is the drive connected?")
+
+    glob_arg = (media_path if any(ch in media_path for ch in "*?[]")
+                else os.path.join(root, "**", "*"))
+    on_disk = [p for p in glob(glob_arg, recursive=True)
+               if (is_image(p) if modality == "image" else is_audio(p))]
+
+    known = {_norm(p) for p in idx2path.values()}
+    seen_now = {_norm(p) for p in on_disk}
+    new = [p for p in on_disk if _norm(p) not in known]
+    missing = [p for p in idx2path.values() if _norm(p) not in seen_now]
+    return {"name": name, "modality": modality, "root": root,
+            "indexed": len(idx2path), "on_disk": len(on_disk),
+            "new": new, "missing": missing}
+
+
+def _merge_palette(base: dict, add: dict) -> dict:
+    merged = {"ids": np.concatenate([base["ids"], add["ids"]]).astype(np.int32)}
+    for key in ("histogram", "dominant", "moments"):
+        merged[key] = np.concatenate([base[key], add[key]]).astype(np.float32)
+    merged["fmt"] = np.array([PALETTE_FEATURE_FMT], dtype=np.int32)
+    return merged
+
+
+def _merge_style(base: dict, add: dict) -> dict:
+    """
+    Append style rows, projecting new Gram matrices through the existing basis.
+
+    The Gram block is PCA-compressed, and a PCA fitted on the new files alone
+    produces a different set of axes. Concatenating those rows would put half
+    the dataset in one space and half in another, and every style comparison
+    across the join would be meaningless -- while looking perfectly healthy.
+    The components and mean are stored in the file precisely so the new rows can
+    be projected into the space the old ones already live in.
+    """
+    merged = {"ids": np.concatenate([base["ids"], add["ids"]]).astype(np.int32)}
+    for key in ("edge_histogram", "texture_lbp"):
+        if key in base and key in add:
+            merged[key] = np.concatenate([base[key], add[key]]).astype(np.float32)
+
+    if "gram" not in base or "gram" not in add:
+        return merged
+
+    if "gram_pca_components" in base:
+        comps = np.asarray(base["gram_pca_components"], dtype=np.float32)
+        mean = np.asarray(base["gram_pca_mean"], dtype=np.float32)
+        raw = np.asarray(add["gram"], dtype=np.float32)
+        if raw.shape[1] != comps.shape[1]:
+            raise ValueError(
+                f"new Gram features are {raw.shape[1]}-d but this dataset's PCA was "
+                f"fitted on {comps.shape[1]}-d. Re-index rather than extending: the "
+                f"Gram mode (compact vs full) has changed.")
+        projected = (raw - mean) @ comps.T
+        merged["gram"] = np.concatenate([base["gram"], projected]).astype(np.float32)
+        merged["gram_pca_components"] = comps
+        merged["gram_pca_mean"] = mean
+    else:
+        merged["gram"] = np.concatenate([base["gram"], add["gram"]]).astype(np.float32)
+    return merged
+
+
+def _gram_is_compact(base: dict) -> bool:
+    """Which Gram mode this dataset was built with, read back off the file."""
+    if "gram_pca_components" in base:
+        raw_dim = int(np.asarray(base["gram_pca_components"]).shape[1])
+    elif "gram" in base:
+        raw_dim = int(np.asarray(base["gram"]).shape[1])
+    else:
+        return True
+    # Compact is 2 VGG layers (~41k dims), full is 4 (~174k). Anything between
+    # is nothing this code has ever written, so treat the halfway point as the
+    # divide rather than hard-coding either number.
+    return raw_dim < 100_000
+
+
+def extend_features(name: str, new_idx2path: dict, *, workers: int = 0,
+                    progress=None) -> dict:
+    """
+    Extract palette and style for the new items only, and append them.
+
+    Returns the paths of the blocks that now cover the whole dataset. Blocks the
+    dataset never had are left alone: extending is not the moment to decide the
+    dataset should suddenly have style features, and computing them for the new
+    files alone would produce a block covering a tenth of the collection.
+    """
+    have = existing_feature_paths(name)
+    if not have or not new_idx2path:
+        return have
+
+    scratch = f"{name}__extending"
+    try:
+        for block, base_path in have.items():
+            with np.load(base_path) as z:
+                base = {k: z[k] for k in z.files}
+
+            n_workers = workers if workers > 0 else multiprocessing.cpu_count()
+            written = extract_additional_features(
+                idx2path=new_idx2path, name=scratch, features=[block],
+                include_gram=("gram" in base),
+                compact_gram=_gram_is_compact(base),
+                # Zero, so the raw Gram comes back and can be projected through
+                # this dataset's own basis instead of a freshly fitted one.
+                gram_pca_dims=0,
+                n_workers=n_workers, progress=progress,
+            )
+            if block not in written:
+                print(f"[WARN] could not extract {block} for the new files; "
+                      f"the block now covers only the older ones")
+                continue
+
+            with np.load(written[block]) as z:
+                add = {k: z[k] for k in z.files}
+            merged = _merge_palette(base, add) if block == "palette" else _merge_style(base, add)
+            np.savez_compressed(base_path, **merged)
+            print(f"[OK] {block}: {len(base['ids'])} + {len(add['ids'])} "
+                  f"= {len(merged['ids'])} rows")
+    finally:
+        for block in FEATURE_BLOCKS:
+            tmp = os.path.join(db_dir, f"features_{scratch}_{block}.npz")
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    return have
+
+
+def extend_dataset(
+    media_path: str,
+    name: str,
+    *,
+    modality: str = "image",
+    n_components: int = 2,
+    prune_missing: bool = False,
+    workers: int = 0,
+    thumbnails: bool = False,
+    progress=None,
+    should_cancel=None,
+    **index_kwargs,
+) -> dict:
+    """
+    Add files that appeared since this dataset was indexed, then lay it out again.
+
+    Only the new files are encoded, and only the new files have palette and
+    style extracted -- that is the whole saving, and on a personal archive it is
+    the difference between a minute and an afternoon.
+
+    Everything after encoding is recomputed over the whole collection: t-SNE,
+    k-means and the cluster names. That means the map moves and groups can be
+    renamed, which is the cost of a layout that accounts for the new pictures
+    rather than wedging them into a shape decided before they existed.
+    """
+    def report(frac, message="", done=0, total=0):
+        if progress is not None:
+            progress(frac, message, done, total)
+
+    report(0.01, "Looking for new files")
+    survey = survey_new_media(media_path, name, modality)
+    new_paths, missing = survey["new"], survey["missing"]
+
+    print(f"[INFO] {survey['indexed']:,} already indexed, "
+          f"{survey['on_disk']:,} on disk, {len(new_paths):,} new")
+    if missing:
+        print(f"[WARN] {len(missing):,} indexed file(s) are no longer where the index "
+              f"expects them" + (" -- dropping them" if prune_missing else
+                                 " -- keeping them; pass --prune to drop them"))
+        for p in missing[:5]:
+            print(f"         {p}")
+        if len(missing) > 5:
+            print(f"         ... and {len(missing) - 5:,} more")
+
+    if not new_paths and not (prune_missing and missing):
+        print("[OK] Nothing to add; the dataset already covers this folder.")
+        return {"name": name, "modality": modality, "added": 0,
+                "removed": 0, "n_items": survey["indexed"], "bundle": None}
+
+    index_name = os.path.join(db_dir, f"index_{name}_{modality}.pkl")
+    with open(index_name, "rb") as fh:
+        saved_index, idx2path = pickle.load(fh)
+    index = Index.restore(saved_index)
+
+    removed = 0
+    if prune_missing and missing:
+        gone = {_norm(p) for p in missing}
+        for key in [k for k, p in idx2path.items() if _norm(p) in gone]:
+            try:
+                index.remove(key)
+            except Exception:
+                pass
+            del idx2path[key]
+            removed += 1
+        # Feature rows for the dropped ids are left in place. They are keyed by
+        # id, every reader looks them up by id, and a stale row nothing points
+        # at costs a few kilobytes -- against rewriting two files to remove it.
+        print(f"[OK] Dropped {removed:,} missing file(s) from the index.")
+
+    # Not the caller's choice and not the machine's default: the encoder that
+    # built this index. Anything else puts the new pictures in a space unrelated
+    # to the old ones, which searches as nonsense rather than failing.
+    encoder = model_for_dim(int(index.ndim), modality)
+    asked = index_kwargs.pop("model_id", None)
+    if asked and asked != encoder:
+        print(f"[INFO] Ignoring --model {asked}: this dataset was built with "
+              f"{encoder} and extending has to match it.")
+
+    added_before = len(idx2path)
+    new_idx2path: dict[int, str] = {}
+    if new_paths:
+        report(0.03, f"Encoding {len(new_paths):,} new files")
+        next_key = (max(idx2path) + 1) if idx2path else 0
+        # Into its own dict first, so the ids of exactly the new rows are known
+        # for the feature merge, then folded in in key order.
+        encode_into(index, new_idx2path, new_paths, next_key,
+                    modality=modality, model_id=encoder,
+                    progress=_scaled(progress, 0.03, 0.55))
+        idx2path.update(new_idx2path)
+
+    if should_cancel is not None and should_cancel():
+        raise KeyboardInterrupt("cancelled")
+
+    with open(index_name, "wb") as fh:
+        pickle.dump((index.save(), idx2path), fh)
+    print(f"[OK] Index now holds {len(idx2path):,} items "
+          f"({len(idx2path) - added_before:,} added, {removed:,} removed).")
+
+    if modality == "image" and new_idx2path:
+        report(0.58, "Extracting palette and style for the new files")
+        extend_features(name, new_idx2path, workers=workers,
+                        progress=lambda d, t, m: report(
+                            0.58 + 0.12 * (d / t if t else 0), m, done=d, total=t))
+
+    # Everything downstream of encoding, run over the whole collection. Going
+    # back through index_dataset rather than repeating its tail here is what
+    # keeps one implementation of "lay out, cluster, name, save, bundle".
+    report(0.70, "Laying the whole collection out again")
+    result = index_dataset(
+        media_path, name, modality=modality, n_components=n_components,
+        model_id=encoder, reuse_index=True, workers=workers, thumbnails=thumbnails,
+        # Already done for the new files just above; asking for them here would
+        # re-extract every image in the dataset.
+        features="clip",
+        # index_dataset reports (fraction, message, done, total) -- not build()'s
+        # shape, so _scaled is the wrong adapter here.
+        progress=(None if progress is None else
+                  (lambda frac, message="", done=0, total=0:
+                   report(0.70 + 0.30 * frac, message, done, total))),
+        should_cancel=should_cancel,
+        **index_kwargs,
+    )
+    result["added"] = len(new_idx2path)
+    result["removed"] = removed
+    return result
+
+
+def extend_main():
+    """arcana-extend: add newly-shot files to a dataset without re-encoding it."""
+    parser = argparse.ArgumentParser(
+        description="Add files that appeared since a dataset was indexed. "
+                    "Only the new files are encoded; the layout is then recomputed "
+                    "over the whole collection, so clusters may move and be renamed.")
+    parser.add_argument("--path", required=True,
+                        help="The folder the dataset covers. Everything inside it, "
+                             "including subfolders.")
+    parser.add_argument("--name", required=True, help="Dataset name.")
+    parser.add_argument("--modality", default="image", choices=["image", "audio"])
+    parser.add_argument("--n_components", type=int, default=2, choices=[2, 3])
+    parser.add_argument("--prune", action="store_true",
+                        help="Also drop files the index still lists but that are no "
+                             "longer on disk. Off by default: an unmounted drive "
+                             "looks exactly like a deleted collection.")
+    parser.add_argument("--dry_run", action="store_true",
+                        help="Say what would be added and change nothing.")
+    parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--thumbnails", action="store_true")
+    args = parser.parse_args()
+
+    if args.dry_run:
+        s = survey_new_media(args.path, args.name, args.modality)
+        print(f"{s['indexed']:,} indexed, {s['on_disk']:,} on disk")
+        print(f"{len(s['new']):,} would be added, {len(s['missing']):,} are missing")
+        for p in s["new"][:20]:
+            print(f"  + {p}")
+        if len(s["new"]) > 20:
+            print(f"  ... and {len(s['new']) - 20:,} more")
+        return
+
+    extend_dataset(args.path, args.name, modality=args.modality,
+                   n_components=args.n_components, prune_missing=args.prune,
+                   workers=args.workers, thumbnails=args.thumbnails)
+
+
+# --------------------------------------------------------------------------------------
+# Marks from outside Arcana (ON1 sidecars, EXIF capture dates)
+# --------------------------------------------------------------------------------------
+# These columns are optional: a dataset built before this existed simply lacks
+# them, and every reader treats a missing column as "nothing known". Filters
+# check for the column rather than assuming it, so no migration is needed.
+MARK_COLUMNS = ("rating", "colour", "captured", "camera")
+
+
+def attach_marks(df: "pd.DataFrame", marks: dict) -> "pd.DataFrame":
+    """
+    Add the mark columns to a latent DataFrame, in place.
+
+    rating is nullable: pandas' Int64 keeps the difference between "rated zero
+    stars" and "ON1 has never seen this file", which a plain int column would
+    flatten to 0 and make the star filter lie about.
+    """
+    paths = df["path"].tolist()
+    got = [marks.get(p) for p in paths]
+    df["rating"] = pd.array([m.rating if m else None for m in got], dtype="Int64")
+    df["colour"] = [m.label if m else "" for m in got]
+    # The first 19 characters of the ISO string are the camera's own wall clock;
+    # everything after is its UTC offset. Drop the offset rather than converting,
+    # because "shot on 4 June" means the date on the camera, and normalising a
+    # 19:15 shot in Montreal to UTC files it under the 5th. Slicing also sidesteps
+    # pandas refusing to build one column from mixed offsets.
+    df["captured"] = pd.to_datetime([m.captured[:19] if m and m.captured else None
+                                     for m in got], errors="coerce")
+    df["camera"] = [m.camera if m else "" for m in got]
+    return df
+
+
+def refresh_marks(name: str, modality: str = "image", n_components: int = 2,
+                  progress=None) -> dict:
+    """
+    Re-read sidecars for an existing dataset and update it in place.
+
+    Culling happens in ON1 long after indexing, so the stars Arcana holds go
+    stale. This re-reads them without touching the index: no encoder is loaded
+    and no image is decoded, so it costs one small read per file rather than the
+    hours a re-index would.
+
+    The bundle is not rewritten -- it is a snapshot, and rewriting a zip to
+    change four fields per item would mean re-embedding every thumbnail. The
+    next index or extend picks the fresh marks up.
+    """
+    latent_name = os.path.join(
+        latents_dir, f"latent_space_{name}_{modality}_{n_components}d.pkl")
+    if not os.path.exists(latent_name):
+        raise FileNotFoundError(f"no dataset named {name!r} ({modality}, {n_components}d)")
+
+    df = pd.read_pickle(latent_name)
+    paths = [str(p) for p in df["path"].tolist()]
+    marks = on1.scan(paths, progress=progress)
+    attach_marks(df, marks)
+    df.to_pickle(latent_name)
+
+    summary = on1.summarise(marks)
+    summary["latent"] = latent_name
+    print(f"[OK] {name}: {summary['sidecars']} ON1 sidecars of {len(paths)} files, "
+          f"{summary['dated']} dated, stars {summary['stars'] or '-'}, "
+          f"labels {summary['labels'] or '-'}")
+    return summary
+
+
+def marks_main():
+    """arcana-marks: re-read ON1 sidecars for a dataset that is already indexed."""
+    parser = argparse.ArgumentParser(
+        description="Re-read ON1 stars, colour tags and capture dates for an indexed dataset.")
+    parser.add_argument("--name", required=True, help="Dataset name.")
+    parser.add_argument("--modality", default="image", choices=["image", "audio"])
+    parser.add_argument("--n_components", type=int, default=2, choices=[2, 3])
+    args = parser.parse_args()
+    refresh_marks(args.name, modality=args.modality, n_components=args.n_components)
+
+
+# --------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------
 def parse_args():
@@ -1479,6 +1936,10 @@ def parse_args():
              "without the original files.")
     parser.add_argument("--workers", type=int, default=0,
         help="Number of parallel workers for palette/style extraction (0=auto, uses CPU count).")
+    parser.add_argument("--no_marks", action="store_true",
+        help="Skip ON1 sidecars and EXIF capture dates. They cost seconds and give "
+             "the star, colour-tag and date filters something to work with, so "
+             "there is rarely a reason to.")
 
     return parser.parse_args()
 
@@ -1489,7 +1950,7 @@ def parse_args():
 def write_bundle(name: str, modality: str, media_root: str, index, idx2path: dict,
                  coords, cluster_ids, labels, model_id: str,
                  feature_paths: dict | None = None, n_components: int = 2,
-                 thumbnails: bool = False) -> str:
+                 thumbnails: bool = False, marks: dict | None = None) -> str:
     """
     Write a self-describing .arcana bundle beside the legacy pickles.
 
@@ -1522,6 +1983,12 @@ def write_bundle(name: str, modality: str, media_root: str, index, idx2path: dic
             continue
         it.cluster_id = int(cluster_ids[row]) if cluster_ids is not None else -1
         it.label = str(labels[row]) if labels is not None else ""
+        # Marks travel with the bundle so a dataset carried to another machine
+        # arrives with its stars intact -- the sidecars are not part of what
+        # gets copied, and re-reading them there would find nothing.
+        m = (marks or {}).get(src)
+        if m is not None:
+            it.extra = dict(it.extra or {}, **m.to_dict())
         items.append(it)
         keep.append(row)
 
@@ -1716,6 +2183,7 @@ def index_dataset(
     reuse_index: bool = False,
     workers: int = 0,
     thumbnails: bool = False,
+    read_marks: bool = True,
     progress=None,
     should_cancel=None,
 ) -> dict:
@@ -1810,6 +2278,13 @@ def index_dataset(
         )
         for ftype, fpath in feature_paths.items():
             print(f"  {ftype}: {fpath}")
+    if not feature_paths:
+        # Nothing was extracted this run, but a previous one may have left
+        # blocks on disk -- which is the normal case for --reuse_index and for
+        # extending. Without this the bundle silently loses palette and style
+        # every time the dataset is reworked, and the moodboard's similarity
+        # search goes quiet with no error to explain why.
+        feature_paths = existing_feature_paths(name)
     check_cancel()
 
     # ---- layout -------------------------------------------------------------
@@ -1834,12 +2309,26 @@ def index_dataset(
     df["cluster_id"] = cluster_ids.astype(int)
     df["label"] = [nm if nm else f"C{int(cid)}"
                    for nm, cid in zip(inferred_names, cluster_ids)]
+
+    # Stars, colour tags and capture dates from whatever the photographer already
+    # decided elsewhere. Reading them costs seconds against the minutes to hours
+    # the encode took, so it is not worth making optional.
+    marks: dict = {}
+    if modality == "image" and read_marks:
+        report(0.93, "Reading ON1 marks and capture dates")
+        marks = on1.scan(paths)
+        attach_marks(df, marks)
+        s = on1.summarise(marks)
+        print(f"[OK] Marks: {s['sidecars']} ON1 sidecars, {s['dated']} dated, "
+              f"stars {s['stars'] or '-'}, labels {s['labels'] or '-'}")
+
     df.to_pickle(latent_name)
     print(f"[OK] Saved latent DataFrame to {latent_name}")
 
     result = {"name": name, "modality": modality, "n_items": len(idx2path),
               "model_id": model_id, "index": index_name, "latent": latent_name,
-              "features": sorted(feature_paths), "bundle": None}
+              "features": sorted(feature_paths), "bundle": None,
+              "marks": on1.summarise(marks) if marks else None}
 
     report(0.95, "Writing the portable bundle")
     try:
@@ -1849,6 +2338,7 @@ def index_dataset(
             cluster_ids=cluster_ids, labels=df["label"].tolist(),
             model_id=model_id, feature_paths=feature_paths,
             n_components=n_components, thumbnails=thumbnails,
+            marks=marks,
         )
         print(f"[OK] Saved portable bundle to {result['bundle']}")
     except (NameError, AttributeError, TypeError, KeyError, IndexError):
@@ -1874,7 +2364,7 @@ def main():
         k=args.k, k_min=args.k_min, k_max=args.k_max, k_metric=args.k_metric,
         no_gram=args.no_gram, full_gram=args.full_gram, gram_pca=args.gram_pca,
         reuse_index=args.reuse_index, workers=args.workers,
-        thumbnails=args.thumbnails,
+        thumbnails=args.thumbnails, read_marks=not args.no_marks,
     )
 
 

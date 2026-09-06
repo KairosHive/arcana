@@ -5896,6 +5896,7 @@ _ui_datasets.register(app)
 
 
 def main():
+    _paths.use_utf8_console()
     # 8051, not Dash's default 8050. The packaged app (installer/launcher.py)
     # listens on 8050, so a development server on the same port either refuses
     # to start or, worse, quietly serves the installed app's URL from a

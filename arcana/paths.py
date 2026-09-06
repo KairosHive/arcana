@@ -245,6 +245,43 @@ def fit_filename(out_dir: str, left: str, right: str, suffix: str, ext: str) -> 
     return f"{l}_from_{r}_{suffix}{ext}"
 
 
+def use_utf8_console() -> None:
+    """
+    Stop a print statement from being able to destroy hours of work.
+
+    On Windows, sys.stdout defaults to the ANSI code page -- cp1252 here -- and
+    printing anything outside it raises UnicodeEncodeError. That exception is
+    not caught anywhere, because nobody writes a try block around a progress
+    message, so it propagates out of whatever was running and kills it.
+
+    It did exactly that: indexing 61,039 photographs got as far as compressing
+    the Gram matrices, printed "41152 -> 512 dims" with a real arrow in it, and
+    died. The CLIP pass and the palette pass were already on disk; the style
+    pass and the layout were lost, and the dataset was left indexed with no map.
+
+    Two defences, because either alone is thin. This is the general one: every
+    entry point calls it, so no print anywhere can raise. The specific one is
+    that the offending strings are now ASCII. errors="replace" rather than
+    strict, so even a filename in a script we do not control degrades to a "?"
+    instead of throwing.
+
+    Silent and idempotent. A frozen build launched without a console has
+    sys.stdout set to None, and older Pythons have no reconfigure().
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Already detached, or not a real stream. Nothing to do, and this
+            # is a convenience -- never a reason to refuse to start.
+            pass
+
+
 def describe() -> str:
     """One-line summary for logs and bug reports."""
     lines = [f"data dir: {data_dir()}"]

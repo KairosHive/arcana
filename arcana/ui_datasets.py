@@ -719,12 +719,29 @@ def dataset_rows() -> list:
             ]))
 
         if not has_map and not building:
+            # This used to end "it cannot be opened until you index that folder
+            # again", which was false and expensive advice: encoding is the long
+            # phase and it already succeeded. Only the layout is missing, and
+            # that is minutes.
             rows.append(html.Div(
-                "Indexed, but the 2-D map was never built \u2014 probably an "
-                "interrupted run. It cannot be opened until you index that "
-                "folder again.",
-                style={"fontSize": "11.5px", "color": WARN, "lineHeight": "1.5",
-                       "padding": "0 0 10px 17px", "maxWidth": "70ch"}))
+                style={"display": "flex", "alignItems": "center", "gap": "12px",
+                       "padding": "0 0 10px 17px", "flexWrap": "wrap"},
+                children=[
+                    html.Span(
+                        f"Indexed, but the map was never built \u2014 probably an "
+                        f"interrupted run. The {h['total']:,} encoded images are "
+                        f"safe; only the layout is missing.",
+                        style={"fontSize": "11.5px", "color": WARN,
+                               "lineHeight": "1.5", "maxWidth": "62ch"}),
+                    html.Button("Finish this",
+                                id={"type": "dm-finish",
+                                    "index": f"{d.name}::{d.modality}"},
+                                n_clicks=0,
+                                title="Lay out and save the dataset using the index "
+                                      "that already exists. Nothing is re-encoded.",
+                                style=_btn("primary", padding="4px 10px",
+                                           fontSize="11px")),
+                ]))
     return rows
 
 
@@ -1265,6 +1282,50 @@ def register(app) -> None:
         jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
         return jid, False, html.Span(f"Checking {root} for new files…",
                                      style={"color": "#4caf50"})
+
+    @app.callback(
+        [Output("dm-job", "data", allow_duplicate=True),
+         Output("dm-poll", "disabled", allow_duplicate=True),
+         Output("dm-start-status", "children", allow_duplicate=True)],
+        Input({"type": "dm-finish", "index": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _finish(clicks):
+        """
+        Lay out a dataset whose indexing run was cut short.
+
+        The encoder is never loaded: the vectors are already on disk, and the
+        only thing missing is t-SNE, k-means and the save. Re-indexing to
+        recover this costs hours of GPU time to redo work that survived.
+        """
+        trig = ctx.triggered_id
+        if not isinstance(trig, dict) or not any(c for c in (clicks or []) if c):
+            return no_update, no_update, no_update
+        if MANAGER.active():
+            return no_update, no_update, html.Span(
+                "Something is already running. Wait for it, or cancel it.",
+                style={"color": "#e74c3c"})
+
+        name, _, modality = str(trig["index"]).partition("::")
+        modality = modality or "image"
+
+        def job(handle):
+            handle.update(fraction=0.0, message="Reading the index")
+            result = _db.finish_dataset(
+                name, modality=modality,
+                progress=lambda f, m, d, t: handle.update(
+                    fraction=f, message=(m or None),
+                    detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),
+                should_cancel=lambda: handle.cancelled,
+            )
+            handle.update(fraction=1.0,
+                          message=f"Mapped {result.get('n_items', 0):,} items")
+            return result
+
+        jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
+        return jid, False, html.Span(
+            f"Laying out {name} from the index it already has…",
+            style={"color": "#4caf50"})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),

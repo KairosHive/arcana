@@ -463,6 +463,7 @@ def convert(ds: LegacyDataset, out_dir: str = BUNDLES_DIR, *,
 
 
 def main(argv=None):
+    _paths.use_utf8_console()
     ap = argparse.ArgumentParser(description="Convert legacy Arcana datasets to portable bundles.")
     ap.add_argument("--list", action="store_true", help="show what would be converted and exit")
     ap.add_argument("--all", action="store_true", help="convert every discovered dataset")

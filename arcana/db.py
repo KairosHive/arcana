@@ -1027,7 +1027,7 @@ def extract_additional_features(
                     # Optional PCA compression
                     if gram_pca_dims > 0 and gram_array.shape[0] > gram_pca_dims:
                         from sklearn.decomposition import PCA
-                        print(f"     Compressing Gram: {gram_array.shape[1]} → {gram_pca_dims} dims via PCA...")
+                        print(f"     Compressing Gram: {gram_array.shape[1]} -> {gram_pca_dims} dims via PCA...")
                         pca = PCA(n_components=gram_pca_dims, random_state=42)
                         gram_array = pca.fit_transform(gram_array)
                         save_dict['gram_pca_components'] = pca.components_.astype(np.float32)
@@ -1781,8 +1781,85 @@ def extend_dataset(
     return result
 
 
+def finish_dataset(name: str, *, modality: str = "image", n_components: int = 2,
+                   media_path: str | None = None, features: str = "clip",
+                   thumbnails: bool = False, workers: int = 0,
+                   progress=None, should_cancel=None) -> dict:
+    """
+    Build the map for a dataset that was indexed but never laid out.
+
+    Encoding is the expensive phase and it already succeeded -- what is missing
+    is t-SNE, k-means and the save, which together are minutes. A run that died
+    between the two used to be unrecoverable by anything except re-encoding the
+    whole collection, which for 61,039 photographs through ViT-H/14 is hours of
+    GPU time to redo work that is sitting on disk.
+
+    Palette and style blocks already written are kept and go into the bundle.
+    A block that was never written stays missing unless `features` asks for it:
+    extracting one is a separate cost and a separate decision, and it is the
+    slow half of an index run.
+    """
+    index_name = os.path.join(db_dir, f"index_{name}_{modality}.pkl")
+    if not os.path.exists(index_name):
+        raise FileNotFoundError(f"no index for {name!r} ({modality})")
+
+    if media_path is None:
+        # Only used to root the bundle's relative paths -- reuse_index skips the
+        # glob entirely -- so the common ancestor of what is indexed is exactly
+        # right, and asking for a path already recorded would be a way to get it
+        # wrong.
+        with open(index_name, "rb") as fh:
+            _saved, idx2path = pickle.load(fh)
+        media_path = _common_root(idx2path.values())
+
+    have = existing_feature_paths(name)
+    print(f"[INFO] Finishing {name}: reusing the index, keeping "
+          f"{', '.join(sorted(have)) or 'no'} feature block(s).")
+    return index_dataset(
+        media_path, name, modality=modality, n_components=n_components,
+        reuse_index=True, features=features, thumbnails=thumbnails,
+        workers=workers, progress=progress, should_cancel=should_cancel,
+    )
+
+
+def _common_root(paths) -> str:
+    """The folder every indexed file sits under."""
+    paths = [str(p) for p in paths]
+    if not paths:
+        raise ValueError("the index is empty")
+    try:
+        root = os.path.commonpath(paths)
+    except ValueError:
+        # Mixed drives on Windows. The first file's folder is a poorer answer
+        # but a usable one, and better than refusing.
+        root = os.path.dirname(paths[0])
+    return root if os.path.isdir(root) else os.path.dirname(root)
+
+
+def finish_main():
+    """arcana-finish: build the map for a dataset whose indexing run was cut short."""
+    _paths.use_utf8_console()
+    parser = argparse.ArgumentParser(
+        description="Lay out a dataset that was indexed but never mapped. "
+                    "Nothing is re-encoded.")
+    parser.add_argument("--name", required=True, help="Dataset name.")
+    parser.add_argument("--modality", default="image", choices=["image", "audio"])
+    parser.add_argument("--n_components", type=int, default=2, choices=[2, 3])
+    parser.add_argument("--thumbnails", action="store_true")
+    parser.add_argument("--features", default="clip",
+                        help="Also extract these while finishing: clip,palette,style. "
+                             "Blocks already on disk are kept either way; name one "
+                             "here only to rebuild it.")
+    parser.add_argument("--workers", type=int, default=0)
+    args = parser.parse_args()
+    finish_dataset(args.name, modality=args.modality, features=args.features,
+                   n_components=args.n_components, thumbnails=args.thumbnails,
+                   workers=args.workers)
+
+
 def extend_main():
     """arcana-extend: add newly-shot files to a dataset without re-encoding it."""
+    _paths.use_utf8_console()
     parser = argparse.ArgumentParser(
         description="Add files that appeared since a dataset was indexed. "
                     "Only the new files are encoded; the layout is then recomputed "
@@ -1885,6 +1962,7 @@ def refresh_marks(name: str, modality: str = "image", n_components: int = 2,
 
 def marks_main():
     """arcana-marks: re-read ON1 sidecars for a dataset that is already indexed."""
+    _paths.use_utf8_console()
     parser = argparse.ArgumentParser(
         description="Re-read ON1 stars, colour tags and capture dates for an indexed dataset.")
     parser.add_argument("--name", required=True, help="Dataset name.")
@@ -2278,13 +2356,13 @@ def index_dataset(
         )
         for ftype, fpath in feature_paths.items():
             print(f"  {ftype}: {fpath}")
-    if not feature_paths:
-        # Nothing was extracted this run, but a previous one may have left
-        # blocks on disk -- which is the normal case for --reuse_index and for
-        # extending. Without this the bundle silently loses palette and style
-        # every time the dataset is reworked, and the moodboard's similarity
-        # search goes quiet with no error to explain why.
-        feature_paths = existing_feature_paths(name)
+    # Blocks a previous run left on disk, under anything extracted just now.
+    # Merged rather than used only as a fallback: rebuilding one block -- style
+    # after a crash, say -- would otherwise drop the other from the bundle,
+    # which is the same silent loss in a narrower case. Without any of this the
+    # bundle loses palette and style on every --reuse_index run, and the
+    # moodboard's similarity search goes quiet with nothing to explain why.
+    feature_paths = {**existing_feature_paths(name), **feature_paths}
     check_cancel()
 
     # ---- layout -------------------------------------------------------------
@@ -2356,6 +2434,7 @@ def index_dataset(
 
 def main():
     args = parse_args()
+    _paths.use_utf8_console()
     index_dataset(
         args.imgs_path, args.name,
         modality=args.modality, n_components=args.n_components,

@@ -290,6 +290,7 @@ def _describe_state(paths_sample: list[str]) -> str:
 
 
 def main(argv=None):
+    _paths.use_utf8_console()
     ap = argparse.ArgumentParser(
         description="Re-point a dataset after its media folder moved. Never re-encodes.")
     ap.add_argument("--list", action="store_true", help="show every dataset and whether its files are reachable")

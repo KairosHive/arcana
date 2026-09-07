@@ -62,8 +62,6 @@ try:
 except ImportError:
     import gpu as _gpu
 
-ENV_MODFLOWS_DIR = "ARCANA_MODFLOWS_DIR"
-
 CHECKPOINT_NAMES = [
     "modflows_color_encoder_B6_dim_8195_iter_700000.pt",
     "modflows_color_encoder_B6_dim_8195_iter_751001.pt",
@@ -73,11 +71,17 @@ CHECKPOINT_URL = ("https://huggingface.co/MariaLarchenko/modflows_color_encoder"
 
 
 def _candidate_dirs() -> list[Path]:
-    """Every place ModFlows might be, most specific first."""
+    """
+    Every place the checkpoint might already be, most specific first.
+
+    This used to look for upstream ModFlows *source* too, and everything was
+    gated on finding it. That is no longer needed: arcana/modflows_net.py is our
+    own implementation of the same inference path, and the only external thing
+    left is the MIT checkpoint. Leaving the source check in place made the panel
+    say "ModFlows is not installed in this build" on a machine where colour
+    transfer was working perfectly.
+    """
     out = []
-    env = os.environ.get(ENV_MODFLOWS_DIR)
-    if env:
-        out.append(Path(os.path.expanduser(env)))
     # Dev checkout: modflows/ beside the arcana package.
     out.append(Path(__file__).parent.parent / "modflows")
     if getattr(sys, "frozen", False):
@@ -85,8 +89,7 @@ def _candidate_dirs() -> list[Path]:
         # directory rather than beside the executable, and sys._MEIPASS is the
         # only reliable way to name it (it is also the temp extraction dir for
         # a onefile build). Checking the executable's own directory as well
-        # costs nothing and lets a user drop a modflows/ folder next to the app
-        # by hand.
+        # costs nothing and lets someone drop a checkpoint next to the app.
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             out.append(Path(meipass) / "modflows")
@@ -100,14 +103,6 @@ def _candidate_dirs() -> list[Path]:
             seen.add(s)
             uniq.append(p)
     return uniq
-
-
-def modflows_source_dir() -> Path | None:
-    """The directory holding src/encoder.py, or None if it is not installed."""
-    for d in _candidate_dirs():
-        if (d / "src" / "encoder.py").exists():
-            return d
-    return None
 
 
 def checkpoint_dir() -> Path:
@@ -130,13 +125,16 @@ def checkpoint_path() -> Path | None:
 
 
 def status() -> dict:
-    """What the UI needs to explain the state of ModFlows in one line."""
-    src = modflows_source_dir()
+    """
+    What the UI needs to explain the state of ModFlows in one line.
+
+    The code that runs the model ships with Arcana, so the only thing that can
+    be missing is the checkpoint -- and that is one button away.
+    """
     ckpt = checkpoint_path()
     return {
-        "source": str(src) if src else None,
         "checkpoint": str(ckpt) if ckpt else None,
-        "ready": bool(src and ckpt),
+        "ready": bool(ckpt),
         "download_to": str(checkpoint_dir()),
         "download_mb": 229,
     }
@@ -266,29 +264,6 @@ def check_cuda_installation() -> dict:
         result["recommendation"] = "Could not detect GPU. Using CPU."
     
     return result
-
-
-def _ensure_modflows_available():
-    """Make `import src.encoder` work, or explain why it cannot."""
-    root = modflows_source_dir()
-    if root is None:
-        looked = "\n  ".join(str(d) for d in _candidate_dirs())
-        raise ImportError(
-            "ModFlows source not found. Looked in:\n  " + looked +
-            "\nUse the LAB (Reinhard) method, which needs no extra download."
-        )
-
-    root = str(root)
-    if root not in sys.path:
-        # The guard used to test for <modflows>/src while inserting <modflows>,
-        # so it never matched and sys.path grew on every failed attempt.
-        sys.path.insert(0, root)
-        # Python caches directory listings per sys.path entry. If this directory
-        # did not exist when it was first probed -- the usual case, because the
-        # user adds modflows/ while the app is already running -- the cached
-        # miss survives and `import src` keeps failing even though the files are
-        # now there. Drop the cache so the fresh contents are seen.
-        importlib.invalidate_caches()
 
 
 def _find_checkpoint(progress=None) -> Path:
@@ -613,12 +588,22 @@ def batch_transfer(
     return results
 
 
-# Module-level availability check
+# Whether this module can run a transfer at all. That is now a question about
+# our own code and its dependencies, not about something the user must install:
+# the checkpoint is fetched on demand, so a missing one is a download rather
+# than an absence. Computing it from the upstream-source check meant a working
+# install reported itself unavailable.
 COLOR_TRANSFER_AVAILABLE = False
 COLOR_TRANSFER_ERROR = None
 
 try:
-    _ensure_modflows_available()
+    try:
+        from . import modflows_net as _probe_net           # noqa: F401
+    except ImportError:
+        import modflows_net as _probe_net                  # noqa: F401
     COLOR_TRANSFER_AVAILABLE = True
 except ImportError as e:
-    COLOR_TRANSFER_ERROR = str(e)
+    COLOR_TRANSFER_ERROR = (
+        f"Colour transfer needs PyTorch and torchvision: {e}. "
+        "Use the LAB (Reinhard) method, which needs neither."
+    )

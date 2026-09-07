@@ -162,8 +162,8 @@ Not yet declared. `pyproject.toml` sets no licence and the repository has no
 LICENSE file, which means default copyright applies and others have no explicit
 right to use or redistribute this.
 
-[LICENSING.md](LICENSING.md) records the plan — AGPL-3.0-or-later, third-party
-notices, and one blocking item: the built installers currently bundle source
-from a repository that has no licence at all. Do not distribute a build until
-that is resolved. [COLOR_TRANSFER_PLAN.md](COLOR_TRANSFER_PLAN.md) is the rework
-that resolves it permanently.
+[LICENSING.md](LICENSING.md) records the plan — AGPL-3.0-or-later and
+third-party notices. The item that used to block distributing builds is
+resolved: the installers no longer bundle source from a repository that has no
+licence, because `arcana/modflows_net.py` replaced it with our own
+implementation of the same colour-transfer inference path.

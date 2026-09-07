@@ -9,7 +9,7 @@ found during that check.
 
 ---
 
-## A0. Stop shipping unlicensed code — blocking ⚠️
+## A0. Stop shipping unlicensed code — done ✅
 
 `installer/arcana.spec` lines 77–79 bundle `modflows/src` into the built
 application:
@@ -44,15 +44,19 @@ reports `license: mit` in live HuggingFace metadata, so the 229 MB weights are
 MIT and the runtime download is not a problem. The split is real: unlicensed
 code, MIT weights.
 
-**The change:** remove the `_modflows_src` block from `arcana.spec`. Keep every
-search path in `color_transfer.py::modflows_source_dir()` — the frozen-build
-branches simply will not find anything until B2 lands. The existing "ModFlows is
-not installed in this build, use the LAB method" path becomes the shipped
-behaviour.
+**Resolved, and without the regression this section feared.** The
+`_modflows_src` block is gone from `arcana.spec`, and B2 landed alongside it:
+`arcana/modflows_net.py` is our own implementation of the same inference path,
+verified against the MIT checkpoint by strict `state_dict` loading in
+`tests/test_modflows_net.py`. The packaged app keeps its best colour transfer
+method and ships only code we own.
 
-**This is a visible regression:** the packaged app loses its best colour
-transfer method until B2. That is a product decision, not a purely technical
-one, which is why it has not been done unilaterally.
+`modflows_source_dir()` and its search are deleted too. Keeping them was not
+harmless: the neural method was gated on finding source that is now absent by
+design, so a working install reported *"ModFlows is not installed in this build
+— use the LAB method"* while transfers completed in about four seconds.
+Readiness is now exactly one question, and the honest one: are the weights
+downloaded yet?
 
 ## A1. Declare the licence
 
@@ -146,7 +150,7 @@ CLA. Reuse whatever goofi-pipe already uses rather than drafting new terms.
 
 ## Ordering
 
-1. **A0** — unbundle `modflows/src`. Blocking for distributing builds.
+1. ~~**A0** — unbundle `modflows/src`.~~ Done; builds ship only code we own.
 2. **A1, A2** — LICENSE, SPDX headers, THIRD_PARTY.md.
 3. **A3** — Stability and OpenRAIL obligations in UI and installer.
 4. **A4** — CLA/DCO, before the first outside contribution.

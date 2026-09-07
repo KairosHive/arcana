@@ -4130,10 +4130,11 @@ def _ct_model_card(job_snapshot=None):
 
     if st["ready"]:
         return ""                      # nothing to say when it just works
-    if not st["source"]:
-        return html.Div(
-            "ModFlows is not installed in this build — use the LAB method.",
-            style={"fontSize": "11.5px", "color": _ui.INK_DIM})
+    # The only thing that can be missing is the checkpoint. There used to be a
+    # second branch here saying ModFlows was "not installed in this build",
+    # which fired whenever the upstream source folder was absent -- and it is
+    # absent by design now that arcana/modflows_net.py does that work. It read
+    # as a dead end on machines where colour transfer ran perfectly.
     return html.Div([
         html.Div(f"ModFlows needs a one-off {st['download_mb']} MB model download.",
                  style={"fontSize": "11.5px", "color": _ui.INK_DIM,

@@ -2323,9 +2323,6 @@ def index_dataset(
         if should_cancel is not None and should_cancel():
             raise KeyboardInterrupt("cancelled")
 
-    if model_id is None:
-        model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
-
     def _to_glob(p: str) -> str:
         if any(ch in p for ch in "*?[]"):
             return p
@@ -2338,6 +2335,34 @@ def index_dataset(
         latents_dir, f"latent_space_{name}_{modality}_{n_components}d.pkl")
     _paths.ensure_dir(db_dir)
     _paths.ensure_dir(latents_dir)
+
+    # Reuse the index BEFORE anything is encoded with a model id, because the
+    # index is what decides which model id is correct. Cluster names come from
+    # label text embedded in the encoder's own space, so a dataset built with
+    # ViT-B/32 reworked under the ViT-H/14 default built a 1024-d label matrix
+    # to score against 512-d image vectors and died in the matmul -- after the
+    # labels had been encoded, and only for datasets not built with whatever is
+    # default today.
+    index = idx2path = None
+    if reuse_index and os.path.exists(index_name):
+        report(0.02, "Reusing the existing index")
+        print(f"[INFO] Reusing existing index: {index_name}")
+        with open(index_name, "rb") as fh:
+            saved_index, idx2path = pickle.load(fh)
+        index = Index.restore(saved_index)
+        print(f"[INFO] Loaded {len(idx2path)} indexed paths.")
+        try:
+            built_with = model_for_dim(int(index.ndim), modality)
+        except RuntimeError as e:
+            print(f"[WARN] {e} Continuing with {model_id or 'the default'}.")
+        else:
+            if model_id and model_id != built_with:
+                print(f"[INFO] Ignoring model {model_id}: this index was built with "
+                      f"{built_with}, and reusing it has to match.")
+            model_id = built_with
+
+    if model_id is None:
+        model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
 
     print("path to index:       ", index_name)
     print("path to latent space:", latent_name)
@@ -2362,14 +2387,7 @@ def index_dataset(
     check_cancel()
 
     # ---- encode -------------------------------------------------------------
-    if reuse_index and os.path.exists(index_name):
-        report(0.05, "Reusing the existing index")
-        print(f"[INFO] Reusing existing index: {index_name}")
-        with open(index_name, "rb") as fh:
-            saved_index, idx2path = pickle.load(fh)
-        index = Index.restore(saved_index)
-        print(f"[INFO] Loaded {len(idx2path)} indexed paths.")
-    else:
+    if index is None:
         index, idx2path = build(glob_arg, index_name, modality=modality,
                                 model_id=model_id,
                                 progress=_scaled(progress, 0.03, 0.65))

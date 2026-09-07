@@ -60,11 +60,15 @@ so the button is disabled when `dataset_health()` reports missing files.
 
 Two bugs surfaced while building it. The bundle only picked up feature blocks
 found on disk when nothing had been extracted that run, so a rework silently
-stripped palette and style out of the portable copy. And the encoder was taken
-from the machine's default rather than from the index, so a dataset built with
-ViT-B/32 was reworked with a 1024-d label matrix scored against 512-d vectors
-— a crash at the naming step, and only for datasets not built with whatever
-is default today.
+stripped palette and style out of the portable copy.
+
+And the encoder was taken from the machine's default rather than from the index.
+A dataset built with ViT-B/32 got a 1024-d label matrix scored against 512-d
+image vectors — a crash at the naming step, silent until then, and only for
+datasets not built with whatever is default today. `index_dataset` now reads the
+index before it encodes anything, so `--reuse_index` on the command line is
+covered as well as the button; a `--model` that disagrees with the index is
+refused rather than obeyed.
 
 ## 2. Query algebra: a picture, plus and minus phrases — *medium*
 

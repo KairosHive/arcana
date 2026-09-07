@@ -371,3 +371,47 @@ def test_rework_preselects_a_layout_the_dataset_actually_has():
     have = sorted(d.latent_paths or {})
     assert have == [3]
     assert all(isinstance(n, int) for n in have)
+
+
+def test_reuse_index_resolves_the_encoder_before_it_encodes_labels(dataset, monkeypatch):
+    """
+    The CLI's own --reuse_index had the bug rework_dataset was fixed for.
+
+    index_dataset defaulted model_id and encoded the label matrix with it, and
+    only then loaded the index. So `arcana-build-latent --reuse_index` on a
+    ViT-B/32 dataset built 1024-d label text to score against 512-d vectors --
+    after paying for the encoding. Resolving the encoder from the index has to
+    happen first.
+    """
+    order = []
+    monkeypatch.setattr(db, "_encode_label_matrix",
+                        lambda texts, modality, base, model_id=None:
+                            (order.append(("labels", model_id)),
+                             (texts, np.zeros((len(texts), DIM), np.float32)))[1])
+    monkeypatch.setattr(db, "latent_space", lambda **k: (_ for _ in ()).throw(
+        _Stop(order)))
+
+    with pytest.raises(_Stop):
+        db.index_dataset(dataset["folder"], "ds", reuse_index=True, features="clip")
+
+    assert order and order[0][0] == "labels"
+    assert order[0][1] == db.model_for_dim(DIM, "image"), (
+        "labels were encoded with the wrong model, or before the index was read")
+
+
+def test_reuse_index_overrules_a_mismatching_model(dataset, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(db, "_encode_label_matrix",
+                        lambda texts, modality, base, model_id=None:
+                            (seen.update(model_id=model_id),
+                             (texts, np.zeros((len(texts), DIM), np.float32)))[1])
+    monkeypatch.setattr(db, "latent_space", lambda **k: (_ for _ in ()).throw(_Stop()))
+
+    with pytest.raises(_Stop):
+        db.index_dataset(dataset["folder"], "ds", reuse_index=True, features="clip",
+                         model_id="laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+    assert seen["model_id"] == db.model_for_dim(DIM, "image")
+
+
+class _Stop(Exception):
+    """Cut the run short once the part under test has happened."""

@@ -141,7 +141,7 @@ The GUI covers everything, but each piece is also a command:
 arcana                                   # the app
 arcana-build-latent --path ./photos --name holiday
 arcana-extend --path ./photos --name holiday    # last weekend's shoot
-arcana-finish --name holiday             # a run that was cut short, without re-encoding
+arcana-finish --name holiday --k 12      # re-cluster, rename or re-lay-out, no re-encoding
 arcana-marks --name holiday              # re-read ON1 stars and colour tags
 arcana-relocate --name holiday           # after moving your files
 arcana-migrate                           # older datasets to the portable format

@@ -287,3 +287,87 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ───────────────────────── reworking without re-encoding ─────────────────────────
+def test_rework_uses_the_encoder_that_built_the_index(dataset, monkeypatch):
+    """
+    Cluster names are label text embedded in the encoder's own space, so the
+    label matrix has to be the same width as the image vectors.
+
+    Reworking used to let index_dataset fall back to the machine's default
+    encoder. On a dataset built with ViT-B/32 that produced a 1024-d label
+    matrix to score against 512-d vectors, and died inside the matmul -- but
+    only at the naming step, and only for datasets not built with whatever is
+    default today.
+    """
+    seen = {}
+    monkeypatch.setattr(db, "index_dataset",
+                        lambda *a, **k: seen.update(k) or {"n_items": 4})
+    db.rework_dataset("ds")
+    assert seen["model_id"] == db.model_for_dim(DIM, "image")
+    assert seen["reuse_index"] is True
+
+
+def test_rework_overrules_a_caller_asking_for_a_different_encoder(dataset, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(db, "index_dataset",
+                        lambda *a, **k: seen.update(k) or {"n_items": 4})
+    db.rework_dataset("ds", model_id="laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+    assert seen["model_id"] == db.model_for_dim(DIM, "image")
+
+
+def test_rework_passes_the_knobs_through(dataset, monkeypatch):
+    """k, vocabulary and dimensionality are the whole point of the feature."""
+    seen = {}
+    monkeypatch.setattr(db, "index_dataset",
+                        lambda *a, **k: seen.update(k) or {"n_items": 4})
+    db.rework_dataset("ds", k=12, labels="fog,neon", n_components=3,
+                      features="clip,palette")
+    assert seen["k"] == 12
+    assert seen["labels"] == "fog,neon"
+    assert seen["n_components"] == 3
+    assert seen["features"] == "clip,palette"
+
+
+def test_rework_roots_the_bundle_at_the_files_it_already_knows(dataset, monkeypatch):
+    """
+    reuse_index skips the glob, so asking the caller for a path would only be a
+    way to get it wrong -- the index already records where everything is.
+    """
+    seen = {}
+
+    def fake(media_path, name, **k):
+        seen["media_path"] = media_path
+        return {"n_items": 4}
+
+    monkeypatch.setattr(db, "index_dataset", fake)
+    db.rework_dataset("ds")
+    assert os.path.normcase(seen["media_path"]) == os.path.normcase(dataset["folder"])
+
+
+def test_rework_of_an_unknown_dataset_says_so(dataset):
+    with pytest.raises(FileNotFoundError):
+        db.rework_dataset("no-such-dataset")
+
+
+def test_finish_dataset_is_still_the_same_call():
+    """The name shipped in the README and in a button; it must keep working."""
+    assert db.finish_dataset is db.rework_dataset
+
+
+def test_rework_preselects_a_layout_the_dataset_actually_has():
+    """
+    legacy.Dataset.latent_paths is {n_components: path}, not a list of paths.
+
+    Iterating it yields ints, and the panel crashed on os.path.basename(2)
+    before it could open -- so the whole feature was unreachable.
+    """
+    from arcana.legacy import LegacyDataset
+
+    d = LegacyDataset(name="x", modality="image", index_path="i.pkl",
+                      latent_paths={3: "whatever_3d.pkl"},
+                      palette_path=None, style_path=None)
+    have = sorted(d.latent_paths or {})
+    assert have == [3]
+    assert all(isinstance(n, int) for n in have)

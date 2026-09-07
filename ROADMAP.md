@@ -43,29 +43,28 @@ presets, so the output path exists.
 
 ---
 
-## 1. Rework a dataset without re-encoding it — *small*
+## 1. Rework a dataset without re-encoding it — *done*
 
-`index_dataset` already takes `reuse_index` (`db.py:1695`), and at `db.py:1759`
-it skips `build()` entirely and runs only palette/style, `latent_space()` and
-`write_bundle()`. The CLI exposes it as `--reuse_index`. **The GUI never passes
-it** — zero occurrences in `ui_datasets.py`.
+`db.rework_dataset()` runs everything downstream of encoding over the index a
+dataset already has: palette and style, `latent_space()`, the cluster names and
+the bundle. A **Rework** button on each dataset row exposes it, and
+`arcana-finish` is the same thing on the command line. Four jobs that cost a
+full re-encode now cost about a minute: re-clustering at a different k,
+renaming groups from a different vocabulary, laying out in 3-D, and adding
+palette or style after the fact. Measured on a 471-image dataset: 20 s to
+re-cluster, about 4 minutes for a 3-D layout.
 
-Exposing it turns four jobs that currently cost a full re-encode into a job of
-under a minute: adding palette/style after the fact, re-clustering at a
-different k, renaming groups from a different vocabulary, and laying out in 3-D.
-It also re-extracts the stale palette features flagged by
-`palette_features_stale`, and rescues interrupted runs.
+The three pieces of false UI copy are rewritten, and the stranded-dataset
+warning is a **Finish this** button. The caution held: reworking skips the glob,
+so the button is disabled when `dataset_health()` reports missing files.
 
-Three pieces of UI copy become false and need rewriting: `ui_datasets.py:291`
-("cannot be added later without re-reading every file"), the "palette and style
-can only be added by re-indexing" tooltip, and the stranded-dataset warning,
-which becomes a **Finish this** button.
-
-One caution: `reuse_index` skips the glob, so a dataset whose files moved would
-reuse stale paths. Gate the button on `dataset_health()`.
-
-*This is the highest value-per-hour item on the list, and it unblocks several
-others.*
+Two bugs surfaced while building it. The bundle only picked up feature blocks
+found on disk when nothing had been extracted that run, so a rework silently
+stripped palette and style out of the portable copy. And the encoder was taken
+from the machine's default rather than from the index, so a dataset built with
+ViT-B/32 was reworked with a 1024-d label matrix scored against 512-d vectors
+— a crash at the naming step, and only for datasets not built with whatever
+is default today.
 
 ## 2. Query algebra: a picture, plus and minus phrases — *medium*
 

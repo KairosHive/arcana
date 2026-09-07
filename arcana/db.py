@@ -1781,45 +1781,78 @@ def extend_dataset(
     return result
 
 
-def finish_dataset(name: str, *, modality: str = "image", n_components: int = 2,
+def rework_dataset(name: str, *, modality: str = "image", n_components: int = 2,
                    media_path: str | None = None, features: str = "clip",
                    thumbnails: bool = False, workers: int = 0,
-                   progress=None, should_cancel=None) -> dict:
+                   progress=None, should_cancel=None, **index_kwargs) -> dict:
     """
-    Build the map for a dataset that was indexed but never laid out.
+    Redo everything about a dataset except the encoding.
 
-    Encoding is the expensive phase and it already succeeded -- what is missing
-    is t-SNE, k-means and the save, which together are minutes. A run that died
-    between the two used to be unrecoverable by anything except re-encoding the
-    whole collection, which for 61,039 photographs through ViT-H/14 is hours of
-    GPU time to redo work that is sitting on disk.
+    The vectors are the expensive part and they do not change: the encoder read
+    every file once, and nothing downstream can alter what it saw. So the whole
+    tail -- palette and style, t-SNE, k-means, the cluster names, the bundle --
+    can be run again over the index already on disk. Four jobs that used to cost
+    a full re-encode become a job of about a minute:
+
+        rework_dataset("holiday", k=12)                      re-cluster
+        rework_dataset("holiday", labels="fog,neon,ruins")   rename the groups
+        rework_dataset("holiday", n_components=3)            lay it out in 3-D
+        rework_dataset("holiday", features="clip,palette")   add palette after the fact
+
+    It is also how a dataset that was indexed but never laid out gets finished:
+    a run that died between the two phases used to be unrecoverable by anything
+    except re-encoding the collection, which for 61,039 photographs through
+    ViT-H/14 is hours of GPU time to redo work that is sitting on disk.
 
     Palette and style blocks already written are kept and go into the bundle.
     A block that was never written stays missing unless `features` asks for it:
     extracting one is a separate cost and a separate decision, and it is the
     slow half of an index run.
+
+    One caution the caller has to honour: this skips the glob, so a dataset
+    whose files have moved would be laid out from stale paths. Check
+    relocate.dataset_health() first -- the GUI does.
     """
     index_name = os.path.join(db_dir, f"index_{name}_{modality}.pkl")
     if not os.path.exists(index_name):
         raise FileNotFoundError(f"no index for {name!r} ({modality})")
+
+    with open(index_name, "rb") as fh:
+        saved_index, idx2path = pickle.load(fh)
 
     if media_path is None:
         # Only used to root the bundle's relative paths -- reuse_index skips the
         # glob entirely -- so the common ancestor of what is indexed is exactly
         # right, and asking for a path already recorded would be a way to get it
         # wrong.
-        with open(index_name, "rb") as fh:
-            _saved, idx2path = pickle.load(fh)
         media_path = _common_root(idx2path.values())
 
+    # The encoder that built this index, never the machine's current default and
+    # never the caller's choice. Cluster names come from label text embedded in
+    # the encoder's own space, so a dataset built with ViT-B/32 reworked under
+    # the ViT-H/14 default produced a 1024-d label matrix to score against 512-d
+    # image vectors and died in the matmul -- silently until the naming step, and
+    # only for datasets not built with whatever is default today.
+    encoder = model_for_dim(int(Index.restore(saved_index).ndim), modality)
+    asked = index_kwargs.pop("model_id", None)
+    if asked and asked != encoder:
+        print(f"[INFO] Ignoring model {asked}: {name} was built with {encoder} and "
+              f"reworking has to match it.")
+    index_kwargs["model_id"] = encoder
+
     have = existing_feature_paths(name)
-    print(f"[INFO] Finishing {name}: reusing the index, keeping "
+    print(f"[INFO] Reworking {name}: reusing the index, keeping "
           f"{', '.join(sorted(have)) or 'no'} feature block(s).")
     return index_dataset(
         media_path, name, modality=modality, n_components=n_components,
         reuse_index=True, features=features, thumbnails=thumbnails,
         workers=workers, progress=progress, should_cancel=should_cancel,
+        **index_kwargs,
     )
+
+
+# The old name, from when this could only rescue an interrupted run.
+finish_dataset = rework_dataset
 
 
 def _common_root(paths) -> str:
@@ -1837,24 +1870,30 @@ def _common_root(paths) -> str:
 
 
 def finish_main():
-    """arcana-finish: build the map for a dataset whose indexing run was cut short."""
+    """arcana-finish: rework a dataset -- or finish an interrupted one -- without re-encoding."""
     _paths.use_utf8_console()
     parser = argparse.ArgumentParser(
-        description="Lay out a dataset that was indexed but never mapped. "
-                    "Nothing is re-encoded.")
+        description="Re-cluster, rename, re-lay-out or complete a dataset using the "
+                    "index it already has. Nothing is re-encoded.")
     parser.add_argument("--name", required=True, help="Dataset name.")
     parser.add_argument("--modality", default="image", choices=["image", "audio"])
-    parser.add_argument("--n_components", type=int, default=2, choices=[2, 3])
+    parser.add_argument("--n_components", type=int, default=2, choices=[2, 3],
+                        help="2 for the usual map, 3 to lay it out in three dimensions.")
+    parser.add_argument("--k", type=int, default=0,
+                        help="Cluster count. 0 keeps the automatic choice.")
+    parser.add_argument("--labels", default=None,
+                        help="Where group names come from: a TXT path, an inline comma "
+                             "list, or '' for numbered groups. Omit for the built-in list.")
     parser.add_argument("--thumbnails", action="store_true")
     parser.add_argument("--features", default="clip",
-                        help="Also extract these while finishing: clip,palette,style. "
-                             "Blocks already on disk are kept either way; name one "
-                             "here only to rebuild it.")
+                        help="Also extract these: clip,palette,style. Blocks already on "
+                             "disk are kept either way; name one here only to build or "
+                             "rebuild it.")
     parser.add_argument("--workers", type=int, default=0)
     args = parser.parse_args()
-    finish_dataset(args.name, modality=args.modality, features=args.features,
+    rework_dataset(args.name, modality=args.modality, features=args.features,
                    n_components=args.n_components, thumbnails=args.thumbnails,
-                   workers=args.workers)
+                   workers=args.workers, k=args.k, labels=args.labels)
 
 
 def extend_main():

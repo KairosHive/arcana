@@ -288,8 +288,9 @@ def layout() -> html.Div:
 
                 _step(5, "Extras, then go",
                       "Palette and style power the moodboard's similarity search. They "
-                      "cost time now and cannot be added later without re-reading every "
-                      "file, so tick them if you think you might want them.",
+                      "cost time now, but you can add them later from Rework without "
+                      "re-reading a single file, so leave them unticked if you are "
+                      "not sure.",
                       html.Div([
                           dcc.Checklist(id="dm-features", inline=True,
                                         inputStyle={"marginRight": "5px",
@@ -321,6 +322,80 @@ def layout() -> html.Div:
                          "Dataset menu. The tags show what each one can do.",
                          style=SECTION_HINT),
                 dcc.Store(id="dm-pending-delete", storage_type="memory"),
+                dcc.Store(id="dm-pending-rework", storage_type="memory"),
+                # Everything downstream of encoding, run again over the index a
+                # dataset already has. The vectors cannot change -- the encoder
+                # read every file once and nothing here alters what it saw -- so
+                # re-clustering, renaming, a 3-D layout and adding palette or
+                # style are all a minute's work rather than a re-encode. Mounted
+                # once and hidden, for the same reason the delete panel is.
+                html.Div(id="dm-rework-panel",
+                         style={"display": "none"},
+                         children=[
+                             html.Div(id="dm-rework-text",
+                                      style={"fontSize": "12.5px", "color": INK,
+                                             "marginBottom": "10px"}),
+                             html.Div(style={"display": "flex", "gap": "14px",
+                                             "flexWrap": "wrap",
+                                             "alignItems": "flex-end"}, children=[
+                                 _field("How many groups",
+                                        dcc.Dropdown(
+                                            id="dm-rework-k", value=0, clearable=False,
+                                            options=([{"label": "Automatic", "value": 0}] +
+                                                     [{"label": str(n), "value": n}
+                                                      for n in range(4, 41, 2)]),
+                                            style={"width": "150px"}),
+                                        min_width="150px"),
+                                 _field("Names come from",
+                                        dcc.Dropdown(
+                                            id="dm-rework-vocab", value="default",
+                                            clearable=False,
+                                            options=[
+                                                {"label": "Arcana's word list",
+                                                 "value": "default"},
+                                                {"label": "Your subfolder names",
+                                                 "value": "folders"},
+                                                {"label": "Leave groups numbered",
+                                                 "value": "none"},
+                                            ],
+                                            style={"width": "190px"}),
+                                        min_width="190px"),
+                                 _field("Map",
+                                        dcc.Dropdown(
+                                            id="dm-rework-dims", value=2, clearable=False,
+                                            options=[{"label": "2-D", "value": 2},
+                                                     {"label": "3-D", "value": 3}],
+                                            style={"width": "110px"}),
+                                        min_width="110px"),
+                                 _field("Also build",
+                                        dcc.Checklist(
+                                            id="dm-rework-features", inline=True, value=[],
+                                            inputStyle={"marginRight": "5px",
+                                                        "accentColor": ACCENT},
+                                            labelStyle={"marginRight": "14px",
+                                                        "fontSize": "12.5px",
+                                                        "color": INK},
+                                            options=[
+                                                {"label": "Colour palette",
+                                                 "value": "palette"},
+                                                {"label": "Style / texture",
+                                                 "value": "style"},
+                                                {"label": "Thumbnails",
+                                                 "value": "thumbnails"},
+                                            ]),
+                                        min_width="330px"),
+                             ]),
+                             html.Div(id="dm-rework-hint", style=SECTION_HINT),
+                             html.Div(style={"display": "flex", "gap": "8px",
+                                             "marginTop": "10px"}, children=[
+                                 html.Button("Rework", id="dm-rework-go", n_clicks=0,
+                                             style=_btn("primary", padding="6px 12px",
+                                                        fontSize="12px")),
+                                 html.Button("Cancel", id="dm-rework-cancel", n_clicks=0,
+                                             style=_btn("secondary", padding="6px 12px",
+                                                        fontSize="12px")),
+                             ]),
+                         ]),
                 # Rendered once, hidden until armed. Building it inside a
                 # callback would mean dm-del-yes/dm-del-cancel do not exist at
                 # page load, and a Dash callback whose Inputs are missing never
@@ -680,17 +755,30 @@ def dataset_rows() -> list:
                         _pill("style", OK if ex["style"] else INK_FAINT),
                     ],
                     title=("Named clusters / colour-palette features / style features. "
-                           "Grey means the dataset was indexed without it; palette and "
-                           "style can only be added by re-indexing. "
+                           "Grey means the dataset was indexed without it — Rework "
+                           "adds it without re-encoding anything. "
                            "'palette · dated' means those features were built before "
                            "a fix to the colour conversion: search still works, but "
-                           "much more coarsely. Re-index to sharpen it."),
+                           "much more coarsely. Rework rebuilds them properly."),
                     style={"display": "flex", "gap": "5px"},
                 ),
                 pill,
                 # Adding to a dataset costs the price of the new files, so it is
                 # a row action rather than a trip back through the five steps
                 # above -- which would re-encode everything already indexed.
+                # Gated on health as well as on having a map: reworking skips
+                # the glob and reuses the recorded paths, so a dataset whose
+                # files have moved would be laid out from paths that no longer
+                # point at anything.
+                html.Button("Rework",
+                            id={"type": "dm-rework", "index": f"{d.name}::{d.modality}"},
+                            n_clicks=0,
+                            disabled=(not has_map or bool(h.get("error"))
+                                      or bool(h.get("missing"))),
+                            title=(f"Re-cluster {d.name}, rename its groups, lay it out "
+                                   f"in 3-D, or add palette and style — using the index "
+                                   f"it already has. Nothing is re-encoded."),
+                            style=_btn("secondary", padding="4px 10px", fontSize="11px")),
                 html.Button("Add new",
                             id={"type": "dm-extend", "index": f"{d.name}::{d.modality}"},
                             n_clicks=0,
@@ -1281,6 +1369,129 @@ def register(app) -> None:
 
         jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
         return jid, False, html.Span(f"Checking {root} for new files…",
+                                     style={"color": "#4caf50"})
+
+    @app.callback(
+        [Output("dm-rework-panel", "style"),
+         Output("dm-rework-text", "children"),
+         Output("dm-pending-rework", "data"),
+         Output("dm-rework-dims", "value"),
+         Output("dm-rework-features", "options")],
+        [Input({"type": "dm-rework", "index": ALL}, "n_clicks"),
+         Input("dm-rework-cancel", "n_clicks"),
+         Input("dm-job", "data")],
+        prevent_initial_call=True,
+    )
+    def _arm_rework(clicks, _cancel, _job):
+        """
+        Open the rework panel for one dataset, fitted to what it already has.
+
+        The extras are offered as "also build", with what is already there
+        ticked and labelled, because rebuilding a block is a real choice --
+        palette on 61,039 photographs is twenty minutes, and nobody should
+        trigger that by not realising it was already done.
+        """
+        off = ({"display": "none"}, "", None, 2, [])
+        trig = ctx.triggered_id
+        if trig in ("dm-rework-cancel", "dm-job"):
+            return off
+        if not isinstance(trig, dict) or not any(c for c in (clicks or []) if c):
+            return off
+
+        name, _, modality = str(trig["index"]).partition("::")
+        modality = modality or "image"
+        try:
+            from .legacy import discover
+        except ImportError:
+            from legacy import discover
+        found = next((d for d in discover()
+                      if d.name == name and d.modality == modality), None)
+        ex = _dataset_extras(found) if found else {}
+        # latent_paths is {n_components: path}, so the layouts this dataset has
+        # are its keys. Preselect the one it is actually using.
+        have_dims = sorted((found.latent_paths or {}) if found else {})
+        dims = have_dims[0] if have_dims else 2
+
+        def option(value, label):
+            if ex.get(value):
+                stale = value == "palette" and ex.get("palette_stale")
+                label += " (rebuild)" if not stale else " (rebuild — currently dated)"
+            return {"label": label, "value": value}
+
+        options = [option("palette", "Colour palette"),
+                   option("style", "Style / texture"),
+                   {"label": "Thumbnails", "value": "thumbnails"}]
+
+        panel = dict(CARD, marginTop="10px", marginBottom="4px",
+                     backgroundColor=SURFACE_2, padding="14px 16px")
+        text = html.Span([
+            "Reworking ", html.B(name),
+            " from the index it already has. Nothing is re-encoded.",
+        ])
+        return panel, text, f"{name}::{modality}", dims, options
+
+    @app.callback(
+        [Output("dm-job", "data", allow_duplicate=True),
+         Output("dm-poll", "disabled", allow_duplicate=True),
+         Output("dm-start-status", "children", allow_duplicate=True)],
+        Input("dm-rework-go", "n_clicks"),
+        [State("dm-pending-rework", "data"),
+         State("dm-rework-k", "value"),
+         State("dm-rework-vocab", "value"),
+         State("dm-rework-dims", "value"),
+         State("dm-rework-features", "value")],
+        prevent_initial_call=True,
+    )
+    def _rework(n, pending, k, vocab, dims, features):
+        if not n or not pending:
+            return no_update, no_update, no_update
+        if MANAGER.active():
+            return no_update, no_update, html.Span(
+                "Something is already running. Wait for it, or cancel it.",
+                style={"color": "#e74c3c"})
+
+        name, _, modality = str(pending).partition("::")
+        modality = modality or "image"
+        feats = set(features or [])
+        feature_arg = ",".join(["clip"] + sorted(feats & {"palette", "style"}))
+
+        try:
+            from .relocate import dataset_health
+        except ImportError:
+            from relocate import dataset_health
+        health = dataset_health(name, modality, sample=40) or {}
+        root = health.get("root") or ""
+        if health.get("missing"):
+            # Reworking reuses the recorded paths without globbing, so a moved
+            # collection would be laid out from paths pointing at nothing.
+            return no_update, no_update, html.Span(
+                f"{health['missing']:,} of {name}'s files are not where the index "
+                f"expects them. Relocate it first.", style={"color": "#e74c3c"})
+
+        label_src = None                       # None -> the built-in word list
+        if vocab == "folders":
+            words = folder_vocabulary(root) if root else []
+            label_src = ",".join(words) if words else None
+        elif vocab == "none":
+            label_src = ""                     # empty -> groups stay numbered
+
+        def job(handle):
+            handle.update(fraction=0.0, message="Reading the index")
+            result = _db.rework_dataset(
+                name, modality=modality, n_components=int(dims or 2),
+                features=feature_arg, thumbnails=("thumbnails" in feats),
+                k=int(k or 0), labels=label_src,
+                progress=lambda f, m, d, t: handle.update(
+                    fraction=f, message=(m or None),
+                    detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),
+                should_cancel=lambda: handle.cancelled,
+            )
+            handle.update(fraction=1.0,
+                          message=f"Reworked {result.get('n_items', 0):,} items")
+            return result
+
+        jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
+        return jid, False, html.Span(f"Reworking {name}…",
                                      style={"color": "#4caf50"})
 
     @app.callback(

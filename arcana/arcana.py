@@ -1443,10 +1443,10 @@ def aspec_endpoint():
 
 
 @app.callback(
-    Output({"type": "select-image", "index": ALL}, "on"),
+    Output({"type": "select-image", "owner": "search", "index": ALL}, "on"),
     Input("select-all", "n_clicks"),
     Input("clear-all", "n_clicks"),
-    State({"type": "select-image", "index": ALL}, "on"),
+    State({"type": "select-image", "owner": "search", "index": ALL}, "on"),
     prevent_initial_call=True,
 )
 def bulk_select(n_all, n_clear, current_states):
@@ -1618,6 +1618,8 @@ app.layout = html.Div(
         _ui_datasets.layout(),
 
         dcc.Store(id="story-cache", storage_type="memory"),
+        # Clientside callbacks need somewhere to return to; nothing reads this.
+        dcc.Store(id="scroll-sink", storage_type="memory"),
         # Twin carousels, one set of stores per panel that can show them.
         #
         # Prompt search and the moodboard's Find similar both render carousels,
@@ -1633,7 +1635,6 @@ app.layout = html.Div(
         dcc.Store(id="mb-grouped-results", storage_type="memory"),
         dcc.Store(id="mb-carousel-state", storage_type="memory"),
         dcc.Store(id="mb-carousel-order", storage_type="memory"),
-        dcc.Store(id="results-owner", storage_type="memory"),  # which mode filled image-display
         dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
         dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Reference image (palette source for search/transfer)
         dcc.Store(id="selected-target-image", storage_type="memory"),  # Target image (receives colors in transfer)
@@ -2119,6 +2120,15 @@ app.layout = html.Div(
                                     n_clicks=0,
                                     style=_ui.button("primary"),
                                 ),
+                                # A palette or style search over a large archive
+                                # takes seconds and the button gave no sign of
+                                # it, so the only feedback was that nothing had
+                                # happened yet. `running` on the callback fills
+                                # this for exactly as long as the work takes.
+                                html.Span(id="mb-search-status",
+                                          style={"fontSize": "12px",
+                                                 "color": _ui.ACCENT,
+                                                 "minWidth": "70px"}),
                             ],
                             style={"display": "flex", "gap": "12px", "alignItems": "center", "flexWrap": "wrap"},
                         ),
@@ -2561,10 +2571,20 @@ html.Div(
                            "borderBottom": f"2px solid {_ui.ACCENT}"},
                 ),
 
-                # Results list
+                # Results, one container per panel.
+                #
+                # These shared a single div, so a Find similar destroyed the
+                # prompt-search results and vice versa -- switching tabs showed
+                # whichever had run last. Two containers, each shown only in the
+                # tab that fills it, means both survive a tab change with their
+                # carousels where you left them.
                 html.Div(
                     id="image-display",
                     style={"overflowX": "hidden"},
+                ),
+                html.Div(
+                    id="mb-image-display",
+                    style={"overflowX": "hidden", "display": "none"},
                 ),
 
                 # The colour-transfer output. Same region as the search results
@@ -3571,12 +3591,12 @@ def save_moodboard_images(n_clicks, moodboard, folder_name):
 
 
 @app.callback(
-    Output({"type": "select-image", "index": ALL}, "on", allow_duplicate=True),
+    Output({"type": "select-image", "owner": "moodboard", "index": ALL}, "on"),
     [
         Input("moodboard-select-all", "n_clicks"),
         Input("moodboard-clear-all", "n_clicks"),
     ],
-    State({"type": "select-image", "index": ALL}, "on"),
+    State({"type": "select-image", "owner": "moodboard", "index": ALL}, "on"),
     prevent_initial_call=True,
 )
 def moodboard_toggle_all_selections(select_clicks, clear_clicks, current_states):
@@ -3593,8 +3613,8 @@ def moodboard_toggle_all_selections(select_clicks, clear_clicks, current_states)
     Output("moodboard-results-confirmation", "children"),
     Input("moodboard-save-selected", "n_clicks"),
     [
-        State({"type": "select-image", "index": ALL}, "on"),
-        State({"type": "select-image", "index": ALL}, "id"),
+        State({"type": "select-image", "owner": "moodboard", "index": ALL}, "on"),
+        State({"type": "select-image", "owner": "moodboard", "index": ALL}, "id"),
         State("moodboard-results-folder", "value"),
         State("mb-grouped-results", "data"),
         State("mb-carousel-state", "data"),
@@ -3652,7 +3672,7 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
 
 @app.callback(
     [
-        Output("image-display", "children", allow_duplicate=True),
+        Output("mb-image-display", "children", allow_duplicate=True),
         # The moodboard's own carousel stores. Writing the prompt-search ones
         # is what made an arrow over there swap in these results.
         Output("mb-grouped-results", "data", allow_duplicate=True),
@@ -3676,6 +3696,10 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
         State("dataset-dropdown", "value"),
         State("group-similar", "on"),
         State("sim-thresh", "value"),
+    ],
+    running=[
+        (Output("moodboard-search-btn", "disabled"), True, False),
+        (Output("mb-search-status", "children"), "Searching…", ""),
     ],
     prevent_initial_call=True,
 )
@@ -3870,7 +3894,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
                 )
             result_elements.append(
                 html.Div([
-                    daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
+                    daq.BooleanSwitch(id={"type": "select-image", "owner": "moodboard", "index": first}, on=False),
                     html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
                                n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": "#333", "border": "none", "borderRadius": "3px", "color": "#aaa", "cursor": "pointer"}),
                                     # Finding a picture is a walk: you land near it and then
@@ -3946,7 +3970,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
             
             card_elements.append(
                 html.Div([
-                    daq.BooleanSwitch(id={"type": "select-image", "index": f"group::{g['gid']}"}, on=False),
+                    daq.BooleanSwitch(id={"type": "select-image", "owner": "moodboard", "index": f"group::{g['gid']}"}, on=False),
                     html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
                                n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": "#333", "border": "none", "borderRadius": "3px", "color": "#aaa", "cursor": "pointer"}),
                 ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"})
@@ -4869,7 +4893,7 @@ def poll_poetry(_n, job_ref):
                     html.Img(src=f"data:image/jpeg;base64,{it['poetry_img_str']}",
                              style={"width": "100%", "marginBottom": "10px"}),
                     html.Div([
-                        daq.BooleanSwitch(id={"type": "select-image", "index": it["path"]},
+                        daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": it["path"]},
                                           on=True, style={"display": "none"}),
                         html.Button("+ Moodboard",
                                     id={"type": "add-to-moodboard", "index": it["path"]},
@@ -5340,7 +5364,7 @@ def update_images(
                         [
                             preview,
                             html.Div([
-                                daq.BooleanSwitch(id={"type": "select-image", "index": first}, on=False),
+                                daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": first}, on=False),
                                 html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first},
                                            n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                             ], style={"display": "flex", "alignItems": "center"}),
@@ -5396,7 +5420,7 @@ def update_images(
                             html.Div(id={"type": "carousel-counter", "owner": "search", "gid": g["gid"]}, children=f"1/{n}",
                                     style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8}),
                             html.Div([
-                                daq.BooleanSwitch(id={"type": "select-image", "index": f"group::{g['gid']}"}, on=False),
+                                daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": f"group::{g['gid']}"}, on=False),
                                 html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
                                            n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                             ], style={"display": "flex", "alignItems": "center"}),
@@ -5455,7 +5479,7 @@ def update_images(
                 [
                     media,
                     html.Div([
-                        daq.BooleanSwitch(id={"type": "select-image", "index": media_path}, on=False),
+                        daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": media_path}, on=False),
                         html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": media_path}, 
                                    n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                     ], style={"display": "flex", "alignItems": "center"}),
@@ -5799,45 +5823,40 @@ def do_relocate(_check, _apply, new_root, dataset_value):
         f"originals as .bak.", style={"color": "#4caf50"})
 
 
-@app.callback(
-    Output("results-owner", "data"),
-    [
-        Input("main-action-btn", "n_clicks"),
-        Input("moodboard-search-btn", "n_clicks"),
-        Input("scatter-plot", "clickData"),
-    ],
-    State("mode-select", "value"),
-    prevent_initial_call=True,
-)
-def track_results_owner(_action, _moodboard, _click, mode):
-    """
-    Record which mode last filled the shared results panel.
-
-    image-display is written by both update_images() and the moodboard
-    similarity search, so without this the panel shows one mode's results while
-    you are looking at another.
-    """
-    if ctx.triggered_id == "moodboard-search-btn":
-        return "moodboard"
-    return mode
+# A new list of results starts at the top. Staying at the previous offset drops
+# you into the middle of pictures you have not seen, with nothing on screen
+# saying you are not at the beginning. One callback per panel, because each
+# scrolls inside a different column depending on the mode.
+for _panel in ("image-display", "mb-image-display"):
+    app.clientside_callback(
+        "function (children) {"
+        "  if (window.arcanaResultsToTop) window.arcanaResultsToTop('%s');"
+        "  return window.dash_clientside.no_update;"
+        "}" % _panel,
+        Output("scroll-sink", "data", allow_duplicate=True),
+        Input(_panel, "children"),
+        prevent_initial_call=True,
+    )
 
 
 @app.callback(
-    Output("image-display", "style"),
-    [Input("mode-select", "value"), Input("results-owner", "data")],
+    [Output("image-display", "style"), Output("mb-image-display", "style")],
+    Input("mode-select", "value"),
 )
-def toggle_results_visibility(mode, owner):
+def toggle_results_visibility(mode):
     """
-    Keep results across tab switches, but only show them in the tab that made
-    them. Switching away hides the panel without discarding it, so coming back
-    restores what was there.
+    Show the results belonging to the tab you are in, and keep the other set.
+
+    Each panel owns a container, so hiding is all this has to do -- neither is
+    discarded, and coming back to a tab restores exactly what was there, twin
+    carousels included. It used to need a results-owner store to remember which
+    mode had last written the one shared div; with two, the mode is the answer.
     """
     # The right column already scrolls, so this must not add a second scrollbar
     # or an 80vh box taller than the space it sits in.
     base = {"overflowX": "hidden"}
-    if owner is None or owner == mode:
-        return {**base, "display": "block"}
-    return {**base, "display": "none"}
+    shown, hidden = {**base, "display": "block"}, {**base, "display": "none"}
+    return (hidden, shown) if mode == "moodboard" else (shown, hidden)
 
 
 @app.callback(Output("save-button", "style"), Input("mode-select", "value"))
@@ -5876,8 +5895,8 @@ def toggle_spec_inline(dataset_value):
     Output("save-confirmation", "children"),
     [Input("save-button", "n_clicks"), Input("save-story-btn", "n_clicks")],
     [
-        State({"type": "select-image", "index": dash.ALL}, "on"),
-        State({"type": "select-image", "index": dash.ALL}, "id"),
+        State({"type": "select-image", "owner": "search", "index": dash.ALL}, "on"),
+        State({"type": "select-image", "owner": "search", "index": dash.ALL}, "id"),
         State("save-folder", "value"),
         State("mode-select", "value"),
         State("story-cache", "data"),

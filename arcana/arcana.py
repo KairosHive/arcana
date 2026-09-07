@@ -1618,9 +1618,21 @@ app.layout = html.Div(
         _ui_datasets.layout(),
 
         dcc.Store(id="story-cache", storage_type="memory"),
+        # Twin carousels, one set of stores per panel that can show them.
+        #
+        # Prompt search and the moodboard's Find similar both render carousels,
+        # and both used to write these three stores and mount components under
+        # the same pattern id. So one nav callback matched every carousel on the
+        # page at once and drove them all from whichever result set had written
+        # last: the moodboard's arrows moved nothing, and an arrow in prompt
+        # search replaced its results with the moodboard's images. Keeping the
+        # two apart is what fixes it -- see CAROUSEL_OWNERS.
         dcc.Store(id="grouped-results", storage_type="memory"),
         dcc.Store(id="carousel-state", storage_type="memory"),
         dcc.Store(id="carousel-order", storage_type="memory"),
+        dcc.Store(id="mb-grouped-results", storage_type="memory"),
+        dcc.Store(id="mb-carousel-state", storage_type="memory"),
+        dcc.Store(id="mb-carousel-order", storage_type="memory"),
         dcc.Store(id="results-owner", storage_type="memory"),  # which mode filled image-display
         dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
         dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Reference image (palette source for search/transfer)
@@ -3584,10 +3596,13 @@ def moodboard_toggle_all_selections(select_clicks, clear_clicks, current_states)
         State({"type": "select-image", "index": ALL}, "on"),
         State({"type": "select-image", "index": ALL}, "id"),
         State("moodboard-results-folder", "value"),
+        State("mb-grouped-results", "data"),
+        State("mb-carousel-state", "data"),
     ],
     prevent_initial_call=True,
 )
-def save_moodboard_selected_results(n_clicks, selections, ids, folder_name):
+def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
+                                    groups, car_state):
     """Save selected result images from moodboard search."""
     if not n_clicks:
         return dash.no_update
@@ -3598,12 +3613,29 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name):
     folder_name = folder_name.strip()
     output_dir = _safe_output_dir("selections", folder_name)
     os.makedirs(output_dir, exist_ok=True)
-    
+
+    # A card showing twins carries one switch for the whole group, labelled
+    # "group::<gid>". This used to skip those outright, so selecting a twin
+    # card here saved nothing and said "No images selected" -- the same
+    # resolution prompt search has always done, which is where it came from.
+    by_gid = {g["gid"]: g for g in (groups or [])}
+    car_state = car_state or {}
+
+    def _resolve(index: str) -> str:
+        if not index.startswith("group::"):
+            return index
+        g = by_gid.get(index.split("::", 1)[1])
+        paths = (g or {}).get("paths") or []
+        if not paths:
+            return ""
+        # Whichever frame of the group is on screen, not always the first.
+        return paths[car_state.get(g["gid"], 0) % len(paths)]
+
     saved = 0
     for sel, id_obj in zip(selections, ids):
         if sel and isinstance(id_obj, dict):
-            path = id_obj.get("index", "")
-            if path and os.path.exists(path) and not path.startswith("group::"):
+            path = _resolve(str(id_obj.get("index", "")))
+            if path and os.path.exists(path):
                 try:
                     dst = os.path.join(output_dir, os.path.basename(path))
                     import shutil
@@ -3621,9 +3653,11 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name):
 @app.callback(
     [
         Output("image-display", "children", allow_duplicate=True),
-        Output("grouped-results", "data", allow_duplicate=True),
-        Output("carousel-state", "data", allow_duplicate=True),
-        Output("carousel-order", "data", allow_duplicate=True),
+        # The moodboard's own carousel stores. Writing the prompt-search ones
+        # is what made an arrow over there swap in these results.
+        Output("mb-grouped-results", "data", allow_duplicate=True),
+        Output("mb-carousel-state", "data", allow_duplicate=True),
+        Output("mb-carousel-order", "data", allow_duplicate=True),
     ],
     [Input("moodboard-search-btn", "n_clicks"),
      Input({"type": "step-to", "index": ALL}, "n_clicks")],
@@ -3653,13 +3687,24 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
     # browser. Both callbacks fire from the same click and their order is
     # not guaranteed; reading the trigger removes the question.
     trig = ctx.triggered_id
+    fired = ctx.triggered[0].get("value") if ctx.triggered else None
     stepped = isinstance(trig, dict) and trig.get("type") == "step-to"
     if stepped:
-        fired = ctx.triggered[0].get("value")
-        if fired is None or fired == 0:
+        if not fired:
             return dash.no_update, dash.no_update, dash.no_update, dash.no_update
         ref_image = trig.get("index") or ref_image
-    elif not n_clicks:
+    elif trig != "moodboard-search-btn" or not fired:
+        # Anything else that woke this callback is not a request to search.
+        #
+        # `elif not n_clicks` was not enough, and it cost the results panel.
+        # The step-to buttons are an ALL-pattern Input, so they fire this
+        # callback when they are *removed* as well as when they are clicked --
+        # and they are removed every time prompt search writes its own cards
+        # into the shared results panel. n_clicks is still 1 from the last real
+        # Find Similar, so the guard passed and this re-ran the whole search,
+        # putting the moodboard's results back over the ones just rendered.
+        # From the outside: press an arrow in prompt search, get the moodboard's
+        # pictures.
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     if not ref_image or not dataset_value:
@@ -3851,7 +3896,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
         else:
             # Carousel for twins
             media_el = html.Img(
-                id={"type": "carousel-img", "gid": g["gid"]},
+                id={"type": "carousel-img", "owner": "moodboard", "gid": g["gid"]},
                 src=f"/preview?p={qpath}&w={cfg['w']}",
                 srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w" if cfg["srcset"] else "",
                 sizes="(max-width: 900px) 90vw, 50vw",
@@ -3866,13 +3911,13 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
                 html.Div(
                     [
                         media_el,
-                        html.Button("◀", id={"type": "left", "gid": g["gid"]}, n_clicks=0,
+                        html.Button("◀", id={"type": "left", "owner": "moodboard", "gid": g["gid"]}, n_clicks=0,
                                     style={"position": "absolute", "left": "8px", "top": "50%",
                                         "transform": "translateY(-50%)",
                                         "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
                                         "border": "none", "borderRadius": "9999px",
                                         "width": "36px", "height": "36px", "zIndex": 2, "cursor": "pointer"}),
-                        html.Button("▶", id={"type": "right", "gid": g["gid"]}, n_clicks=0,
+                        html.Button("▶", id={"type": "right", "owner": "moodboard", "gid": g["gid"]}, n_clicks=0,
                                     style={"position": "absolute", "right": "8px", "top": "50%",
                                         "transform": "translateY(-50%)",
                                         "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
@@ -3881,8 +3926,14 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
                     ],
                     style={"position": "relative", "overflow": "hidden"},
                 ),
-                html.Div(id={"type": "carousel-counter", "gid": g["gid"]}, children=f"1/{n}",
+                html.Div(id={"type": "carousel-counter", "owner": "moodboard", "gid": g["gid"]}, children=f"1/{n}",
                         style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8}),
+                # Same component set as the prompt-search cards, so one nav
+                # function can serve both panels without special-casing which
+                # outputs exist for which owner.
+                html.Div(id={"type": "carousel-marks", "owner": "moodboard", "gid": g["gid"]},
+                         children=marks_badge_from_fields(
+                             (g.get("marks") or [None])[0])),
             ]
             
             if show_palettes:
@@ -3912,6 +3963,20 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
         "gap": "12px",
     }
     
+    # What ON1 knows about each frame, one triple per twin, so the arrows can
+    # relabel the badge from the store instead of re-reading the dataset.
+    mb_marks = {}
+    try:
+        _dim = int(dataset_value.split("::")[1])
+        mb_marks = _marks_lookup(load_data(db_name, n_dim=_dim, modality=modality))
+    except Exception as e:
+        # A badge is a nicety. A dataset with no marks, or one whose latent file
+        # will not open, should still return its search results.
+        print(f"[marks] no badges for the moodboard results: {type(e).__name__}: {e}")
+    for g in groups:
+        g["marks"] = [marks_fields(*mb_marks.get(pth, (None, "", None)))
+                      for pth in g.get("paths", [])]
+
     # Build carousel state for groups with multiple items
     car_state = {g["gid"]: 0 for g in groups}
     carousel_order = [g["gid"] for g in groups if len(g.get("paths", [])) > 1]
@@ -5289,7 +5354,7 @@ def update_images(
                 # carousel
                 if modality == "image":
                     media_el = html.Img(
-                        id={"type": "carousel-img", "gid": g["gid"]},
+                        id={"type": "carousel-img", "owner": "search", "gid": g["gid"]},
                         src=f"/preview?p={qpath}&w=900",
                         srcSet=f"/preview?p={qpath}&w=600 600w, /preview?p={qpath}&w=900 900w, /preview?p={qpath}&w=1400 1400w",
                         sizes="(max-width: 900px) 90vw, 42vw",
@@ -5298,12 +5363,12 @@ def update_images(
                     extra_player = []
                 else:
                     media_el = html.Img(
-                        id={"type": "carousel-img", "gid": g["gid"]},
+                        id={"type": "carousel-img", "owner": "search", "gid": g["gid"]},
                         src=f"{('/aspec' if spec_on else '/awave')}?p={qpath}",
                         style={"width": "100%", "display": "block", "marginBottom": "6px", "borderRadius": "5px"},
                     )
 
-                    extra_player = [html.Audio(id={"type": "carousel-audio", "gid": g["gid"]},
+                    extra_player = [html.Audio(id={"type": "carousel-audio", "owner": "search", "gid": g["gid"]},
                                             src=f"/audio?p={qpath}", controls=True, style={"width": "100%"})]
 
                 cards.append(
@@ -5312,13 +5377,13 @@ def update_images(
                             html.Div(
                                 [
                                     media_el,
-                                    html.Button("◀", id={"type": "left", "gid": g["gid"]}, n_clicks=0,
+                                    html.Button("◀", id={"type": "left", "owner": "search", "gid": g["gid"]}, n_clicks=0,
                                                 style={"position": "absolute", "left": "8px", "top": "50%",
                                                     "transform": "translateY(-50%)",
                                                     "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
                                                     "border": "none", "borderRadius": "9999px",
                                                     "width": "36px", "height": "36px", "zIndex": 2, "cursor": "pointer"}),
-                                    html.Button("▶", id={"type": "right", "gid": g["gid"]}, n_clicks=0,
+                                    html.Button("▶", id={"type": "right", "owner": "search", "gid": g["gid"]}, n_clicks=0,
                                                 style={"position": "absolute", "right": "8px", "top": "50%",
                                                     "transform": "translateY(-50%)",
                                                     "backgroundColor": "rgba(0,0,0,0.6)", "color": "#fff",
@@ -5328,7 +5393,7 @@ def update_images(
                                 style={"position": "relative", "overflow": "hidden"},
                             ),
                             *extra_player,
-                            html.Div(id={"type": "carousel-counter", "gid": g["gid"]}, children=f"1/{n}",
+                            html.Div(id={"type": "carousel-counter", "owner": "search", "gid": g["gid"]}, children=f"1/{n}",
                                     style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8}),
                             html.Div([
                                 daq.BooleanSwitch(id={"type": "select-image", "index": f"group::{g['gid']}"}, on=False),
@@ -5339,7 +5404,7 @@ def update_images(
                             # The badge follows the frame on screen, which the
                             # arrows change, so it is the carousel's to keep in
                             # step -- see nav_carousel.
-                            html.Div(id={"type": "carousel-marks", "gid": g["gid"]},
+                            html.Div(id={"type": "carousel-marks", "owner": "search", "gid": g["gid"]},
                                      children=marks_badge(*marks_by_path.get(first, (None, "", None)))),
                         ],
                         style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e",
@@ -5408,27 +5473,44 @@ def update_images(
     return images, fig, show_save_story, story_cache, groups_store, car_state_store, []
 
 
-@app.callback(
-    [
-        Output("carousel-state", "data", allow_duplicate=True),
-        Output({"type": "carousel-img", "gid": ALL}, "src"),
-        Output({"type": "carousel-img", "gid": ALL}, "srcSet"),
-        Output({"type": "carousel-counter", "gid": ALL}, "children"),
-        Output({"type": "carousel-marks", "gid": ALL}, "children"),
-        Output({"type": "carousel-audio", "gid": ALL}, "src"),
-    ],
-    [
-        Input({"type": "left", "gid": ALL}, "n_clicks"),
-        Input({"type": "right", "gid": ALL}, "n_clicks"),
-        Input("grouped-results", "data"),
-        Input("carousel-order", "data"),
-    ],
-    [
-        State("carousel-state", "data"),
-        State("spec-toggle", "on"),
-    ],
-    prevent_initial_call=True,
-)
+# Which panels can show twin carousels, and the stores each one keeps its own
+# state in. Registering them here rather than writing the callback twice means
+# a third panel is three lines, and that the two existing ones cannot drift.
+CAROUSEL_OWNERS = {
+    "search": ("grouped-results", "carousel-state", "carousel-order"),
+    "moodboard": ("mb-grouped-results", "mb-carousel-state", "mb-carousel-order"),
+}
+
+
+def _register_carousel(owner: str) -> None:
+    """Wire one panel's arrows to one panel's carousels, and nothing else."""
+    groups_store, state_store, order_store = CAROUSEL_OWNERS[owner]
+
+    @app.callback(
+        [
+            Output(state_store, "data", allow_duplicate=True),
+            Output({"type": "carousel-img", "owner": owner, "gid": ALL}, "src"),
+            Output({"type": "carousel-img", "owner": owner, "gid": ALL}, "srcSet"),
+            Output({"type": "carousel-counter", "owner": owner, "gid": ALL}, "children"),
+            Output({"type": "carousel-marks", "owner": owner, "gid": ALL}, "children"),
+            Output({"type": "carousel-audio", "owner": owner, "gid": ALL}, "src"),
+        ],
+        [
+            Input({"type": "left", "owner": owner, "gid": ALL}, "n_clicks"),
+            Input({"type": "right", "owner": owner, "gid": ALL}, "n_clicks"),
+            Input(groups_store, "data"),
+            Input(order_store, "data"),
+        ],
+        [
+            State(state_store, "data"),
+            State("spec-toggle", "on"),
+        ],
+        prevent_initial_call=True,
+    )
+    def _nav(left_clicks, right_clicks, groups, order, car_state, spec_on):
+        return nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on)
+
+
 def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
     """
     Robust carousel navigation:
@@ -5476,7 +5558,14 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
 
     # Handle user click (if any)
     trig = ctx.triggered_id
-    if isinstance(trig, dict) and trig.get("type") in ("left", "right"):
+    # Mounting a new set of result cards creates new arrow buttons, and Dash
+    # fires this callback with one of them as the trigger and n_clicks=0 -- a
+    # component appearing counts as a change. Read as a click, that ran
+    # (0 - 1) % n on the first group, so every search opened its first card on
+    # the LAST twin: "15/15" before the user had touched anything. Only a
+    # trigger carrying a real count is a real click.
+    fired = ctx.triggered[0].get("value") if ctx.triggered else None
+    if isinstance(trig, dict) and trig.get("type") in ("left", "right") and fired:
         gid = trig.get("gid")
         if gid in car_groups:
             paths = car_groups[gid]["paths"]
@@ -5544,6 +5633,10 @@ def nav_carousel(left_clicks, right_clicks, groups, order, car_state, spec_on):
         audios = []
 
     return car_state, srcs, srcsets, counters, badges, audios
+
+
+for _owner in CAROUSEL_OWNERS:
+    _register_carousel(_owner)
 
 
 @app.callback(

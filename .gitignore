@@ -28,6 +28,17 @@ arcana/output/
 arcana/bundles/
 arcana/cache_specs/
 arcana/cache/
+# Scratch output from experiments run inside the package folder. Not
+# arcana/*.png: arcana/assets/ holds the logo and icon, which are tracked.
+arcana/test_output/
+arcana/output_*.png
+
+# Local media and third-party checkouts used for experiments. audio_dataset/
+# and audio_library/ are ~1.5 GB of sound; NeuralPreset-main/ is someone
+# else's repository, unpacked for reference.
+audio_dataset/
+audio_library/
+NeuralPreset-main/
 
 # If you have big assets
 *.h5

@@ -1,0 +1,200 @@
+Human Voice
+Whisper
+Laughter
+Crying
+Shouting
+Conversation
+Crowd
+Applause
+Footsteps
+Heartbeat
+Breathing
+Snoring
+Singing
+Choir
+Rap
+Opera
+Acoustic Guitar
+Electric Guitar
+Bass Guitar
+Piano
+Organ
+Strings Ensemble
+Violin
+Cello
+Brass Ensemble
+Trumpet
+Saxophone
+Flute
+Clarinet
+Percussion
+Drum Kit
+Hand Drums
+Cymbals
+Bells
+Chimes
+Synthesizer
+Drone (Sustained)
+Arpeggio
+Rhythm Loop
+Silence (Low Energy)
+White Noise
+Pink Noise
+Hum
+Buzz
+Crackle
+Pop
+Clicks
+Glitch
+Reverb Heavy
+Dry (Close)
+Echo/Delay
+Distortion
+Warm
+Bright
+Dark
+Harsh
+Soft
+Smooth
+Rough
+Grainy
+Glossy
+Matte
+Transparent
+Opaque
+Metallic
+Wooden
+Stone
+Glass
+Plastic
+Fabric
+Paper
+Water
+Rain Light
+Rain Heavy
+Thunder
+Wind Breeze
+Wind Storm
+Ocean Waves
+River Stream
+Waterfall
+Bubbles
+Ice/Snow
+Fire Crackle
+Leaves Rustle
+Grassland
+Forest
+Desert
+Mountain
+Cave
+Beach
+Urban Street
+Suburb
+Village
+Market/Bazaar
+Construction Site
+Factory
+Office
+Classroom
+Hospital
+Library
+Temple/Church
+Sports Arena
+Playground
+Restaurant
+Kitchen
+Bedroom
+Bathroom
+Garage/Workshop
+Farm
+Barn
+Zoo
+Aquarium
+Airport
+Train Station
+Bus Terminal
+Port/Harbor
+Highway
+Tunnel
+Bridge
+Traffic
+Car Interior
+Motorcycle
+Bicycle
+Train
+Tram
+Subway
+Airplane
+Helicopter
+Boat
+Sailboat
+Footpath/Trail
+Crowd March
+Festival/Carnival
+Parade
+Ceremony
+Meditation
+Worship Chant
+Dance
+Sports Action
+Combat/Athletics
+Animals—Birds
+Animals—Insects
+Animals—Amphibians
+Animals—Reptiles
+Animals—Fish
+Animals—Small Mammals
+Animals—Large Mammals
+Pets—Dog
+Pets—Cat
+Farm Animals
+Predator Scenes
+Flock/School/Swarm
+Daylight
+Golden Hour
+Night
+Dawn
+Dusk
+Overcast
+Fog/Mist
+Clear Sky
+Rainbow
+Aurora
+Macro Close-Up
+Aerial/Wide
+Panoramic
+Time-Lapse/Hyperlapse
+Slow Motion
+Static Stillness
+Fast Motion
+Chaotic
+Symmetry
+Patterned/Repetitive
+Minimalist
+Maximalist
+Vintage/Retro
+Futuristic
+Surreal
+Documentary/Real
+Abstract
+Geometric
+Organic Forms
+Handcrafted
+Industrial
+Science/Technology
+Data/Interface
+Gaming/Arcade
+Horror/Tension
+Mystery/Noir
+Romance/Warmth
+Comedy/Playful
+Epic/Grand
+Calm/Ambient
+Melancholy
+Uplifting
+Sacred/Spiritual
+Ritual/Ancestral
+Seasonal—Spring
+Seasonal—Summer
+Seasonal—Autumn
+Seasonal—Winter

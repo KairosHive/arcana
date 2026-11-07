@@ -133,6 +133,25 @@ That folder holds the indexes, the downloaded models and anything you save. It
 survives uninstalling, and pointing two machines at the same one lets them share
 datasets.
 
+**If you connect an agent** (below), the agent's model may not be on your
+machine. Search, palettes and transfers still run here, and your files still
+stay put. What reaches the model is the theme you ask for, the agent's queries,
+and the text of the results: cluster names, colours, file names. Thumbnails are
+**not** sent unless you allow it, by putting `{"pixels": true}` in `agent.json`
+in the folder above. No tool can change that setting, and every result the agent
+gets says which way it is set. Point a local model's client at the server
+instead and nothing leaves at all.
+
+## Working with an agent
+
+`arcana-mcp` offers your datasets to an AI agent over MCP, read-only: survey a
+dataset, search it for several ideas at once with phrases to avoid, find more
+like a picture, match a palette, look closely at a few. The agent brings the
+judgment, such as turning a theme into angles for a moodboard; Arcana brings the
+archive. Claude Code opened in this repository picks it up from `.mcp.json`;
+it needs the optional dependency, `uv sync --extra agent`. The plan for where
+this goes next is [AGENT_PLAN.md](AGENT_PLAN.md).
+
 ## Command line
 
 The GUI covers everything, but each piece is also a command:
@@ -145,6 +164,7 @@ arcana-finish --name holiday --k 12      # re-cluster, rename or re-lay-out, no 
 arcana-marks --name holiday              # re-read ON1 stars and colour tags
 arcana-relocate --name holiday           # after moving your files
 arcana-migrate                           # older datasets to the portable format
+arcana-mcp                               # the agent's tools, over MCP on stdio
 ```
 
 `arcana-build-latent --help` lists the indexing options — cluster count, label

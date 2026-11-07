@@ -5,7 +5,15 @@ back. It should be sourced from your own archive across several angles,
 assembled, unified with Arcana's own colour and style tools, and laid out. Arcana
 itself takes on no API key, no language model and no network dependency.
 
-**Verified against the repo 20 October 2026** (at `42ddeec`).
+**Verified against the repo 20 October 2026** (at `b2fa984`). Revised the same
+day: COLOR_TRANSFER_PLAN's B0 and B1 moved in as P4, and the three open
+decisions settled (see the end).
+
+**Superseded on architecture, 7 November 2026,** by [OPS_PLAN.md](OPS_PLAN.md).
+The design decisions here stay in force (A5 to A8, board version 2, the skills,
+the eval briefs, P4's registry). The tool list, with one MCP tool per
+capability, is replaced by one op vocabulary reached through one `exec` tool,
+one `arcana` command and the web UI alike. Read OPS_PLAN.md first.
 
 ---
 
@@ -84,7 +92,7 @@ MCP comes first for three reasons:
 | style search | `db.py:1223 search_by_style`, `:1333 search_combined` | ✅ |
 | cluster names | `label` / `cluster_id` in the latent frame | ✅ |
 | a picture's palette, with lightness / saturation filters | `refselect.py:134 palette_strip` | ✅ |
-| colour transfer | `color_transfer.py:319 transfer_colors`; the method choice is in the callback at `arcana.py:4510` | ⚠️ the function is ready, but method dispatch isn't (COLOR_TRANSFER_PLAN B0) |
+| colour transfer | `color_transfer.py:319 transfer_colors`; the method choice is in the callback at `arcana.py:4510` | ⚠️ the function is ready, but method dispatch isn't (P4) |
 | style transfer, ControlNet | `style_transfer.py:352 transfer`, `:491 controlnet_transfer` | ✅ |
 | CLIP description of a picture | `style_transfer.py:168 describe` | ✅ |
 | boards | `boards.py` | ⚠️ headless, but the schema is flat |
@@ -140,7 +148,7 @@ the other.
 
 The cost: with both running, the CLIP text tower is loaded twice. Measure it
 before optimising. The alternative is to serve the tools over streamable HTTP
-from inside the app process, sharing models and the job queue; that is P5.
+from inside the app process, sharing models and the job queue; that is P6.
 
 ### A3. The data dir is the bus
 
@@ -171,7 +179,7 @@ purpose:
 
 Results come back as **contact sheets**: one JPEG of numbered tiles plus a
 compact text table, for example
-`#7  japan:1423  match 0.92  ★4  Forest  "fog over cedar"`. The numbers make
+`#7  japan:1423  p 0.92  ★★★★  [Forest]  DSC04481.jpg`. The numbers make
 references unambiguous, a grid is what curation needs, and a hundred candidates
 cost about 3,500 tokens of image.
 
@@ -195,15 +203,20 @@ board the person made, it saves a copy.
 The README promises *"Nothing is copied, moved or uploaded."* With a cloud
 model, the theme, the queries, the text tables and the contact-sheet thumbnails
 go to the model provider. Search, palettes, transfers and the originals stay on
-the machine. The server's config chooses one of three modes:
+the machine. There are two modes:
 
-- **pixels:** thumbnails at the sizes in A5. The person turns this on once,
-  knowing what it means.
-- **blind:** no images leave the machine. Tools return cluster names, palettes
-  as hex, match strengths and `describe()` text. Curation gets worse, but the
-  promise holds.
-- **local model:** pixels go to a model on the same machine through any
-  MCP-capable local client. The server doesn't need to know which.
+- **blind** (the default): no images leave the machine. Tools return cluster
+  names, palettes as hex, match strengths and `describe()` text. Curation gets
+  worse, but the promise holds. While blind, every result says so in one line,
+  so the person is never unsure which mode is on.
+- **pixels:** thumbnails at the sizes in A5.
+
+The setting lives in `agent.json` in the data dir (`{"pixels": true}`). It is
+per machine, never committed, and only the person changes it: by editing that
+file, or from a toggle in Arcana (P2). **No tool can change it**, so the model
+can't decide for itself to start sending pictures. Pointing an MCP-capable local
+client at the server with pixels on keeps everything on the machine; the server
+doesn't need to know which client it is.
 
 The README's *Your files stay put* section gets a paragraph saying exactly this.
 
@@ -226,23 +239,33 @@ board is `{name, items: [path, …], reference, transfer, dataset}`. Version 2:
     {"id": "s1", "title": "Water as weight", "rationale": "…",
      "queries": ["heavy rain on a dark street", "-umbrella"]}
   ],
-  "items": [
-    {"path": "D:/photos/…/IMG_4412.jpg", "fp": "9c1e…",     // bundle.fingerprint
-     "section": "s1", "role": "hero",                       // hero | support | texture | detail | counterpoint
-     "note": "why it is here",
-     "source": {"kind": "search", "dataset": "japan", "query": "…", "match": 0.91}},
-    {"path": "…/output/color_transfer/….png",
-     "derived_from": "D:/photos/…/IMG_2210.jpg",
-     "op": {"kind": "color_transfer", "method": "modflows", "reference": "…", "strength": 0.5},
-     "section": "s2", "role": "support"}
-  ],
+  "items": ["D:/photos/…/IMG_4412.jpg", "…/output/color_transfer/….png"],
+  "details": {
+    "D:/photos/…/IMG_4412.jpg": {
+      "fp": "9c1e…",                                        // bundle.fingerprint
+      "section": "s1", "role": "hero",                      // hero | support | texture | detail | counterpoint
+      "note": "why it is here",
+      "source": {"kind": "search", "dataset": "japan", "query": "…", "match": 0.91}},
+    "…/output/color_transfer/….png": {
+      "derived_from": "D:/photos/…/IMG_2210.jpg",
+      "op": {"kind": "color_transfer", "method": "modflows", "reference": "…", "strength": 0.5},
+      "section": "s2", "role": "support"}
+  },
   "layout": {"kind": "editorial", "order": ["…"]}
 }
 ```
 
-- **Backward compatible.** `load()` turns a version 1 string item into
-  `{"path": s}`. The current UI reads `[i["path"] for i in items]` and keeps
-  working before it learns to show sections.
+- **Backward compatible in both directions.** `items` stays exactly what it was
+  in version 1, a list of paths, and everything new about an item goes in
+  `details`, keyed by path. That matters because two Arcanas can share one data
+  dir: the installed app and a development checkout on the same machine, or two
+  machines on one `ARCANA_DATA_DIR`. An older version reading a version 2 board
+  sees the paths it expects and ignores the rest. Turning items into objects
+  would have crashed it on every board the agent wrote.
+- **The app keeps what it doesn't show.** Re-saving a board from the Moodboard
+  tab keeps the `details` of every picture still on it, and every top-level
+  field it doesn't set, so a person tidying an agent's board doesn't wipe the
+  agent's notes.
 - **Derived images are always marked.** A colour-transferred or generated
   picture must never pass for a photograph from the archive. The UI badges
   anything with `derived_from` or `"kind": "generated"`.
@@ -267,7 +290,7 @@ Fourteen in all.
 
 | tool | does |
 |---|---|
-| `search(dataset, facets, filters, k, diversity)` | several facets in one call. Each facet is a set of phrasings plus negatives (`"fog"`, `"mist over water"`, `-"people"`), scored as a weighted sum of cosines (ROADMAP 2). MMR diversity over the image vectors stops twenty versions of one photo filling the results. Match strength is a percentile within the dataset, and a facet with nothing good is flagged *weak*. |
+| `search(dataset, facets, filters, k, diversity)` | several facets in one call. Each facet is a set of phrasings plus negatives (`"fog"`, `"mist over water"`, `-"people"`), scored as a weighted sum of cosines (ROADMAP 2). MMR diversity over the image vectors stops twenty versions of one photo filling the results. Each picture gets p, CLIP's zero-shot confidence that it shows the phrases rather than something generic, and a facet with nothing good is flagged *weak* (see P1 for why not a percentile). |
 | `more_like(ids, mode, k)` | search by example. `semantic` reads the stored vectors, so it needs no vision model and no GPU. `palette`, `style` and `combined` call the existing `db.search_by_*`. |
 | `find_by_palette(hex, k)` | the agent picks a palette ("ink blue, rust, bone") and finds pictures in it. The swatches are rendered as an image and passed to `search_by_palette` as the query. |
 | `inspect(ids)` | one or a few pictures shown large, with palette, marks, cluster and `describe()` tags |
@@ -286,14 +309,14 @@ Fourteen in all.
 |---|---|
 | `harmonize(board, items, toward, method, strength)` | colour-transfers the chosen items toward a reference item or the board palette; the results join the board as derived items |
 | `restyle(source, target, method, …)` | style transfer or ControlNet |
-| `generate(prompt, init, strength)` | sd-turbo, for an angle the archive doesn't have; the result is always marked `"kind": "generated"` |
+| `generate(prompt, init, strength)` | sd-turbo, only for an angle that `search` flagged *weak*; the result is always marked `"kind": "generated"`. The server refuses a third generated picture on one board, and refuses to make one the hero. |
 | `job(id)` | status, progress and result of a running job |
 
 **Present**
 
 | tool | does |
 |---|---|
-| `render_board(board, layout, width)` | a PIL compositor (`compose.py`, new): editorial, masonry or grid layout, with a palette strip, section titles and notes. Writes a PNG to `output/boards/` and returns a preview so the agent can look at what it made and revise. |
+| `render_board(board, layout, width)` | a PIL compositor (`compose.py`, new): editorial, masonry or grid layout, with a palette strip, section titles and notes. Generated pictures carry a small mark. Writes a PNG to `output/boards/` and returns a preview so the agent can look at what it made and revise. |
 
 The server also exposes an MCP **prompt**, `moodboard(theme, dataset)`, so
 clients without skills still get the workflow.
@@ -353,7 +376,9 @@ The workflow, with budgets:
    one hero that nothing else competes with.
 7. Take the palette from the selection rather than imposing one on it.
 8. Harmonize sparingly: outliers only, never the hero, at most a third of the
-   board, strength 0.3–0.6, and keep the originals.
+   board, strength 0.3–0.6, and keep the originals. Generate only to fill an
+   angle the archive came back weak on, at most two per board, never the hero,
+   and say so in the hand-back.
 9. Render the board, look at it, critique it against the metrics and the
    `board-design` skill, and revise once.
 10. Hand back the rendered board, its name in Arcana, and what was missing from
@@ -374,9 +399,11 @@ It also covers how to critique a rendered board in those terms.
 
 ### `harmonize`
 
-Which transfer method fits which job: LAB for quick, safe nudges, ModFlows for
-quality, texture transfer for grain, and ControlNet only when you mean it. When
-not to transfer at all.
+Which transfer method fits which job: LAB for quick, safe nudges, MKL when LAB
+leaves a colour cast, IDT to match a whole distribution, ModFlows for quality,
+texture transfer for grain, and ControlNet only when you mean it. When not to
+transfer at all. The method list itself comes from the P4 registry, so the skill
+explains judgment, not inventory.
 
 ### Evaluating the skills
 
@@ -402,23 +429,66 @@ Each phase ends with something usable.
 - **done when** importing `arcana.core` leaves `dash` out of `sys.modules`, and
   the app behaves exactly as before
 
+**Done, 20 October 2026.** Importing `arcana.core` loads neither dash nor torch
+nor transformers (tested in a fresh interpreter). The app was launched from the
+checkout and a prompt search on japan ran through the moved code with no errors.
+All 327 tests pass. One of them loads a full CLIP model, and on a machine
+already short of memory it crashed until memory was freed. It only touches
+`db.py`. What building it changed:
+
+- Boards keep `items` as plain paths and add `details` beside them (see *The
+  board, version 2*), because the installed app shares the data dir.
+- Fingerprinting is opt-in (`fingerprints=True`). It reads every file whole,
+  and the Moodboard tab's save should stay instant.
+- `core.open_dataset()` caches by file mtime for the server. The app's own
+  `load_data` stays uncached, so its behaviour is unchanged.
+
 ### P1: Read-only server (about 2 days)
 
 - `mcp` added as an optional extra (`[agent]`) in `pyproject.toml`, with an
   `arcana-mcp` script
 - tools: `list_datasets`, `survey`, `search` (facets, negatives, filters, MMR,
   calibrated match strength), `more_like`, `find_by_palette`, `inspect`
-- contact-sheet packer, handle ↔ path mapping, pixels and blind modes
-- `.mcp.json` at the repo root, so Claude Code in this repo offers the server
+- contact-sheet packer, handle ↔ path mapping, blind and pixels modes (A8)
+- `.mcp.json` at the repo root, so Claude Code in this repo offers the server.
+  It runs `uv run --extra agent arcana-mcp`, so the optional dependency is
+  there without becoming part of every install.
 - **done when**, in Claude Code, *"what does my japan dataset have about water,
   apart from the sea?"* returns a contact sheet with match strengths, and the
   MCP Inspector shows clean schemas
+
+**Built, 20 October 2026; the acceptance check in Claude Code is still to do.**
+The server runs from `.mcp.json` and answers over a real stdio pipe. Tested: all
+six tools, a tool that prints mid-call, and errors that reach the model in
+words. On the real japan and midjourney datasets it lists, surveys and searches.
+Contact sheets are untested on real pictures, because every dataset's files
+have moved off this machine (Relocate fixes that). What building it changed:
+
+- **MCP SDK 2.x.** `FastMCP` is now `MCPServer`. The stdio transport keeps fd 1
+  off the wire by itself, which beats routing print() by hand because it also
+  catches native writes. Expected failures must be raised as `ToolError`, or
+  the model sees only "Error executing tool search".
+- **Match strength is CLIP zero-shot, not a z-score.** A z-score against the
+  dataset punishes common subjects. On the 9,359-image set, "a spreadsheet of
+  numbers" got the highest z of every query tried. Weighing the query against
+  a bank of generic descriptions separates cleanly instead: subjects present
+  scored 0.52–1.00, absent ones 0.00–0.16 (`core.confidence`). A weak facet
+  still points out a single picture that scores well, like the one cat in an
+  archive of temples.
+- **Moved files are reported.** `list_datasets` says when a dataset's files
+  are gone, and each result line marks a missing file.
+- **Datasets without a map are offered.** An index alone is enough to search,
+  so midjourney (9,359 images, never laid out) is searchable here although the
+  app hides it.
+- **Audio datasets are named `name@audio`,** so a picture handle stays
+  `dataset:key`. Audio has no distractor bank yet, so its facets come back
+  "unrated", with z instead of p.
 
 ### P2: Boards through the agent (about 2 days)
 
 - `board_open`, `board_edit`, and `board_view` with metrics
 - in the app: a boards-folder watcher and toast; sections, roles and notes shown
-  when a board loads; a badge on derived pictures
+  when a board loads; a badge on derived pictures; the pixels toggle (A8)
 - **done when** a board the agent builds shows up in the Moodboard tab within
   seconds, and editing it there keeps the agent's notes
 
@@ -432,26 +502,98 @@ Each phase ends with something usable.
   rendered board with at least 4 angles, no near-duplicate pairs, a palette
   strip and a reason for each section, and it's a board you'd keep
 
-### P4: Completion tools (about 3 days)
+### P4: Colour transfer as one table, plus the classical tier (about 2 days)
 
-- prerequisite: COLOR_TRANSFER_PLAN **B0**, the method registry. The agent must
-  pick methods from the same table as the dropdown, not from a third copy of the
-  `if method == …` chain.
+Moved here from COLOR_TRANSFER_PLAN (where it was B0 and B1), for two reasons.
+P5's `harmonize` tool needs it. And it fills the gap the CPU build has today:
+two methods, only one of them instant. It touches only the colour-transfer
+code, so it can run alongside P1–P3 once P0 has landed.
+
+**Where it stands.** There are two methods, ModFlows and LAB, and their names
+are hardcoded: the dropdown at `arcana.py:2156`, then `method == "lab"`
+branches at `4089` (which controls to grey out), `4284` (the quality note),
+`4523–4525` (availability), `4569` (dispatch) and `4604` (filename suffix). The
+agent would be a third place to copy that chain into.
+
+**The registry.** `arcana/transfer_methods.py`, following `models.py`, which is
+already the house pattern: a frozen dataclass, a tuple ordered cheapest first,
+`BY_ID`, `get()`, `available()`, `default_for()`.
+
+```python
+@dataclass(frozen=True)
+class TransferMethod:
+    id: str
+    label: str              # what a person sees
+    licence: str            # SPDX or short name; THIRD_PARTY.md is generated from it
+    needs_download_mb: int  # 0 means nothing to fetch
+    needs_gpu: bool         # False means usable on the CPU build
+    cpu_ms: float           # measured at 1024px, not guessed
+    gpu_ms: float
+    quality: str
+    params: tuple[str, ...] # which controls apply, e.g. ("strength",) or ("strength", "quality")
+    blurb: str
+```
+
+One `transfer(method_id, content, reference, strength, **kw)` beside it is the
+only dispatch, for the UI and the agent alike. Then:
+
+- the dropdown is built from the registry
+- control gating reads `params` instead of `method == "lab"`
+- the filename suffix and PNG metadata read `id` and `label`
+- the availability checks collapse to one lookup
+- the agent's `harmonize` description is generated from `label`, `blurb` and the
+  timings, so the model's choices stay current as methods are added
+
+`cpu_ms` and `gpu_ms` get **measured**, the way the `models.py` timings were, so
+the UI can say "about 20 seconds" instead of spinning silently.
+
+**The classical tier.** Two methods from papers, both short, both instant on
+CPU, both written here so neither carries any obligation.
+
+- **MKL, linear Monge–Kantorovitch.** Pitié and Kokaram, CVMP 2007. Closed form:
+  map the content's 3×3 colour covariance onto the reference's through the
+  symmetric square root. About 20 lines of numpy.
+- **IDT, N-dimensional PDF transfer.** Pitié, Kokaram and Dahyot, ICCV 2005 and
+  CVIU 2007. Iterative: random rotation, a 1-D histogram match along each axis,
+  rotate back, repeat. About 60 lines, plus the grain-suppression post-process
+  from the CVIU paper.
+
+`pengbo-learn/python-color-transfer` (MIT) implements both and is a fair
+reference to check numerical agreement against. Read it to verify behaviour;
+write our own.
+
+A local experiment with per-channel histogram matching and a skewness-corrected
+Reinhard was dropped in October 2026 in favour of these. IDT is per-channel
+histogram matching done properly, along rotated axes so the channels stay
+consistent. MKL matches the full covariance where the skewness tweak was a
+heuristic.
+
+- tests: each method returns the content unchanged at strength 0 and when the
+  reference is the content itself; MKL's output covariance matches the
+  reference's within tolerance; IDT's marginals match after its iterations;
+  every registry id dispatches; the dropdown options equal the registry
+- **done when** the dropdown offers ModFlows, LAB, MKL and IDT from the
+  registry, no `method == "lab"` literal is left in `arcana.py`, and MKL and IDT
+  have measured CPU timings at 1024 px recorded in the registry
+
+### P5: Completion tools (about 3 days)
+
+- prerequisite: P4. The agent picks methods from the same table as the dropdown.
 - `harmonize`, `restyle`, `generate` and `job`; the cross-process GPU lock (A4);
   the generation step of `_poetry_job` moved into a headless function
 - the `harmonize` skill
 - **done when** the agent harmonizes two outliers toward the board palette, the
   results carry the derived badge, and the originals' mtimes are unchanged
 
-### P5: Inside the app (optional)
+### P6: Inside the app (optional)
 
-Only if P1–P4 prove their worth. Add a chat panel that calls the same tools,
+Only if P1–P5 prove their worth. Add a chat panel that calls the same tools,
 through the Claude Agent SDK or the Anthropic API's tool runner. Move the server
 onto streamable HTTP inside the app process so the two share models and the job
-queue. At this point the API key and the privacy setting become part of the UI.
+queue. At this point the API key becomes part of the UI.
 
-Roughly two weeks of focused work takes this to the end of P4. P0–P1 on their
-own already give you an assistant that knows your archive.
+Roughly fourteen working days take this to the end of P5. P0–P1 on their own
+already give you an assistant that knows your archive.
 
 ---
 
@@ -465,7 +607,7 @@ easier to reach.
 | **Name clusters by looking.** The agent views each cluster's exemplars and names it, which beats the nearest word in a 100-word list. | `survey`, plus a write-back for cluster names | 4, 5 |
 | **Write the vocabulary.** A word list tailored to this archive, for per-image tags. | `survey`, plus a write-back for tags | 5 |
 | **Ask about the archive.** *"Four-star, foggy, June"*, in plain language. | P1 only | none |
-| **A story from a narrative.** The agent writes the scene lines, picks frames that flow into each other, and runs Inject Poetry. | P4 generation | sequence a selection |
+| **A story from a narrative.** The agent writes the scene lines, picks frames that flow into each other, and runs Inject Poetry. | P5 generation | sequence a selection |
 | **Culling.** Duplicate stacks across the whole archive, with suggested keepers that defer to ON1 stars. | dedupe over the whole index | 6 |
 | **A soundtrack for a board.** CLAP search of an audio dataset, driven by the board's concept. | `search` already branches on modality | stories with sound |
 | Dataset admin by chat (index, extend, relocate) | none | low value; the GUI already does this well |
@@ -481,16 +623,24 @@ easier to reach.
   weak-match flag turn a silent failure into an honest *"your archive has little
   for this"*.
 - **Memory with both processes running.** Measure in P1; the ViT-H text tower
-  is the large one. If it hurts, P5's in-process transport fixes it.
+  is the large one. If it hurts, P6's in-process transport fixes it.
 - **Two processes using the GPU.** See A4.
 - **Licensing.** The `mcp` SDK is MIT-licensed, which fits the AGPL plan in
   LICENSING.md.
 
-## Decisions needed
+## Decisions
 
-1. **Pixels or blind by default** when the client uses a cloud model?
-   Recommendation: start blind, and switch to pixels once you've opted in on
-   first run.
-2. **Generated images on boards:** allowed with a badge, or archive-only boards?
-3. **Host for v1:** Claude Code in this repo is the fastest path. Claude Desktop
-   would need the same server registered there too.
+Settled 20 October 2026.
+
+1. **Blind by default; pixels is the person's switch.** The setting is
+   `agent.json` in the data dir, per machine and never committed. The person
+   flips it, by hand or from Arcana's toggle; no tool can. While blind, every
+   result says so. Details in A8.
+2. **Generated pictures are allowed on boards, on a short leash.** Only for an
+   angle the archive came back weak on, at most two per board, never the hero,
+   always `"kind": "generated"` with a badge in the app and a mark on the
+   rendered board. The server enforces the count and the hero rule; the skill
+   explains them.
+3. **Claude Code in this repo hosts v1,** through the project `.mcp.json` from
+   P1. Claude Desktop can register the same command later. In P3 the plugin
+   packaging makes this a single install.

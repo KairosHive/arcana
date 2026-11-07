@@ -15,6 +15,15 @@
 #
 # A board records paths, not pixels. Nothing is copied, which keeps it in line
 # with the rest of Arcana: the originals stay where they are.
+#
+# Schema 2 adds what a board built by an agent needs -- sections, a role and a
+# note per picture, a palette, and where each derived picture came from --
+# without changing anything a schema 1 reader depends on. `items` is still a
+# plain list of paths; everything else about an item sits in `details`, keyed by
+# path. Two versions of Arcana can share one data dir (the installed app beside
+# a development checkout, or two machines on one ARCANA_DATA_DIR), and an older
+# one reads the paths and ignores the rest. Turning items into objects would
+# have crashed it on every board the agent wrote. See AGENT_PLAN.md.
 
 from __future__ import annotations
 
@@ -29,7 +38,18 @@ except ImportError:
     import paths as _paths
 
 BOARDS_DIRNAME = "boards"
-SCHEMA = 1
+SCHEMA = 2
+
+# What a picture is doing on the board. One hero; the rest support it.
+ROLES = ("hero", "support", "texture", "detail", "counterpoint")
+
+# Who made the board. Absent means a person: every schema 1 board was.
+AUTHORS = ("person", "agent")
+
+# Top-level fields schema 1 did not have. save() keeps each one as it was on
+# disk unless the caller passes it, which is what lets the Moodboard tab re-save
+# an agent's board without knowing these fields exist.
+_V2_FIELDS = ("author", "brief", "concept", "palette", "sections", "layout")
 
 
 def boards_dir() -> str:
@@ -55,28 +75,98 @@ def _path_for(slug: str) -> str | None:
     return _paths.safe_join(boards_dir(), slug + ".json")
 
 
-def save(name: str, items: list[str], *, reference: str | None = None,
+def _split_items(items) -> tuple[list[str], dict[str, dict]]:
+    """
+    Items as paths, plus whatever details came with them.
+
+    The Moodboard tab passes plain paths. A caller building a board picture by
+    picture may pass {"path": ..., "role": ..., "note": ...} instead; both end
+    up in the same shape on disk.
+    """
+    paths, details = [], {}
+    for it in items or []:
+        if isinstance(it, dict):
+            p = it.get("path")
+            extra = {k: v for k, v in it.items() if k != "path"}
+        else:
+            p, extra = it, None
+        if not p:
+            continue
+        paths.append(str(p))
+        if extra:
+            details.setdefault(str(p), {}).update(extra)
+    return paths, details
+
+
+def save(name: str, items: list, *, reference: str | None = None,
          transfer: str | None = None, dataset: str | None = None,
-         slug: str | None = None) -> dict:
+         slug: str | None = None, details: dict | None = None,
+         author: str | None = None, brief: str | None = None,
+         concept: str | None = None, palette: list | None = None,
+         sections: list | None = None, layout: dict | None = None,
+         fingerprints: bool = False) -> dict:
     """
     Write a board and return its record.
 
     Saving over an existing board keeps its created timestamp, so a board you
     keep working on does not look new every time.
+
+    It also keeps what the caller did not mention. The `details` of every
+    picture still on the board survive, merged under any new ones, and each
+    schema 2 top-level field left as None keeps its value on disk. The
+    Moodboard tab only knows about paths, so without this, tidying a board an
+    agent built would wipe every note and section it wrote.
+
+    `fingerprints` records a content hash for each picture that has none yet,
+    so a board can find its pictures again after a folder move. It reads every
+    new file whole, which is why the Moodboard tab's save leaves it off.
     """
     name = (name or "").strip() or "Untitled board"
     slug = slug or slugify(name)
     dest = _path_for(slug)
     if dest is None:
         raise ValueError(f"unsafe board name: {name!r}")
+    if author is not None and author not in AUTHORS:
+        raise ValueError(f"unknown author {author!r}; expected one of {AUTHORS}")
+
+    paths, given = _split_items(items)
+    for p, d in (details or {}).items():
+        given.setdefault(str(p), {}).update(d or {})
+    for p, d in given.items():
+        role = d.get("role")
+        if role is not None and role not in ROLES:
+            raise ValueError(f"unknown role {role!r} for {p}; expected one of {ROLES}")
 
     created = time.time()
+    previous: dict = {}
     if os.path.exists(dest):
         try:
             with open(dest, encoding="utf-8") as fh:
-                created = float(json.load(fh).get("created", created))
+                previous = json.load(fh)
+            created = float(previous.get("created", created))
         except Exception:
             pass
+    if not isinstance(previous, dict):
+        previous = {}
+
+    old_details = previous.get("details")
+    if not isinstance(old_details, dict):
+        old_details = {}
+    merged = {}
+    for p in paths:
+        d = dict(old_details.get(p) or {})
+        d.update(given.get(p) or {})
+        if fingerprints and "fp" not in d and os.path.isfile(p):
+            try:
+                from . import bundle as _bundle
+            except ImportError:
+                import bundle as _bundle
+            try:
+                d["fp"] = _bundle.fingerprint(p)
+            except OSError:
+                pass
+        if d:
+            merged[p] = d
 
     record = {
         "schema": SCHEMA,
@@ -87,8 +177,15 @@ def save(name: str, items: list[str], *, reference: str | None = None,
         "dataset": dataset or "",
         "reference": reference or "",
         "transfer": transfer or "",
-        "items": [p for p in (items or []) if p],
+        "items": paths,
+        "details": merged,
     }
+    passed = {"author": author, "brief": brief, "concept": concept,
+              "palette": palette, "sections": sections, "layout": layout}
+    for key in _V2_FIELDS:
+        value = passed[key] if passed[key] is not None else previous.get(key)
+        if value is not None:
+            record[key] = value
 
     # Write beside and rename, so an interrupted save cannot leave a truncated
     # board where a good one was.
@@ -114,7 +211,28 @@ def load(slug: str) -> dict | None:
     record.setdefault("items", [])
     record.setdefault("name", slug)
     record["slug"] = slug
+    details = record.get("details")
+    if not isinstance(details, dict):
+        details = {}
+    # A hand-edited board may hold objects in `items`. Everything downstream
+    # expects paths, and os.path.exists on a dict raises, so reduce them here
+    # and keep what came with them as details.
+    if any(isinstance(i, dict) for i in record["items"]):
+        record["items"], extra = _split_items(record["items"])
+        for p, d in extra.items():
+            details.setdefault(p, {}).update(d)
+    record["details"] = details
     return record
+
+
+def item_paths(record: dict) -> list[str]:
+    """The board's pictures, in order, as paths."""
+    return [p for p in record.get("items", []) if isinstance(p, str) and p]
+
+
+def details_for(record: dict, path: str) -> dict:
+    """What the board records about one picture: role, note, section, provenance."""
+    return (record.get("details") or {}).get(path, {})
 
 
 def present(record: dict) -> tuple[list[str], list[str]]:
@@ -126,7 +244,7 @@ def present(record: dict) -> tuple[list[str], list[str]]:
     that was saved.
     """
     here, gone = [], []
-    for p in record.get("items", []):
+    for p in item_paths(record):
         (here if os.path.exists(p) else gone).append(p)
     return here, gone
 
@@ -148,10 +266,11 @@ def listing() -> list[dict]:
         out.append({
             "slug": record["slug"],
             "name": record.get("name", record["slug"]),
-            "count": len(record.get("items", [])),
+            "count": len(item_paths(record)),
             "missing": len(gone),
             "updated": record.get("updated", 0),
             "dataset": record.get("dataset", ""),
+            "author": record.get("author", "person"),
         })
     out.sort(key=lambda r: r.get("updated", 0), reverse=True)
     return out

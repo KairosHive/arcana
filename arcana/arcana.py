@@ -40,12 +40,14 @@ try:
     from . import jobs
     from . import boards as _boards
     from . import on1 as _on1
+    from . import core as _core
 except ImportError:
     import ui_datasets as _ui_datasets
     import ui_style as _ui
     import jobs
     import boards as _boards
     import on1 as _on1
+    import core as _core
 
 # --- palette/style search ---
 try:
@@ -295,54 +297,8 @@ def make_waveform_png(path: str, width=900, height=160) -> bytes | None:
 make_waveform_png = _uncached_none(make_waveform_png)
 
 
-def _cosine_group(keys, paths, index: Index, thresh: float = 0.08):
-    """
-    Group the top-N results by cosine distance threshold (1 - cosine_sim).
-    Returns: [{'gid': 'g0', 'keys': [...], 'paths': [...]}...], preserving rank order.
-    """
-    if len(keys) <= 1:
-        return [{"gid": "g0", "keys": keys, "paths": paths}]
-
-    vecs = np.stack([index.get(k) for k in keys]).astype(np.float32)
-    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-8
-    sim = vecs @ vecs.T
-    dist = 1.0 - sim
-
-    parent = list(range(len(keys)))
-
-    def find(a):
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = parent[a]
-        return a
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    n = len(keys)
-    for i in range(n):
-        for j in range(i + 1, n):
-            if dist[i, j] <= thresh:
-                union(i, j)
-
-    buckets = {}
-    for i in range(n):
-        r = find(i)
-        buckets.setdefault(r, []).append(i)
-
-    ordered = sorted(buckets.values(), key=lambda idxs: min(idxs))
-    groups = []
-    for gi, idxs in enumerate(ordered):
-        groups.append(
-            {
-                "gid": f"g{gi}",
-                "keys": [keys[i] for i in idxs],
-                "paths": [paths[i] for i in idxs],
-            }
-        )
-    return groups
+# Near-duplicate grouping lives in core.py with the rest of search.
+_cosine_group = _core.cosine_group
 
 
 def get_latent_options(latent_dir=LATENTS_DIR, n_dim=2):
@@ -608,101 +564,33 @@ def encode_thumbnail(path, max_side=128):
 
 
 def load_data(name, n_dim=2, modality="image"):
-    latent_path = os.path.join(LATENTS_DIR, f"latent_space_{name}_{modality}_{n_dim}d.pkl")
-    df = pd.read_pickle(latent_path)
-
-    if "label" in df.columns:
-        df["label"] = df["label"].astype(str)
+    """core.load_data, plus making the dataset's files servable to the browser."""
+    df = _core.load_data(name, n_dim=n_dim, modality=modality, latent_dir=LATENTS_DIR)
     if "path" in df.columns:
-        df["path"] = df["path"].astype(str)
         # Thumbnails are requested straight from this frame, before any search
         # has loaded the index -- so the dataset's directories have to become
         # servable here too, or a dataset stored outside the media roots renders
         # as a grid of 404s until you happen to run a prompt search.
         register_dataset_roots(dict(enumerate(df["path"].tolist())),
                                cache_key=f"latent:{name}:{modality}")
-    for col in ("x", "y", "z"):
-        if col in df.columns:
-            df[col] = df[col].astype("float32")
-    return df.reset_index(drop=True)
+    return df
 
 def load_index(name, modality="image"):
-    index_name = os.path.join(DB_DIR, f"index_{name}_{modality}.pkl")
-    with open(index_name, "rb") as f:
-        idx_blob, idx2path = pickle.load(f)
+    """core.load_index, plus making the dataset's files servable to the browser."""
+    index, idx2path = _core.load_index(name, modality=modality, db_dir=DB_DIR)
     register_dataset_roots(idx2path, cache_key=f"index:{name}:{modality}")
-    return Index.restore(idx_blob), idx2path
+    return index, idx2path
 
 
 # ------------- MARKS: STARS, COLOUR TAGS, CAPTURE DATES -------------
 # Read from ON1 sidecars at index time and carried in the latent frame (see
-# db.attach_marks). A dataset indexed before this existed has none of these
-# columns, so everything here treats a missing column as "nothing known" and
-# leaves the dataset behaving exactly as it did.
-MARK_COLUMNS = ("rating", "colour", "captured")
-
-# The colour dropdown needs a value meaning "no tag at all", and "" cannot be
-# one: Dash treats an empty string as no selection and silently drops it.
-NO_COLOUR = "(none)"
-
-# The star control is a floor -- "three and up" -- so it needs one value that is
-# not a floor at all, for the pictures nothing has ever been decided about.
-# Negative, so it can never be mistaken for a star count.
-UNRATED = -1
-
-
-def has_marks(df) -> bool:
-    """Does this dataset carry anything worth filtering on?"""
-    if df is None or not len(df):
-        return False
-    if "rating" in df.columns and df["rating"].notna().any():
-        return True
-    if "colour" in df.columns and (df["colour"].astype(str) != "").any():
-        return True
-    return "captured" in df.columns and df["captured"].notna().any()
-
-
-def marks_mask(df, stars=0, colours=None, date_from=None, date_to=None):
-    """
-    Boolean mask over `df` for the active filters. All-True when none are set.
-
-    An unrated file fails a star filter: "three stars and up" is a request for
-    pictures somebody chose, and a file ON1 has never opened is not one of them.
-    The same file passes a colour filter of ["(none)"], which is the way to ask
-    for exactly the unsorted remainder.
-    """
-    mask = pd.Series(True, index=df.index)
-
-    if stars and "rating" in df.columns:
-        if int(stars) == UNRATED:
-            mask &= df["rating"].isna()
-        else:
-            mask &= df["rating"].fillna(UNRATED) >= int(stars)
-
-    if colours and "colour" in df.columns:
-        col = df["colour"].astype(str)
-        wanted = set(colours)
-        picked = pd.Series(False, index=df.index)
-        if NO_COLOUR in wanted:
-            picked |= col == ""
-            wanted.discard(NO_COLOUR)
-        if wanted:
-            picked |= col.isin(wanted)
-        mask &= picked
-
-    if (date_from or date_to) and "captured" in df.columns:
-        when = df["captured"]
-        # An undated file cannot satisfy a date range, and NaT comparisons are
-        # False anyway -- being explicit keeps that from looking accidental.
-        dated = when.notna()
-        if date_from:
-            dated &= when >= pd.Timestamp(date_from)
-        if date_to:
-            # The picker gives a day; the user means the whole of it.
-            dated &= when < pd.Timestamp(date_to) + pd.Timedelta(days=1)
-        mask &= dated
-
-    return mask
+# db.attach_marks). The filter itself is in core.py, so it means the same thing
+# to an agent as it does to the panel; what stays here is how it is drawn.
+MARK_COLUMNS = _core.MARK_COLUMNS
+NO_COLOUR = _core.NO_COLOUR
+UNRATED = _core.UNRATED
+has_marks = _core.has_marks
+marks_mask = _core.marks_mask
 
 
 def colour_options(df) -> list:
@@ -782,17 +670,7 @@ def mark_results_on(fig, hits, is_3d: bool):
     return fig
 
 
-def _allowed_keys(idx2path: dict, keep) -> set:
-    """
-    usearch keys the filter left standing.
-
-    The latent frame is built by walking idx2path in insertion order, so row i
-    of the frame is the i-th key -- the same correspondence the search-result
-    highlighting relies on, and the reason neither can use the key as a row
-    label directly.
-    """
-    flags = list(keep)
-    return {k for i, k in enumerate(idx2path.keys()) if i < len(flags) and flags[i]}
+_allowed_keys = _core.keys_where
 
 
 def _marks_lookup(df) -> dict:
@@ -1041,127 +919,14 @@ def marks_panel(df):
 
 
 
-# ------------- CLIP TEXT ENCODER (lazy) -------------
-# Searching only ever encodes the prompt, so only the text tower is needed:
-# 354M parameters instead of the full model's 986M, and ~0.9 s to load instead
-# of ~25 s. Loading it lazily also means the app starts (and can show an error)
-# without a 4 GB download having to succeed first.
-CLIP_MODEL_ID = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"   # fallback only
-
-# Keyed by model id. A single-slot cache was wrong for the same reason it was
-# wrong in db.load_clip: the first dataset you opened decided which text
-# encoder every later search used.
-_CLIP_TEXT: dict = {}
-_MODEL_LOAD_LOCK = threading.Lock()
-
-
-def text_model_for_dim(ndim: int) -> str:
-    """
-    Which encoder produced vectors of this width.
-
-    A prompt has to be encoded by the same model that encoded the pictures, or
-    the two live in unrelated spaces. Nothing in a legacy index records which
-    model built it -- but the vector width does, because Arcana's image
-    encoders have distinct dimensions (512 / 768 / 1024). Reading it off the
-    index means every dataset searches correctly with no migration and no extra
-    metadata.
-    """
-    try:
-        from . import models as _models
-    except ImportError:
-        import models as _models
-    for m in _models.MODELS:
-        if m.modality == "image" and m.dim == ndim:
-            return m.id
-    raise RuntimeError(
-        f"This dataset's vectors are {ndim}-dimensional, which does not match "
-        f"any encoder Arcana knows about. It was probably built by a different "
-        f"version; re-index the folder to search it."
-    )
-
-
-def load_clip_text(device: str = "cpu", model_id: str | None = None):
-    """Load a CLIP text tower on first use. Raises with something actionable."""
-    model_id = model_id or CLIP_MODEL_ID
-    with _MODEL_LOAD_LOCK:
-        if model_id not in _CLIP_TEXT:
-            try:
-                from transformers import CLIPTextModelWithProjection, CLIPTokenizerFast
-                m = CLIPTextModelWithProjection.from_pretrained(model_id, dtype=torch.float32)
-                m.eval().to(device)
-                tok = CLIPTokenizerFast.from_pretrained(model_id)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Could not load the text encoder '{model_id}': {e}. "
-                    f"The first run needs to download it, so check your internet connection. "
-                    f"Set HF_HOME to choose where models are cached."
-                ) from e
-            _CLIP_TEXT[model_id] = (m, tok)
-    return _CLIP_TEXT[model_id]
-
-# --- lazy CLAP (keep FP32 to avoid BN/dtype issues) ---
-_CLAP = {"model": None, "proc": None}
-def load_clap(device="cpu"):
-    with _MODEL_LOAD_LOCK:
-        if _CLAP["model"] is None:
-            from transformers import ClapModel, ClapProcessor
-            m = ClapModel.from_pretrained("laion/clap-htsat-fused")
-            m.eval().to(device)
-            p = ClapProcessor.from_pretrained("laion/clap-htsat-fused")
-            _CLAP.update(model=m, proc=p)
-    return _CLAP["model"], _CLAP["proc"]
-
-
-def search(index, idx2path, query, n, modality="image", allowed=None):
-    """
-    Top `n` matches for `query`.
-
-    `allowed`, when given, is the set of usearch keys the stars/colour/date
-    filter left standing. The search runs over the whole index and the losers
-    are dropped afterwards rather than usearch being asked to skip them: the
-    search is already `exact=True`, so every distance is computed either way and
-    the only extra cost is sorting a longer list. Asking for `n` and hoping
-    enough of them survive is what does not work -- a four-star filter over an
-    archive that is 5% four-star returns an empty page perhaps 19 times in 20.
-    """
-    if modality == "image":
-        # Match the encoder to the index. This used to always load ViT-H/14
-        # while an index built with ViT-B/32 holds 512-d vectors, so every
-        # search against such a dataset died inside usearch with "The number of
-        # vector dimensions doesn't match!" and the results panel simply stayed
-        # empty. ViT-B/32 is the encoder the panel recommends to anyone without
-        # a GPU, so prompt search was broken for exactly the people most likely
-        # to choose it.
-        clip_model, clip_tok = load_clip_text(
-            model_id=text_model_for_dim(int(index.ndim)))
-        inputs = clip_tok(query, return_tensors="pt")
-        vec = clip_model(**inputs).text_embeds.detach().cpu().numpy().flatten()
-    else:
-        clap_model, clap_proc = load_clap(device="cpu")
-        inputs = clap_proc(text=[query], return_tensors="pt", padding=True)
-        # keep FP32
-        for k in inputs:
-            inputs[k] = inputs[k].to(clap_model.device)
-        with torch.no_grad():
-            try:
-                emb = clap_model.get_text_features(**inputs)
-            except AttributeError:
-                emb = clap_model(**inputs).text_embeds
-        vec = emb.squeeze().detach().cpu().numpy().flatten()
-
-    if allowed is None:
-        idxs = index.search(vec, n, exact=True)
-        return [(idx.key, idx2path[idx.key], idx.distance) for idx in idxs]
-
-    idxs = index.search(vec, len(idx2path), exact=True)
-    out = []
-    for idx in idxs:
-        if idx.key in allowed and idx.key in idx2path:
-            out.append((idx.key, idx2path[idx.key], idx.distance))
-            if len(out) >= n:
-                break
-    return out
-
+# ------------- TEXT ENCODERS AND SEARCH -------------
+# In core.py, so the MCP server and the tests can search without building this
+# app. Bound here under their old names because the callbacks below use them.
+CLIP_MODEL_ID = _core.CLIP_MODEL_ID
+text_model_for_dim = _core.text_model_for_dim
+load_clip_text = _core.load_clip_text
+load_clap = _core.load_clap
+search = _core.search
 
 
 # ------------- PALETTE CACHE -------------

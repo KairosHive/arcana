@@ -2352,10 +2352,22 @@ html.Div(
                     style={"overflowX": "hidden", "display": "none"},
                 ),
 
-                # The colour-transfer output. Same region as the search results
-                # -- only one of the two is ever mounted, so the stage always
-                # has exactly one plausible author.
-                html.Div(id="transfer-preview", style={"display": "none"}),
+                # The transfer output. Same region as the search results, and
+                # toggle_inputs mounts exactly one of the three containers for
+                # the tool in use, so the stage always has one plausible author.
+                # Until November 2026 the moodboard's results container was
+                # hidden by mode alone, so switching to a transfer tool left the
+                # whole results list in place and the one picture a transfer
+                # produced landed under it, off the bottom of the screen.
+                html.Div(
+                    id="transfer-preview",
+                    style={"display": "none"},
+                    children=html.Div(
+                        "Pick a Reference [R] and a Target [T] in the collection, "
+                        "then run the transfer. The result appears here.",
+                        style={"color": _ui.INK_FAINT, "fontSize": "12.5px",
+                               "padding": "28px 12px", "textAlign": "center"}),
+                ),
 
                 # Bulk selection buttons (hidden in moodboard mode)
                 html.Div(
@@ -2641,6 +2653,7 @@ def filter_from_matrix(_clicks):
         Output("transfer-card", "style"),
         Output("style-transfer-card", "style"),
         Output("image-display", "style"),
+        Output("mb-image-display", "style"),
         Output("transfer-preview", "style"),
     ],
     [Input("mode-select", "value"), Input("moodboard-tool", "value")],
@@ -2716,7 +2729,11 @@ def toggle_inputs(mode, tool):
                  "borderRadius": "8px", "border": "1px solid #4a3a5a"}
     style_card = {"padding": "14px", "backgroundColor": "#1a1508",
                   "borderRadius": "8px", "border": "1px solid #5a4a2a"}
-    results_list = {"overflowX": "hidden"}
+    # The stage. Prompt search and story write #image-display; the moodboard
+    # writes #mb-image-display; the transfer tools write #transfer-preview.
+    # Each keeps its contents while hidden, so coming back to a tab or a tool
+    # restores what was there, carousels included. One of the three is shown.
+    results_list = {"display": "block", "overflowX": "hidden"}
     transfer_stage = {"display": "block", "overflowX": "hidden"}
     
     if mode == "prompt":
@@ -2741,6 +2758,7 @@ def toggle_inputs(mode, tool):
             hidden,
             results_list,
             hidden,
+            hidden,
         )
     elif mode == "story":
         return (
@@ -2764,6 +2782,7 @@ def toggle_inputs(mode, tool):
             hidden,
             results_list,
             hidden,
+            hidden,
         )
     elif mode == "moodboard":
         return (
@@ -2785,6 +2804,7 @@ def toggle_inputs(mode, tool):
             sim_card if tool == "search" else hidden,
             xfer_card if tool == "transfer" else hidden,
             style_card if tool == "style" else hidden,
+            hidden,
             results_list if tool == "search" else hidden,
             hidden if tool == "search" else transfer_stage,
         )
@@ -2811,6 +2831,7 @@ def toggle_inputs(mode, tool):
              "overflowY": "auto", "overflowX": "hidden"},
             main_row_hidden,
             rail_hidden,
+            hidden,
             hidden,
             hidden,
             hidden,
@@ -5603,26 +5624,6 @@ for _panel in ("image-display", "mb-image-display"):
         Input(_panel, "children"),
         prevent_initial_call=True,
     )
-
-
-@app.callback(
-    [Output("image-display", "style"), Output("mb-image-display", "style")],
-    Input("mode-select", "value"),
-)
-def toggle_results_visibility(mode):
-    """
-    Show the results belonging to the tab you are in, and keep the other set.
-
-    Each panel owns a container, so hiding is all this has to do -- neither is
-    discarded, and coming back to a tab restores exactly what was there, twin
-    carousels included. It used to need a results-owner store to remember which
-    mode had last written the one shared div; with two, the mode is the answer.
-    """
-    # The right column already scrolls, so this must not add a second scrollbar
-    # or an 80vh box taller than the space it sits in.
-    base = {"overflowX": "hidden"}
-    shown, hidden = {**base, "display": "block"}, {**base, "display": "none"}
-    return (hidden, shown) if mode == "moodboard" else (shown, hidden)
 
 
 @app.callback(Output("save-button", "style"), Input("mode-select", "value"))

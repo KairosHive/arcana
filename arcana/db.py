@@ -796,25 +796,28 @@ def _decode_workers() -> int:
 
 def _feature_executor(n_workers: int):
     """
-    Pick a pool for CPU-bound feature extraction.
+    The pool for CPU-bound feature extraction: threads, always.
 
-    Processes normally: palette and style are CPU-bound and a process pool
-    sidesteps the GIL entirely.
+    Palette, edge histograms, LBP and image decoding are OpenCV and
+    scikit-learn, which drop the GIL inside their hot loops, so threads keep
+    most of the parallelism. The VGG gram pass never went through this pool;
+    it runs batched in the calling process, on the GPU when there is one.
 
-    Threads when frozen. On Windows multiprocessing spawns rather than forks,
-    which re-launches the executable for each worker -- and in a PyInstaller
-    build the executable is the whole application. Even with freeze_support()
-    in place (without it the workers start a second Dash server and get killed,
-    which is exactly what happened: every image failed with "A process in the
-    process pool was terminated abruptly" at ~36 minutes each), every worker
-    would still pay a full interpreter start plus a torch import before doing
-    any work. Palette and style are mostly OpenCV and scikit-learn, both of
-    which drop the GIL inside their hot loops, so threads keep most of the
-    parallelism at none of that cost.
+    A process pool was the choice for source installs until November 2026,
+    and threads were reserved for the frozen build. Both routes pay the same
+    price: on Windows multiprocessing spawns rather than forks, and every
+    worker re-runs the main module before it does any work. For the frozen
+    build that module is the whole application. For the source install run as
+    `python -m arcana.arcana`, or through the `arcana` script, it is the same
+    application: arcana.py imports torch with its CUDA libraries and builds
+    the Dash app at import time. Twenty-two workers starting at once each
+    committed a few gigabytes for CUDA alone, the machine ran out of commit
+    space ("The paging file is too small for this operation to complete",
+    WinError 1455), the workers died, and every image failed with "A process
+    in the process pool was terminated abruptly". Indexing 76 images produced
+    no palette and no style features.
     """
-    if getattr(sys, "frozen", False):
-        return ThreadPoolExecutor(max_workers=n_workers), "threads"
-    return ProcessPoolExecutor(max_workers=n_workers), "processes"
+    return ThreadPoolExecutor(max_workers=n_workers), "threads"
 
 
 def extract_additional_features(

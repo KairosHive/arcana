@@ -388,24 +388,27 @@ def test_discover_follows_the_data_dir(tmp):
 
 
 
-def test_feature_extraction_uses_threads_when_frozen(tmp):
+def test_feature_extraction_uses_threads_everywhere(tmp):
     """
-    A frozen build must not use a process pool for feature extraction.
+    Feature extraction must never use a process pool, frozen or not.
 
     On Windows multiprocessing spawns rather than forks, so every worker
-    re-launches the executable -- which in a PyInstaller build is the whole
-    application. Indexing 246 images with palette features failed on every one
+    re-runs the main module. In a PyInstaller build that is the whole
+    application: indexing 246 images with palette features failed on every one
     with "A process in the process pool was terminated abruptly", roughly 36
-    minutes per image, because each worker was starting a second copy of Arcana
-    instead of doing the work.
+    minutes per image. From a source checkout run as `python -m arcana.arcana`
+    it is the same application, torch and CUDA included: 22 workers starting
+    at once exhausted the commit limit (WinError 1455) and every one of 76
+    images failed the same way.
     """
     import sys as _sys
-    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor
     from arcana.db import _feature_executor
 
     pool, kind = _feature_executor(2)
     pool.shutdown()
-    assert isinstance(pool, ProcessPoolExecutor) and kind == "processes"
+    assert isinstance(pool, ThreadPoolExecutor), type(pool)
+    assert kind == "threads"
 
     _sys.frozen = True
     try:

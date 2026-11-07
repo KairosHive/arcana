@@ -152,11 +152,13 @@ environment matches the lock in everything except torch:
 
 ```bash
 uv venv .venv-pack
-.venv-pack\Scripts\python -m pip install pyinstaller
-# every locked package except torch, which comes from PyPI as CPU-only
+# CPU-only torch first, from PyTorch's CPU index
+uv pip install --python .venv-pack\Scripts\python.exe torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+# every locked package except torch
 grep -vE "^(torch|torchvision|torchaudio)([=<>~ ]|$)" requirements-lock.txt > pack-reqs.txt
 uv pip install --python .venv-pack\Scripts\python.exe -r pack-reqs.txt --no-deps
-uv pip install --python .venv-pack\Scripts\python.exe torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1
+# a uv venv has no pip of its own, so pyinstaller goes in the same way
+uv pip install --python .venv-pack\Scripts\python.exe pyinstaller
 .venv-pack\Scripts\python -m arcana.envcheck      # should say it matches
 ```
 
@@ -206,6 +208,7 @@ Two traps that cost time the first time round:
 
 - **winget installs Inno per-user**, so `ISCC.exe` is under `%LOCALAPPDATA%\Programs\Inno Setup 6`, not the `C:\Program Files (x86)` path most documentation assumes.
 - **Inno's preprocessor reads a leading `#` as a directive**, so a Pascal continuation line starting `#13#10 + ...` aborts the compile with "Unknown preprocessor directive". Keep newline constants mid-line.
+- **Git Bash rewrites `/DGpu` into a path**, and ISCC then reports "You may not specify more than one script filename". From a bash shell, run it as `MSYS2_ARG_CONV_EXCL="*" ISCC.exe /DGpu installer/arcana.iss`. PowerShell passes the flag through as written.
 
 The version comes from `arcana/__init__.py` alone. `arcana.spec` stamps the
 executable and generates `installer/version.iss` from it, so the installer can

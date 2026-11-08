@@ -23,7 +23,7 @@ from arcana import ops  # noqa: E402
 from arcana.ops import registry  # noqa: E402
 
 PLUGIN = os.path.join(ROOT, "plugin")
-SKILLS = ("moodboard", "board-design", "harmonize")
+SKILLS = ("moodboard", "board-design", "harmonize", "metaphysical-moodboard")
 
 
 def _skill(name):

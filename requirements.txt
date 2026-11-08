@@ -34,6 +34,8 @@ transformers>=4.41,<5
 # --- Stable Diffusion pipeline & PIL (story mode) ---
 # 0.36 is the first with FLUX.2's autoencoder, one of Alchemy's two token spaces.
 diffusers>=0.36
+# diffusers loads a LoRA (Alchemy's texture LoRA method) only through PEFT.
+peft>=0.13
 Pillow>=9.5
 
 # --- Alchemy's subject mask (BiRefNet's model code imports these; Apache 2.0) ---

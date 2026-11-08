@@ -17,6 +17,8 @@
 # For the CPU-only packaging build, install torch from
 # https://download.pytorch.org/whl/cpu first; everything else is identical.
 #
+accelerate==1.15.0
+    # via peft
 annotated-types==0.8.0
     # via pydantic
 anyio==4.14.2
@@ -53,8 +55,6 @@ cloudpickle==3.1.2
     # via joblib
 colorama==0.4.6 ; sys_platform == 'win32'
     # via tqdm
-comm==0.2.3
-    # via dash
 contourpy==1.3.2 ; python_full_version < '3.11'
     # via matplotlib
 contourpy==1.3.3 ; python_full_version >= '3.11'
@@ -63,12 +63,6 @@ cryptography==50.0.2
     # via pyjwt
 cycler==0.12.1
     # via matplotlib
-dash==4.4.1
-    # via
-    #   arcana
-    #   dash-daq
-dash-daq==0.6.0
-    # via arcana
 decorator==5.3.1
     # via librosa
 diffusers==0.39.0
@@ -84,9 +78,7 @@ filelock==3.32.5
     #   torch
     #   transformers
 flask==3.1.3
-    # via
-    #   arcana
-    #   dash
+    # via arcana
 fonttools==4.64.0
     # via matplotlib
 fsspec==2026.7.0
@@ -116,7 +108,9 @@ httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscrip
     # via httpx2
 huggingface-hub==0.36.2
     # via
+    #   accelerate
     #   diffusers
+    #   peft
     #   timm
     #   tokenizers
     #   transformers
@@ -129,13 +123,9 @@ idna==3.19
 imageio-ffmpeg==0.8.1
     # via arcana
 importlib-metadata==9.0.1
-    # via
-    #   dash
-    #   diffusers
+    # via diffusers
 itsdangerous==2.2.0
     # via flask
-janus==2.0.0
-    # via dash
 jinja2==3.1.6
     # via
     #   flask
@@ -181,12 +171,8 @@ mpmath==1.3.0
     # via sympy
 msgpack==1.2.2
     # via librosa
-narwhals==2.25.0
-    # via
-    #   plotly
-    #   scikit-learn
-nest-asyncio==1.6.0
-    # via dash
+narwhals==2.25.0 ; python_full_version >= '3.11'
+    # via scikit-learn
 networkx==3.4.2 ; python_full_version < '3.11'
     # via torch
 networkx==3.6.1 ; python_full_version >= '3.11'
@@ -199,6 +185,7 @@ numkong==7.8.2
     # via usearch
 numpy==2.2.6 ; python_full_version < '3.11'
     # via
+    #   accelerate
     #   arcana
     #   contourpy
     #   diffusers
@@ -207,6 +194,7 @@ numpy==2.2.6 ; python_full_version < '3.11'
     #   numba
     #   opencv-python
     #   pandas
+    #   peft
     #   pot
     #   scikit-learn
     #   scipy
@@ -217,6 +205,7 @@ numpy==2.2.6 ; python_full_version < '3.11'
     #   usearch
 numpy==2.4.6 ; python_full_version == '3.11.*'
     # via
+    #   accelerate
     #   arcana
     #   contourpy
     #   diffusers
@@ -226,6 +215,7 @@ numpy==2.4.6 ; python_full_version == '3.11.*'
     #   numba
     #   opencv-python
     #   pandas
+    #   peft
     #   pot
     #   scikit-learn
     #   scipy
@@ -236,6 +226,7 @@ numpy==2.4.6 ; python_full_version == '3.11.*'
     #   usearch
 numpy==2.5.2 ; python_full_version >= '3.12'
     # via
+    #   accelerate
     #   arcana
     #   contourpy
     #   diffusers
@@ -245,6 +236,7 @@ numpy==2.5.2 ; python_full_version >= '3.12'
     #   numba
     #   opencv-python
     #   pandas
+    #   peft
     #   pot
     #   scikit-learn
     #   scipy
@@ -298,14 +290,17 @@ opentelemetry-api==1.45.1
     # via mcp
 packaging==26.3
     # via
+    #   accelerate
     #   huggingface-hub
     #   kornia
     #   lazy-loader
     #   matplotlib
-    #   plotly
+    #   peft
     #   pooch
     #   transformers
 pandas==2.3.3
+    # via arcana
+peft==0.21.2
     # via arcana
 pillow==12.3.0
     # via
@@ -315,14 +310,14 @@ pillow==12.3.0
     #   torchvision
 platformdirs==4.11.7
     # via pooch
-plotly==7.0.0
-    # via
-    #   arcana
-    #   dash
 pooch==1.9.0
     # via librosa
 pot==0.9.7.post1
     # via arcana
+psutil==7.2.2
+    # via
+    #   accelerate
+    #   peft
 ptyprocess==0.7.0 ; sys_platform != 'win32'
     # via arcana
 pycparser==3.0 ; implementation_name != 'PyPy'
@@ -330,7 +325,6 @@ pycparser==3.0 ; implementation_name != 'PyPy'
 pydantic==2.13.5
     # via
     #   arcana
-    #   dash
     #   mcp
     #   mcp-types
 pydantic-core==2.46.5
@@ -353,7 +347,9 @@ pywinpty==3.1.2 ; sys_platform == 'win32'
     # via arcana
 pyyaml==6.0.3
     # via
+    #   accelerate
     #   huggingface-hub
+    #   peft
     #   timm
     #   transformers
 referencing==0.37.0
@@ -366,13 +362,10 @@ regex==2026.9.3
     #   transformers
 requests==2.34.2
     # via
-    #   dash
     #   diffusers
     #   huggingface-hub
     #   pooch
     #   transformers
-retrying==1.4.2
-    # via dash
 rpds-py==0.30.0 ; python_full_version < '3.11'
     # via
     #   jsonschema
@@ -383,7 +376,9 @@ rpds-py==2026.9.1 ; python_full_version >= '3.11'
     #   referencing
 safetensors==0.8.0
     # via
+    #   accelerate
     #   diffusers
+    #   peft
     #   timm
     #   transformers
 scikit-learn==1.7.2 ; python_full_version < '3.11'
@@ -412,10 +407,8 @@ scipy==1.18.1 ; python_full_version >= '3.12'
     #   librosa
     #   pot
     #   scikit-learn
-setuptools==84.0.0
-    # via
-    #   dash
-    #   torch
+setuptools==84.0.0 ; python_full_version >= '3.12'
+    # via torch
 six==1.17.0
     # via python-dateutil
 soundfile==0.14.0
@@ -444,8 +437,10 @@ tokenizers==0.22.2
     # via transformers
 torch==2.9.1+cu128
     # via
+    #   accelerate
     #   arcana
     #   kornia
+    #   peft
     #   timm
     #   torchaudio
     #   torchvision
@@ -465,10 +460,13 @@ tqdm==4.70.0
     # via
     #   arcana
     #   huggingface-hub
+    #   peft
     #   transformers
     #   usearch
 transformers==4.57.6
-    # via arcana
+    # via
+    #   arcana
+    #   peft
 triton==3.5.1 ; sys_platform == 'linux'
     # via torch
 truststore==0.10.5 ; sys_platform != 'emscripten'
@@ -479,7 +477,6 @@ typing-extensions==4.16.0
     # via
     #   anyio
     #   cryptography
-    #   dash
     #   exceptiongroup
     #   httpx2
     #   huggingface-hub
@@ -509,8 +506,6 @@ usearch==2.26.2
 uvicorn==0.54.0 ; sys_platform != 'emscripten'
     # via mcp
 werkzeug==3.1.8
-    # via
-    #   dash
-    #   flask
+    # via flask
 zipp==4.1.0
     # via importlib-metadata

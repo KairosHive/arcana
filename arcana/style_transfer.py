@@ -488,11 +488,37 @@ def _controlnet_pipe(kind: str):
     return pipe
 
 
+def _wear_lora(pipe, name: str | None, weight: float) -> None:
+    """
+    Put a texture LoRA under the pipeline, or take every LoRA off it.
+
+    The pipeline is cached and shared by every ControlNet caller, so each call
+    says what it wants: a LoRA is loaded once under its own adapter name and
+    then only switched on at `weight`; "none" switches them all off, which
+    leaves the base model exactly as it was.
+    """
+    loaded = pipe.__dict__.setdefault("_arcana_loras", set())
+    if not name or name == "none":
+        if loaded:
+            pipe.disable_lora()
+        return
+    from . import loras as _loras
+
+    key = "look_" + "".join(ch if ch.isalnum() else "_" for ch in name)
+    if key not in loaded:
+        pipe.load_lora_weights(str(_loras.locate(name)), weight_name=_loras.WEIGHTS, adapter_name=key)
+        loaded.add(key)
+    pipe.enable_lora()
+    pipe.set_adapters([key], [float(weight)])
+
+
 def controlnet_transfer(source, target, control: str = "depth",
                         scale: float = 0.7, control_scale: float = 0.8,
                         strength: float = 0.7, steps: int = 16,
                         guidance: float = 5.0, seed: int = 2222,
-                        prompt: str = "", progress=None):
+                        prompt: str = "", progress=None,
+                        lora: str | None = None, lora_weight: float = 1.4,
+                        avoid: str = ""):
     """
     Apply the look of the source while the target's geometry holds it in place.
 
@@ -507,6 +533,11 @@ def controlnet_transfer(source, target, control: str = "depth",
     usually what is wanted. Turning control_scale down approaches plain
     ip_adapter_transfer.
 
+    `lora` puts a texture LoRA (loras.py) under the drawing at `lora_weight`,
+    and `source` may then be None: the LoRA and the prompt carry the look
+    alone, as latent-lab's transform mode drew it. `avoid` adds words to the
+    negative prompt.
+
     Returns (image, map) so the caller can show what the geometry actually was.
     """
     import torch
@@ -516,7 +547,12 @@ def controlnet_transfer(source, target, control: str = "depth",
 
     tgt = _load_rgb(target)
     init = _fit_for_diffusion(tgt)
-    src = _load_rgb(source)
+    if source is None:
+        # The adapter is part of the cached pipeline and wants an image; at
+        # scale 0 it reads one and adds nothing.
+        src, scale = init, 0.0
+    else:
+        src = _load_rgb(source)
 
     if progress:
         progress(0.1, f"Building the {control} map")
@@ -526,12 +562,13 @@ def controlnet_transfer(source, target, control: str = "depth",
         progress(0.3, f"Loading ControlNet ({control})")
     pipe = _controlnet_pipe(control)
     pipe.set_ip_adapter_scale(float(np.clip(scale, 0.0, 1.0)))
+    _wear_lora(pipe, lora, lora_weight)
 
     if progress:
         progress(0.55, "Transferring")
     out = pipe(
         prompt=prompt or "",
-        negative_prompt="text, letters, watermark, logo, lowres",
+        negative_prompt=", ".join(w for w in ("text, letters, watermark, logo, lowres", avoid) if w),
         image=init,
         control_image=cmap,
         ip_adapter_image=src,

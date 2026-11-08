@@ -72,6 +72,16 @@ BUILTIN = [
            {"method": "pixels.relief", "knobs": {"ambient": 0.45}, "finish": {"highlights": -30, "clarity": 20}}),
     Recipe("combed", "pixels", "the material combed along the picture's contours",
            {"method": "pixels.flow", "knobs": {"length": 0.08, "smear": 0.2}}),
+    # generative: latent-lab's transform, the person's texture LoRA drawn into the picture's forms
+    Recipe("my texture", "generative", "the picture redrawn in your texture LoRA, its forms held by depth; "
+           "add a mask recipe to draw it only there", {"method": "generative.lora"}),
+    # Chosen on three portraits (2026-11-08): starting from the material's colours set four textures
+    # 2.5 times further apart than IP-Adapter alone, and redraw 0.45 kept each face's eyes and expression.
+    Recipe("textured face", "generative", "each face redrawn in the material [1]'s colour and texture, the rest of "
+           "the portrait untouched, at its full size",
+           {"method": "generative.lora",
+            "knobs": {"strength": 0.45, "material": 0.8, "colour": 0.8, "lora": "none"},
+            "mask": {"layers": ["faces"], "feather": 4}}),
     # where
     Recipe("on the subject", "masks", "only the main subject, with soft edges",
            {"mask": {"layers": ["subject"], "feather": 3, "follow": 0.3}}),

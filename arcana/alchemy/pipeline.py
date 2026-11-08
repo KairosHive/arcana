@@ -92,7 +92,11 @@ def _run(spec, long_side, view, with_before):
     base = pic_path or mat_paths[0]
     multiple = TOKEN_MULTIPLE if method.family == "tokens" else 8
     want = int(long_side) if long_side else max(original_size(base))
-    draw = min(want, DRAW_CAP[method.family]) if view == "result" else want
+    cap = DRAW_CAP[method.family]
+    if method.focused and spec.get("mask") and knobs.get("focus", True):
+        # Only the region around the mask is diffused; the rest is the photograph, kept at its size.
+        cap = max(cap, want)
+    draw = min(want, cap) if view == "result" else want
     W, H = frame(base, draw, multiple)
     zoom, crop = float(spec.get("zoom", 1.0) or 1.0), int(spec.get("crop", 0) or 0)
     c = load_frame(pic_path, W, H) if pic_path else np.zeros((H, W, 3), np.float32) + 0.5

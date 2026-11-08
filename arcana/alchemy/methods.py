@@ -57,6 +57,7 @@ class Method:
     picture: bool = True         # whether it reads a picture [T]
     cost: str = "live"           # live | seconds
     needs: tuple = ()            # gpu, diffusers, modflows
+    focused: bool = False        # draws only around a small mask, so the frame may stay at full size
 
     def public(self):
         return dict(id=self.id, family=self.family, label=self.label, doc=self.doc, cost=self.cost,
@@ -290,13 +291,96 @@ def _style(method):
         st = _arcana("style_transfer")
         src, tgt = _pil(step.materials[0]), _pil(step.c)
         if method == "controlnet":
-            out = st.controlnet_transfer(src, tgt, control=k["control"], scale=float(k["scale"]),
-                                         control_scale=float(k["control_scale"]), strength=float(k["strength"]),
-                                         steps=int(k["steps"]), seed=int(k["seed"]), prompt=k.get("prompt", ""))
+            out, _map = st.controlnet_transfer(src, tgt, control=k["control"], scale=float(k["scale"]),
+                                               control_scale=float(k["control_scale"]),
+                                               strength=float(k["strength"]), steps=int(k["steps"]),
+                                               seed=int(k["seed"]), prompt=k.get("prompt", ""))
         else:
             out = st.transfer(method, src, tgt, **k)
         return _arr(out, step.W, step.H)
     return run
+
+
+FOCUS_BELOW = 0.35   # a mask covering less of the frame than this is drawn on a crop around it
+FOCUS_PAD = 0.35     # the crop reaches this share of the mask's size past it on every side
+
+
+def mask_box(mask, below=FOCUS_BELOW, pad=FOCUS_PAD):
+    """(x0, y0, x1, y1), the region around a small mask, or None for no mask, an empty one or a large one."""
+    if mask is None:
+        return None
+    on = mask > 0.05
+    if not on.any() or on.mean() >= below:
+        return None
+    ys, xs = np.nonzero(on)
+    H, W = mask.shape
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    py, px = int((y1 - y0) * pad) + 8, int((x1 - x0) * pad) + 8
+    return max(0, x0 - px), max(0, y0 - py), min(W, x1 + px), min(H, y1 + py)
+
+
+FOCUS_LONG = 768     # the long side a focused region is drawn at: what SD 1.5 draws without inventing
+
+
+def _full_resolution(step, box):
+    """The region of the working frame `box` covers, read from the photograph itself (the frame is
+    the photograph covered and centred, as load_frame makes it). None when there is no file to read."""
+    import os
+    from PIL import Image, ImageOps
+
+    path = str(getattr(step, "picture_key", "") or "").rsplit("@", 1)[0]
+    if not path or not os.path.isfile(path):
+        return None
+    with Image.open(path) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        ow, oh = im.size
+        s = max(step.W / ow, step.H / oh)
+        ox, oy = (ow * s - step.W) / 2, (oh * s - step.H) / 2
+        x0, y0, x1, y1 = box
+        part = im.crop(tuple(int(round(v)) for v in ((x0 + ox) / s, (y0 + oy) / s, (x1 + ox) / s, (y1 + oy) / s)))
+    k = min(1.0, FOCUS_LONG / max(part.size))
+    return part.resize((max(8, int(part.width * k)), max(8, int(part.height * k))), Image.LANCZOS) if k < 1 else part
+
+
+def _texture_lora(step, k):
+    """latent-lab's transform: the picture redrawn on SD 1.5 under a texture LoRA, its forms held by a
+    ControlNet map. A material [1] is optional and steers through IP-Adapter beside the LoRA. The mask
+    is laid on after, as for every method, so the new texture appears only inside it.
+
+    With `focus` and a small mask (a face covers 1 to 6% of a portrait), only the region around the
+    mask is drawn and laid back, its pixels read from the photograph at full resolution: drawn whole,
+    a face got 50 to 150 pixels of the drawing and came back as mush, and cut from the working frame
+    it was a 100 px smudge the model could only invent over."""
+    st = _arcana("style_transfer")
+    src = _pil(step.materials[0]) if step.materials else None
+    box = mask_box(step.mask) if k.get("focus", True) else None
+    x0, y0, x1, y1 = box or (0, 0, step.W, step.H)
+    region = (_full_resolution(step, box) if box else None) or _pil(step.c[y0:y1, x0:x1])
+    if src is not None and float(k.get("colour", 0)) > 0:
+        # img2img keeps the colours it starts from at any gentle redraw, so a guide steering only
+        # through IP-Adapter came back as streaks on the picture's own skin tone. Starting from the
+        # guide's palette (LAB statistics) lets each guide's colour arrive.
+        region = _arcana("lab_transfer").lab_color_transfer_pil(region, src, float(k["colour"]))
+    out, _map = st.controlnet_transfer(src, region, control=k["control"], scale=float(k["material"]),
+                                       control_scale=float(k["structure"]), strength=float(k["strength"]),
+                                       steps=int(k["steps"]), guidance=float(k["guidance"]), seed=int(k["seed"]),
+                                       prompt=k.get("prompt", ""), lora=k["lora"], lora_weight=float(k["lora_w"]),
+                                       avoid=k.get("avoid", ""))
+    if (x1 - x0) > out.width * 1.25:
+        # A region of a full-size photograph is larger than the drawing (diffusion draws at
+        # most FOCUS_LONG): Real-ESRGAN takes it up, so it sits as sharp as the photograph around it.
+        from .spaces import enlarge
+
+        out = _pil(enlarge(np.asarray(out.convert("RGB"), np.float32) / 255.0))
+    drawn = _arr(out, x1 - x0, y1 - y0)
+    if box is None:
+        return drawn
+    whole = step.c.copy()
+    whole[y0:y1, x0:x1] = drawn
+    return whole
+
+
+_LORAS = _arcana("loras").options()
 
 
 COLOUR = [
@@ -335,12 +419,39 @@ GENERATIVE = [
             M("seed", "int", 2222, 0, 99999, 1, "seed", "another draw"),
             K("prompt", "text", "", label="prompt", doc="words beside the material")),
            _style("controlnet"), materials=(1, 1), cost="seconds", needs=("diffusers",)),
+    Method("generative.lora", "generative", "texture LoRA",
+           "the picture redrawn in your texture LoRA's look, its forms held by a map; with a mask, only there",
+           (K("strength", "float", 0.75, 0.2, 0.98, 0.02, "redraw amount",
+              "how much of the picture is redrawn: low keeps it, high reinvents it"),
+            K("lora", "choice", _LORAS[1] if len(_LORAS) > 1 else "none", label="LoRA", options=_LORAS,
+              doc="your texture LoRA (run/checkpoint), found in <data dir>/loras, ARCANA_LORA_DIRS or "
+                  "~/latent-lab-models; none for the plain model"),
+            K("lora_w", "float", 1.4, 0, 2, 0.05, "LoRA strength",
+              "how strongly the LoRA's look applies; about 1.0 to 1.8 works best", when=(("lora", "!=", "none"),)),
+            K("prompt", "text", "in goofi style", label="prompt",
+              doc="words that steer the drawing; the LoRA's trigger words call up its look"),
+            K("structure", "float", 1.0, 0, 1.6, 0.05, "hold structure", "how firmly the picture's shapes are kept"),
+            K("material", "float", 0.5, 0, 1, 0.05, "material weight",
+              "with a material [1], how strongly its look steers beside the LoRA; without one it has no effect"),
+            K("colour", "float", 0.8, 0, 1, 0.05, "material colour",
+              "with a material [1], how much of its palette the redraw starts from; at 0 each material "
+              "arrives only as streaks on the picture's own colours (measured: 2.5 times less apart)"),
+            M("focus", "bool", True, label="draw at the mask",
+              doc="with a small mask, such as a face, only the region around it is drawn, at full resolution"),
+            M("avoid", "text", "animal, creature", label="avoid",
+              doc="what the drawing steers away from; without it, high redraw amounts turn clumps into creatures"),
+            M("control", "choice", "depth", label="map", options=("depth", "canny", "luminance"),
+              doc="what of the picture holds the drawing in place"),
+            M("steps", "int", 20, 4, 40, 1, "steps", "diffusion steps"),
+            M("guidance", "float", 7.0, 1, 12, 0.5, "guidance", "how closely the words are followed"),
+            M("seed", "int", 0, 0, 99999, 1, "seed", "another draw")),
+           _texture_lora, materials=(0, 1), cost="seconds", needs=("diffusers",), focused=True),
 ]
 
 FAMILIES = {"pixels": "the material's own pixels laid into the picture: nothing invented",
             "tokens": "the pictures as token grids, mixed by arithmetic and drawn back",
             "colour": "the material's colours on the picture",
-            "generative": "a diffusion model redraws the picture with the material in view"}
+            "generative": "a diffusion model redraws the picture with the material or your texture LoRA in view"}
 METHODS = {m.id: m for m in PIXELS + TOKENS + COLOUR + GENERATIVE}
 
 

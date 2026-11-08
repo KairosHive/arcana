@@ -35,6 +35,25 @@ if you want the space back.
 Installing a newer version upgrades in place. There is no need to uninstall
 first.
 
+`Arcana.exe` also serves agents. Its modes are flags:
+
+```
+Arcana.exe                 the app, in your browser
+Arcana.exe --mcp           the MCP server on stdio, for an agent such as Claude Code
+Arcana.exe --headless      the ops over HTTP, without the pages (--port N)
+Arcana.exe --version       which version this is
+```
+
+To connect Claude Code, run the command the Datasets tab shows under
+*Working with an agent*, which for a default install is:
+
+```
+claude mcp add arcana -- "%LOCALAPPDATA%\Programs\Arcana\Arcana.exe" --mcp
+```
+
+While the app is open, the agent's calls run inside it, on its models and
+graphics card.
+
 ### Two builds: CPU and GPU
 
 `Arcana-Setup-<version>.exe` ships **CPU-only PyTorch** (310 MB against 4,312 MB
@@ -108,9 +127,13 @@ pip install .
 arcana
 ```
 
-That installs the package, its dependencies and seven commands: `arcana`,
-`arcana-build-latent`, `arcana-extend`, `arcana-finish`, `arcana-marks`,
-`arcana-relocate` and `arcana-migrate`.
+That installs the package, its dependencies and the `arcana` command. On its
+own it starts the app, and with an op line it runs that op (`arcana op list`
+shows them all, `arcana <op> --help` any one). `arcana-mcp` serves the same ops
+to an agent. The older names (`arcana-build-latent`, `arcana-extend`,
+`arcana-finish`, `arcana-marks`, `arcana-relocate`, `arcana-migrate`,
+`arcana-lut`) still work for this release, and each prints the op line it
+stands for.
 
 Use `pip install -e .` instead if you want your edits to take effect without
 reinstalling.
@@ -267,5 +290,6 @@ which is always CPU-only.
 **A dataset says "unfinished"** — indexing wrote the index but never the 2-D
 map, usually an interrupted run. Index that folder again.
 
-**A dataset says "files missing"** — the pictures moved. `arcana-relocate
---name <dataset>` finds them again by content, without re-indexing.
+**A dataset says "files missing"** — the pictures moved. `arcana dataset
+relocate <dataset> --root <folder>` finds them again by content, without
+re-indexing.

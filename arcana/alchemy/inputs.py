@@ -3,22 +3,20 @@
 A picture is named in one of three ways:
 
     japan:1423        a picture in a dataset, by handle
-    out:3f9c1e2a      a picture an earlier Alchemy step made (in output/alchemy)
-    "D:/photos/x.jpg" a file, as the collection rail holds them (uploads included); it must be inside
-                      the media roots or the data directory
+    out:3f9c1e        a derived picture, by its ledger handle (ledger.py)
+    "D:/photos/x.jpg" a file, as a collection holds them (for the person and the terminal; an
+                      agent names pictures by handle)
 
 Every picture is read once at each frame size and kept, bounded by bytes, so a slider that redraws
-twenty times a second never decodes a 6000 px JPEG twenty times. What a step makes is written to
-output/alchemy as a PNG with a JSON sidecar beside it: its id, the op and arguments that made it, the
-pictures it came from, and when. That is the record the output ledger (OPS_PLAN.md, P1) reads, so a
-made picture gets its `out:` handle there with no change here.
+twenty times a second never decodes a 6000 px JPEG twenty times. What a step keeps is written to
+output/edited/<family>/<date>/ as <picture>__<method>__<time>.png, and `alchemy make` records it in
+the ledger, which gives it its out: handle.
 """
 
 from __future__ import annotations
 
 import collections
 import datetime
-import hashlib
 import json
 import os
 import threading
@@ -43,80 +41,35 @@ def _paths():
     return paths
 
 
-def out_dir() -> str:
-    p = _paths()
-    return p.ensure_dir(os.path.join(p.subdir("output"), "alchemy"))
-
-
 def resolve(ref: str) -> str:
-    """A picture's file from its handle, its out: id or its path."""
-    ref = (ref or "").strip().strip('"')
-    if not ref:
+    """A picture's file from its handle (japan:1423), its out: handle or its path, through the one
+    resolver every op uses (ops.archive.resolve_item). Ops have already applied the caller's rules
+    (an agent names pictures by handle), so this resolves as the person."""
+    from ..ops import archive
+
+    if not (ref or "").strip():
         raise ValueError("No picture given.")
-    if ref.startswith("out:"):
-        oid = ref[4:]
-        if not oid.replace("-", "").isalnum():
-            raise ValueError(f"{ref!r} is not an Alchemy output id.")
-        path = os.path.join(out_dir(), oid + ".png")
-        if not os.path.isfile(path):
-            raise ValueError(f"No Alchemy output called {ref!r}.")
-        return path
-    head, sep, tail = ref.rpartition(":")
-    if sep and tail.isdigit() and head and not (len(head) == 1 and head.isalpha()):
-        from ..ops import archive
-
-        ds_id, ds, keys = archive.resolve_handles([ref])
-        path = ds.idx2path[keys[0]]
-        if not os.path.isfile(path):
-            raise ValueError(f"{ref}'s file is gone: {path}")
-        return path
-    path = os.path.abspath(ref)
-    paths = _paths()
-    if not os.path.isfile(path):
-        raise ValueError(f"No picture at {ref!r}.")
-    if not (handle_of(path) or paths.is_within(path) or paths.is_within(path, [paths.data_dir()])):
-        raise ValueError(f"{ref!r} is neither a picture of a dataset nor inside the media roots; "
-                         "add its folder as a dataset first.")
-    return path
+    item = archive.resolve_item(str(ref).strip().strip('"'), "person")
+    if not os.path.isfile(item.path):
+        raise ValueError(f"{ref}'s file is gone: {item.path}")
+    return item.path
 
 
-_members: dict = {}
-_members_at = [0.0]
-_members_lock = threading.Lock()
-
-
-def handle_of(path: str) -> str | None:
-    """The handle of a file that belongs to a dataset (the collection rail holds files), or None.
-    The datasets' file lists are read at most once a minute."""
-    import time
-
-    key = os.path.normcase(os.path.abspath(path))
-    with _members_lock:
-        if time.monotonic() - _members_at[0] > 60:
-            _members.clear()
-            try:
-                from .. import core
-                from ..ops import archive
-            except ImportError:                           # pragma: no cover
-                return None
-            for d in core.find_datasets():
-                if d.get("modality", "image") != "image":
-                    continue
-                try:
-                    ds_id = archive.dataset_id(d["name"], d["modality"])
-                    ds = archive.open_dataset(ds_id)
-                except Exception:
-                    continue
-                for k, p in ds.idx2path.items():
-                    _members[os.path.normcase(os.path.abspath(p))] = archive.handle(ds_id, k)
-            _members_at[0] = time.monotonic()
-        return _members.get(key)
+_sizes: dict = {}
 
 
 def original_size(path):
-    with Image.open(path) as im:
-        im = ImageOps.exif_transpose(im)
-        return im.size
+    """(width, height) as the picture is shown, after its EXIF rotation. Read from the header and
+    kept per file and modification time: a preview asks for it every time, and decoding a 6000 px
+    JPEG to learn its size cost more than the whole rest of a finish change."""
+    key = (str(path), os.path.getmtime(path))
+    got = _sizes.get(key)
+    if got is None:
+        with Image.open(path) as im:
+            w, h = im.size
+            turned = im.getexif().get(0x0112, 1) in (5, 6, 7, 8)   # orientations that swap the sides
+        got = _sizes[key] = (h, w) if turned else (w, h)
+    return got
 
 
 def frame(path, long_side, multiple=8):
@@ -163,14 +116,26 @@ def to_image(a) -> Image.Image:
     return Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8))
 
 
-def save(image: Image.Image, op: str, args: dict, sources: list[str]) -> tuple[str, str]:
-    """A made picture written to output/alchemy with its sidecar: (out id, path)."""
-    stamp = datetime.datetime.now().isoformat(timespec="seconds")
-    oid = hashlib.blake2b(json.dumps([op, args, sources, stamp], sort_keys=True, default=str).encode(),
-                          digest_size=5).hexdigest()
-    path = os.path.join(out_dir(), oid + ".png")
-    image.save(path)
-    with open(os.path.join(out_dir(), oid + ".json"), "w", encoding="utf-8") as f:
-        json.dump({"id": "out:" + oid, "path": path, "op": op, "args": args, "sources": sources,
-                   "kind": "derived", "made": stamp}, f, indent=1, default=str)
-    return "out:" + oid, path
+def _slug(text: str, n: int = 40) -> str:
+    keep = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in str(text))
+    return "-".join(p for p in keep.split("-") if p)[:n] or "picture"
+
+
+def write(image: Image.Image, family: str, title: str, provenance: dict) -> str:
+    """A kept picture written to output/edited/<family>/<date>/<title>__<time>.png, its provenance
+    inside the PNG so it survives the file being copied anywhere. Returns the path. The ledger
+    (ledger.py) records it and gives it its out: handle."""
+    from PIL import PngImagePlugin
+
+    folder = _paths().edited_dir(family)
+    stem = "__".join(_slug(t) for t in title.split("__") if t) or "kept"
+    path = os.path.join(folder, f"{stem}__{datetime.datetime.now().strftime('%H%M%S')}.png")
+    n = 2
+    while os.path.exists(path):
+        path = os.path.join(folder, f"{stem}__{datetime.datetime.now().strftime('%H%M%S')}-{n}.png")
+        n += 1
+    meta = PngImagePlugin.PngInfo()
+    for k, v in provenance.items():
+        meta.add_text(f"arcana:{k}", v if isinstance(v, str) else json.dumps(v, default=str))
+    image.save(path, "PNG", pnginfo=meta)
+    return path

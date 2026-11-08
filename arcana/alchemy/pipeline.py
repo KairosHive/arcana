@@ -3,15 +3,15 @@
     spec = {"picture": "japan:1423", "materials": ["japan:88"], "weights": [1.0],
             "lead": "picture", "method": "tokens.mix", "knobs": {"model": "FLUX.2 VAE", "carry": "transport"},
             "mask": {"layers": ["sky"]}, "finish": {"exposure": 0.3}, "zoom": 1.0, "crop": 0,
-            "recipe": "water light", "enlarge": False}
-    image, info = run(spec, long_side=768)
+            "recipe": "water light"}
+    image, info = run(spec, long_side=768)      # None or 0: the picture's own size
 
 The stages, in order: a recipe (if named) fills the settings it holds; the method is looked up and
 its knobs settled; the pictures are read at the frame (with `lead` "material", the first material
 and the picture swap places, so the material leads and the picture is hidden in it); the mask is
 built; the method runs; its result is laid into the picture through the mask; the finish is
-applied; Real-ESRGAN enlarges it four times if asked. `view` "mask" draws the mask instead, and
-"before" the picture as it was.
+applied. Each family draws up to its own largest size (DRAW_CAP), and Real-ESRGAN takes a larger
+picture the rest of the way. `view` "mask" draws the mask instead, and "before" the picture as it was.
 """
 
 from __future__ import annotations
@@ -27,10 +27,13 @@ from . import finish as fn
 from . import mask as mk
 from . import methods as mt
 from . import recipes as rc
-from .inputs import crop_of, frame, load_frame, resolve, to_image
+from .inputs import crop_of, frame, load_frame, original_size, resolve, to_image
 
 TOKEN_MULTIPLE = 16
 DRAWN_KEEP = 6                       # steps kept before their finish, so a finish change is instant
+# The largest long side each family draws itself; a larger picture is reached by Real-ESRGAN. Token
+# decoders and diffusion were trained small and grow slow and costly past these.
+DRAW_CAP = {"tokens": 1536, "generative": 1024, "pixels": 3072, "colour": 4096}
 _drawn: collections.OrderedDict = collections.OrderedDict()
 
 
@@ -57,7 +60,18 @@ def resolved(spec: dict) -> dict:
     return spec
 
 
-def run(spec: dict, long_side: int = 768, view: str = "result"):
+def run(spec: dict, long_side: int | None = 768, view: str = "result"):
+    """(image, info). `long_side` None or 0 keeps the leading picture's own size."""
+    image, _, info = _run(spec, long_side, view, False)
+    return image, info
+
+
+def run_compare(spec: dict, long_side: int | None = 768):
+    """(result, the picture as it was, info), drawn in one pass at the same frame."""
+    return _run(spec, long_side, "result", True)
+
+
+def _run(spec, long_side, view, with_before):
     t0 = time.perf_counter()
     spec = resolved(spec)
     method = mt.get(spec["method"])
@@ -77,7 +91,9 @@ def run(spec: dict, long_side: int = 768, view: str = "result"):
     mat_paths = [resolve(r) for r in mat_refs[:hi]]
     base = pic_path or mat_paths[0]
     multiple = TOKEN_MULTIPLE if method.family == "tokens" else 8
-    W, H = frame(base, int(long_side), multiple)
+    want = int(long_side) if long_side else max(original_size(base))
+    draw = min(want, DRAW_CAP[method.family]) if view == "result" else want
+    W, H = frame(base, draw, multiple)
     zoom, crop = float(spec.get("zoom", 1.0) or 1.0), int(spec.get("crop", 0) or 0)
     c = load_frame(pic_path, W, H) if pic_path else np.zeros((H, W, 3), np.float32) + 0.5
     mats = [crop_of(p, W, H, zoom, crop) for p in mat_paths]
@@ -88,13 +104,12 @@ def run(spec: dict, long_side: int = 768, view: str = "result"):
     m = mk.build(spec.get("mask"), scene) if pic_path else None
     if view == "mask":
         out = mk.shown(m if m is not None else np.ones((H, W), np.float32), c)
-        return to_image(out), _info(spec, method, W, H, t0, m)
+        return to_image(out), None, _info(spec, method, W, H, t0, m)
     if view == "before":
-        return to_image(c), _info(spec, method, W, H, t0, m)
+        return to_image(c), None, _info(spec, method, W, H, t0, m)
 
     # The finish is the last stage, so moving only the finish reuses the step drawn before it.
-    key = json.dumps([{k: v for k, v in spec.items() if k not in ("finish", "enlarge")}, W, H],
-                     sort_keys=True, default=str)
+    key = json.dumps([{k: v for k, v in spec.items() if k != "finish"}, W, H], sort_keys=True, default=str)
     out = _drawn.get(key)
     if out is None:
         step = Step(W, H, c, pkey, mats, mkeys, list(spec.get("weights") or [1.0] * len(mats)), m,
@@ -103,8 +118,7 @@ def run(spec: dict, long_side: int = 768, view: str = "result"):
             knobs.setdefault("seed", crop)
         out = method.run(step, knobs)
         if out.shape[:2] != (H, W):
-            out = mk.cx._resize(out, W, H, mk.Image.BILINEAR) if out.ndim == 2 else \
-                np.asarray(to_image(out).resize((W, H), mk.Image.LANCZOS), np.float32) / 255.0
+            out = mk.cx._resize(out, W, H, mk.Image.BILINEAR) if out.ndim == 2 else                 np.asarray(to_image(out).resize((W, H), mk.Image.LANCZOS), np.float32) / 255.0
         if m is not None and method.picture:
             out = m[..., None] * out + (1 - m[..., None]) * c
         _drawn[key] = out
@@ -114,11 +128,22 @@ def run(spec: dict, long_side: int = 768, view: str = "result"):
         _drawn.move_to_end(key)
     out = fn.apply(out, spec.get("finish"), m, seed=crop)
     image = to_image(out)
-    if spec.get("enlarge"):
-        from .spaces import enlarge
+    info = _info(spec, method, W, H, t0, m)
+    if want > max(W, H) * 1.02:
+        # Past what the method draws well, Real-ESRGAN takes the picture the rest of the way.
+        image = _enlarged(image, *frame(base, want, 1))
+        info.update(size=[image.width, image.height], drawn=[W, H],
+                    ms=round((time.perf_counter() - t0) * 1000))
+    return image, (to_image(c) if with_before else None), info
 
-        image = to_image(enlarge(np.asarray(image, np.float32) / 255.0))
-    return image, _info(spec, method, image.width, image.height, t0, m)
+
+def _enlarged(image, TW, TH):
+    from .spaces import enlarge
+
+    a = np.asarray(image, np.float32) / 255.0
+    while a.shape[1] * 1.02 < TW:
+        a = enlarge(a)
+    return to_image(a).resize((TW, TH), mk.Image.LANCZOS)
 
 
 def mask_view(picture: str, mask, material: str | None = None, long_side: int = 768):

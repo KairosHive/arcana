@@ -8,10 +8,10 @@
 # picture or the materials dominate. Its other knobs and the model's looks fold
 # away under them.
 #
-# Sliders preview while they move. Only the newest preview is drawn: a request
-# overtaken while it waited for the one before it is dropped, and the image on
-# the stage stays until the next one replaces it. A thin bar runs across the
-# stage while a preview or a Keep is being drawn.
+# Sliders preview while they move. One preview is out at a time; when it lands,
+# the newest settings go out next, so a drag redraws as fast as the step can be
+# drawn. The image stays until the next one replaces it. A step slower than
+# real time fills a bar over the stage, which completes as the picture lands.
 #
 # Every action goes through an op (`alchemy preview`, `alchemy make`, `alchemy
 # recipe save`), so the tab, the CLI and agents do the same thing. layout() and
@@ -20,14 +20,16 @@
 from __future__ import annotations
 
 import base64
-import threading
+import hashlib
+import os
 import urllib.parse
 
 from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
-from dash.exceptions import PreventUpdate
 
 try:
     from . import ops as _ops
+    from . import paths as _paths
+    from . import ui_collection as _collection
     from . import ui_style as _ui
     from .alchemy import finish as _finish
     from .alchemy import mask as _mask
@@ -35,6 +37,8 @@ try:
     from .alchemy import recipes as _recipes
 except ImportError:                                   # pragma: no cover
     import ops as _ops
+    import paths as _paths
+    import ui_collection as _collection
     import ui_style as _ui
     from alchemy import finish as _finish
     from alchemy import mask as _mask
@@ -137,8 +141,8 @@ def _cast_column():
     return html.Div(
         [
             html.Div("Pictures", style=_ui.section_title()),
-            html.Div("T is the picture. 1, 2 and 3 are the materials mixed into it. The collection is "
-                     "the one Moodboard and Prompt Search fill.", style=_ui.hint(fontSize="11.5px")),
+            html.Div("T is the picture. 1, 2 and 3 are the materials mixed into it. They come from the "
+                     "active collection, chosen in the header.", style=_ui.hint(fontSize="11.5px")),
             html.Div(id="alc-slots", style={"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)",
                                             "gap": "6px", "margin": "10px 0"}),
             html.Div(id="alc-cast", style={"display": "grid",
@@ -154,8 +158,10 @@ def _cast_column():
 def _stage_column():
     stage = html.Div(
         [
-            html.Div(html.Div(className="alc-loadbar-run"), id="alc-loadbar", className="alc-loadbar",
-                     style={"visibility": "hidden"}),
+            # No style prop: alchemy.js owns the bar, and React must not reset what it sets.
+            html.Div(html.Div(className="alc-loadbar-fill"), id="alc-loadbar", className="alc-loadbar"),
+            html.Div(id="alc-stage-meta", style={"display": "none"}),
+            html.Div(id="alc-keep-meta", style={"display": "none"}),
             html.Div(
                 [
                     html.Img(id="alc-before", className="alc-before"),
@@ -182,9 +188,10 @@ def _stage_column():
                 html.Button("Draw", id="alc-draw", n_clicks=0,
                             style=_ui.button("secondary", padding="5px 11px", fontSize="12px")),
                 html.Div(style={"flex": "1"}),
-                dcc.Dropdown(id="alc-keep-size", options=[{"label": f"keep at {s}", "value": s} for s in (1024, 1536, 2048)],
-                             value=1024, clearable=False, style={**SMALL, "width": "128px"}),
-                dcc.Checklist(id="alc-enlarge", options=[{"label": " enlarge 4x", "value": "on"}], value=[], style=SMALL),
+                dcc.Dropdown(id="alc-keep-size",
+                             options=[{"label": "keep at full size", "value": 0}]
+                             + [{"label": f"keep at {s}", "value": s} for s in (2048, 4096)],
+                             value=0, clearable=False, style={**SMALL, "width": "150px"}),
                 html.Button("Keep", id="alc-keep", n_clicks=0,
                             style=_ui.button("primary", padding="6px 14px", fontSize="12.5px")),
             ], style=_ui.row("10px", marginBottom="6px")),
@@ -297,6 +304,8 @@ def layout() -> html.Div:
         [
             dcc.Store(id="alc-roles", storage_type="local"),
             dcc.Store(id="alc-knob-seed", storage_type="memory"),
+            dcc.Store(id="alc-before-key", storage_type="memory"),
+            dcc.Store(id="alc-request", storage_type="memory"),
             _cast_column(),
             _stage_column(),
             _settings_column(),
@@ -396,24 +405,6 @@ def _src(att):
     return "data:image/jpeg;base64," + base64.b64encode(att.data).decode()
 
 
-class _Latest:
-    """Only the newest preview is drawn. Each request takes a number; one that finds a newer number
-    when its turn comes is dropped, so moving a slider never builds a queue."""
-
-    def __init__(self):
-        self.n = 0
-        self.count = threading.Lock()
-        self.turn = threading.Lock()
-
-    def take(self):
-        with self.count:
-            self.n += 1
-            return self.n
-
-    def stale(self, mine):
-        return mine != self.n
-
-
 # ─────────────────────────── callbacks ───────────────────────────
 
 def register(app) -> None:
@@ -422,7 +413,6 @@ def register(app) -> None:
     except ImportError:                               # pragma: no cover
         from alchemy.memory import MODELS
     MODELS.start()
-    latest = _Latest()
 
     @app.callback(Output("alchemy-panel", "style"), Input("mode-select", "value"))
     def _show(mode):
@@ -430,7 +420,7 @@ def register(app) -> None:
 
     @app.callback(Output("alc-cast", "children"), Output("alc-slots", "children"),
                   *[Output(f"alc-w-wrap-{i}", "style") for i in (1, 2, 3)],
-                  Input("moodboard-store", "data"), Input("alc-roles", "data"))
+                  Input("collection-items", "data"), Input("alc-roles", "data"))
     def _cast(collection, roles):
         roles = roles or {}
         slots = []
@@ -450,8 +440,8 @@ def register(app) -> None:
         shares = [{} if len(mats) > 1 and r in mats else {"display": "none"} for r in ("1", "2", "3")]
         collection = collection or []
         if not collection:
-            return [html.Div("The collection is empty. Collect pictures in Moodboard or Prompt Search, "
-                             "and they appear here.", style=_ui.hint(gridColumn="1 / -1", fontSize="11.5px"))], \
+            return [html.Div("The active collection is empty. Pictures added with + Collection on any tab "
+                             "appear here.", style=_ui.hint(gridColumn="1 / -1", fontSize="11.5px"))], \
                 slots, *shares
         tiles = []
         for path in collection:
@@ -594,68 +584,101 @@ def register(app) -> None:
             rest += [getattr(spec, key) for key, *_ in REFINE]
         return [doc, s.get("lead", no_update), s.get("zoom", no_update), fins, scope, *rest]
 
-    preview_inputs = _controls("input")
-    preview_inputs.update(view=Input("alc-view", "value"), size=Input("alc-size", "value"),
-                          draw=Input("alc-draw", "n_clicks"))
+    # What the stage is drawing, for alchemy.js to time the load bar by: method, model, view, size.
+    app.clientside_callback(
+        """function (m, v, s, k, knobs, ids) {
+            var model = '';
+            (ids || []).forEach(function (id, i) { if (id.key === 'model') model = '|' + knobs[i]; });
+            return [m + model + '|' + v + '|' + s, 'keep|' + m + model + '|' + k];
+        }""",
+        Output("alc-stage-meta", "title"), Output("alc-keep-meta", "title"),
+        Input("alc-method", "value"), Input("alc-view", "value"), Input("alc-size", "value"),
+        Input("alc-keep-size", "value"), Input({"type": "alc-knob", "key": ALL}, "value"),
+        State({"type": "alc-knob", "key": ALL}, "id"),
+    )
+
+    # The gate: one preview out at a time. A change while one is out is held, and when the preview
+    # lands, alchemy.js sends the newest state at once (window.alcGate.release). A drag therefore
+    # redraws as fast as the step can be drawn, instead of queueing a request per slider tick.
+    gate_inputs = list(_controls("input").values()) + [
+        Input("alc-view", "value"), Input("alc-size", "value"), Input("alc-draw", "n_clicks")]
+    app.clientside_callback(
+        """function () {
+            var fired = (dash_clientside.callback_context.triggered || []).map(function (t) { return t.prop_id; });
+            var draw = fired.some(function (p) { return p.indexOf('alc-draw.') === 0; });
+            return window.alcGate ? window.alcGate.ask(draw) : {seq: Date.now(), draw: draw};
+        }""",
+        Output("alc-request", "data"), *gate_inputs,
+    )
+
+    preview_state = {k: State(dep.component_id, dep.component_property)
+                     for k, dep in _controls("input").items()}
+    preview_state.update(view=State("alc-view", "value"), size=State("alc-size", "value"),
+                         live=State("alc-live", "value"), before_key=State("alc-before-key", "data"), **ID_STATES)
 
     @app.callback(Output("alc-image", "src"), Output("alc-before", "src"), Output("alc-after-tag", "children"),
                   Output("alc-info", "children"), Output("alc-status", "children"),
-                  Output("alc-compare", "style"), Output("alc-empty", "children"),
-                  inputs=preview_inputs, state={**ID_STATES, "live": State("alc-live", "value")},
-                  running=[(Output("alc-loadbar", "style"), {"visibility": "visible"}, {"visibility": "hidden"})])
-    def _preview(**v):
+                  Output("alc-compare", "style"), Output("alc-empty", "children"), Output("alc-before-key", "data"),
+                  inputs={"req": Input("alc-request", "data")}, state=preview_state, prevent_initial_call=True)
+    def _preview(req, **v):
+        # Every path answers, so the stage image's loading mark clears and the gate opens again.
+        try:
+            return _drawn(req or {}, v)
+        except Exception as e:                   # the page shows it, and the gate stays open
+            return no_update, no_update, no_update, "", f"{type(e).__name__}: {e}", no_update, "", no_update
+
+    def _drawn(req, v):
         roles = v.get("roles") or {}
         method = _methods.get(v["method"])
         hidden = {"display": "none"}
         if not roles.get("T") and not any(roles.get(r) for r in ("1", "2", "3")):
             return (no_update, no_update, no_update, "", "", hidden,
-                    "Give a picture [T] and a material [1] from the collection on the left.")
-        drew = ctx.triggered_id == "alc-draw"
-        if not drew and (not v.get("live") or (method.cost != "live" and v.get("view") == "compare")):
-            return (no_update,) * 4 + ("Draw shows this step.", no_update, "")
-        mine = latest.take()
-        with latest.turn:
-            if latest.stale(mine):
-                raise PreventUpdate               # a newer preview is waiting, so this one is skipped
-            args = settings(v)
-            mask_view = v.get("view") == "mask"
-            args.update(view="mask" if mask_view else "compare", size=int(v.get("size") or 640))
-            res, err = _call("alchemy preview", args)
-            before = None
-            if res is not None and mask_view:
-                b, err = _call("alchemy preview", {**args, "view": "before"})
-                before = b.attachments[0] if b and b.attachments else None
+                    "Give a picture [T] and a material [1] from the collection on the left.", no_update)
+        if not req.get("draw") and (not v.get("live") or (method.cost != "live" and v.get("view") == "compare")):
+            return (no_update,) * 4 + ("Draw shows this step.", no_update, "", no_update)
+        args = settings(v)
+        mask_view = v.get("view") == "mask"
+        args.update(view="mask" if mask_view else "compare", size=int(v.get("size") or 640))
+        res, err = _call("alchemy preview", args)
+        before = None
+        if res is not None and mask_view:
+            b, err = _call("alchemy preview", {**args, "view": "before"})
+            before = b.attachments[0] if b and b.attachments else None
         if err:
-            return no_update, no_update, no_update, "", err, no_update, ""
+            return no_update, no_update, no_update, "", err, no_update, "", no_update
         after = res.attachments[0]
         before = before or (res.attachments[1] if len(res.attachments) > 1 else after)
+        # The picture as it was rarely changes between previews, so it is sent only when it does.
+        key = hashlib.blake2b(before.data, digest_size=8).hexdigest()
+        before_src = no_update if key == v.get("before_key") else _src(before)
         bits = [res.method, f"{res.size[0]} x {res.size[1]}", f"{res.ms} ms"]
         if res.mask_share is not None:
             bits.append(f"mask {res.mask_share:.0%}")
-        return (_src(after), _src(before), "mask" if mask_view else "after", "  ·  ".join(bits), "", {}, "")
+        return (_src(after), before_src, "mask" if mask_view else "after", "  ·  ".join(bits), "", {}, "", key)
 
     keep_states = _controls("state")
 
     @app.callback(Output("alc-keep-status", "children"),
-                  Output("moodboard-store", "data", allow_duplicate=True),
+                  Output("collection-rev", "data", allow_duplicate=True),
                   inputs={"n": Input("alc-keep", "n_clicks")},
-                  state={**keep_states, **ID_STATES, "keep_size": State("alc-keep-size", "value"),
-                         "enlarge": State("alc-enlarge", "value"), "collection": State("moodboard-store", "data")},
-                  running=[(Output("alc-keep", "disabled"), True, False),
-                           (Output("alc-loadbar", "style"), {"visibility": "visible"}, {"visibility": "hidden"})],
+                  state={**keep_states, **ID_STATES, "keep_size": State("alc-keep-size", "value")},
+                  running=[(Output("alc-keep", "disabled"), True, False)],
                   prevent_initial_call=True)
     def _keep(n, **v):
         if not n:
             return no_update, no_update
         args = settings(v)
-        args.update(size=int(v.get("keep_size") or 1024), enlarge=bool(v.get("enlarge")))
+        args.update(size=int(v.get("keep_size") or 0))
         res, err = _call("alchemy make", args)
         if err:
             return err, no_update
-        collection = list(v.get("collection") or [])
-        if res.path not in collection:
-            collection.append(res.path)
-        return f"Kept {res.id}, {res.size[0]} x {res.size[1]}, added to the collection.", collection
+        where = os.path.relpath(res.path, _paths.subdir("output")).replace(os.sep, "/")
+        try:
+            slug = _collection.add([res.id])
+        except _ops.Refusal as e:
+            return f"Kept {res.id} as {where} in output, but could not add it to the collection: {e.reason}", no_update
+        return (f"Kept {res.size[0]} x {res.size[1]} as {res.id}, in output/{where}, and added it to {slug}.",
+                _collection.rev())
 
     @app.callback(Output("alc-recipe-status", "children"), Output("alc-recipe", "options"),
                   inputs={"n": Input("alc-recipe-save", "n_clicks")},

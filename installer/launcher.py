@@ -9,6 +9,13 @@ has to do that `arcana-build-latent`-style CLI use does not:
     install directory of a packaged app is read-only
   * open a browser at the app once the server is listening
   * keep a log, since there is no console to print to in a windowed build
+
+Modes are flags on the one executable:
+
+  Arcana.exe              the app, in the browser
+  Arcana.exe --mcp        the MCP server on stdio, for an agent
+                          (claude mcp add arcana -- "<install dir>\Arcana.exe" --mcp)
+  Arcana.exe --headless   the ops over HTTP without the pages (--port N)
 """
 
 from __future__ import annotations
@@ -74,6 +81,20 @@ def _tee_log(data_dir: str):
     print(f"\n--- Arcana starting, data dir {data_dir} ---")
 
 
+def _log_stderr_only(data_dir: str) -> None:
+    """
+    For --mcp: stdout carries the protocol, so only stderr goes to the log.
+
+    _tee_log would point stdout at the log file too, and the agent would then
+    wait for answers written into arcana.log.
+    """
+    try:
+        sys.stderr = open(os.path.join(data_dir, "arcana-mcp.log"), "a", buffering=1,
+                          encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
+
 def _open_browser_when_ready() -> None:
     """Poll the port rather than guessing at a delay; startup is model-bound."""
     import socket
@@ -95,13 +116,37 @@ def _open_browser_when_ready() -> None:
         return
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--version" in argv:
+        from arcana import __version__
+        print(f"Arcana {__version__}")
+        return 0
     data_dir = _setup_environment()
+
+    if "--mcp" in argv:
+        _log_stderr_only(data_dir)
+        from arcana.mcp_server import main as mcp_main
+        mcp_main()
+        return 0
+
     _tee_log(data_dir)
+    if "--headless" in argv:
+        port = 0
+        if "--port" in argv:
+            i = argv.index("--port")
+            port = int(argv[i + 1]) if i + 1 < len(argv) and argv[i + 1].isdigit() else 0
+        from arcana.server import serve_headless
+        serve_headless(port)
+        return 0
 
     # Imported only now, so the environment above is already in place.
+    from arcana import server
     from arcana.arcana import app
 
+    # server.json tells the terminal and an agent's server where the app is,
+    # so they run their ops here, on this process's models and GPU.
+    server.announce(PORT)
     threading.Thread(target=_open_browser_when_ready, daemon=True).start()
     print(f"Arcana is running at http://{HOST}:{PORT}/")
     app.run(host=HOST, port=PORT, debug=False)

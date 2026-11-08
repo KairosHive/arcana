@@ -78,6 +78,26 @@ def load(weights, device="cuda"):
 
 
 @torch.no_grad()
+def enlarge_tiled(net, image, tile=384, overlap=16):
+    """[h, w, 3] floats to [4h, 4w, 3], drawn tile by tile so a full-size photograph fits on the card.
+    Each tile is drawn with `overlap` pixels of its neighbours and only its own part is kept, so the
+    seams fall where both sides were drawn with the same surroundings."""
+    h, w = image.shape[:2]
+    if h <= tile and w <= tile:
+        return enlarge(net, image)
+    out = np.zeros((4 * h, 4 * w, 3), np.float32)
+    for y in range(0, h, tile):
+        for x in range(0, w, tile):
+            y0, x0 = max(0, y - overlap), max(0, x - overlap)
+            y1, x1 = min(h, y + tile + overlap), min(w, x + tile + overlap)
+            big = enlarge(net, np.ascontiguousarray(image[y0:y1, x0:x1]))
+            ty, tx = min(tile, h - y), min(tile, w - x)
+            oy, ox = 4 * (y - y0), 4 * (x - x0)
+            out[4 * y:4 * (y + ty), 4 * x:4 * (x + tx)] = big[oy:oy + 4 * ty, ox:ox + 4 * tx]
+    return out
+
+
+@torch.no_grad()
 def enlarge(net, image, keep=False):
     """[h, w, 3] floats in 0..1 to [4h, 4w, 3]. `keep`: left on the card as a float tensor, for a
     caller that finishes the picture there and copies back bytes rather than floats (a 3072 x 2048

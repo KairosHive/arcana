@@ -1,6 +1,6 @@
 # Arcana ops: one vocabulary, many thin surfaces
 
-P0 done, P1 next. Goal: every action Arcana can perform is a named op, declared
+P0 to P5 done, 7 November 2026; installing the new build is the person's step. Goal: every action Arcana can perform is a named op, declared
 once, and the web UI, the command line and an MCP agent all reach the same ops
 through thin surfaces generated from that one declaration. An agent can then
 prompt the latent space, build libraries, assemble moodboards from varied
@@ -600,6 +600,45 @@ What building it settled, beyond the text above:
   there keeps the agent's notes, and `arcana undo` in a terminal takes back
   only the terminal's own last batch.
 
+**Done 7 November 2026.** `state.py` holds transactions, per-actor undo and
+the version counter, `ledger.py` the output ledger, and `ops/board.py` the
+board ops. The app serves the ops from its own Flask server and announces
+itself in `server.json`. The CLI and the MCP server forward to it when it
+answers and run in-process otherwise. `mcp_server.py` is one `exec` tool, two
+resources and the `moodboard` prompt. All four acceptance checks pass against
+the running app:
+
+- an agent's batch built a board with two sections and a hero in 0.28 s,
+  through the app's process
+- the board appeared in the Moodboard tab's picker 1.86 s after the agent
+  created it
+- loading it in the tab and saving it there kept every note, role, section
+  and the agent as author
+- `arcana undo` in a terminal took back only the terminal's last step
+
+What building it settled, beyond the text above:
+
+- The routes sit under `/ops/` (`/ops/exec`, `/ops/rpc`, `/ops/list`,
+  `/ops/schema.json`, `/ops/state`), beside Dash's own routes on the same
+  server.
+- Undo history lives on disk in `state/history.json`, so a terminal's undo
+  works with or without the app open. A step is undone only while its files
+  are as it left them.
+- Every line of a batch is parsed before any runs, so a typo on line five
+  changes nothing.
+- The MCP tool always acts as `agent`. A model cannot name another actor.
+- `board set --name --brief --concept --dataset` replaces `board concept set`.
+  `board note` also takes `--role`. `board save` replaces a board's item list,
+  which is how the Moodboard tab saves. `item export` copies pictures into
+  `output/search` or `output/collections`.
+- `undo` and `redo` run on their own line, outside a batch that writes.
+- The Moodboard tab saved to the slug of the board's name, so saving an
+  agent's board (id `p1-check`, name "P1 check, ...") forked a second board.
+  It now saves over the loaded board while the name is unchanged.
+- The tab badges derived and generated pictures from the ledger and the board,
+  shows each picture's role, and has the person's pixels switch (A8).
+- `test_parity.py` forbids `boards` in `arcana.py` and `ui_datasets.py`.
+
 ### P2. Transfer registry and the completion ops (about 3 days)
 
 - P4 of AGENT_PLAN as written there, `transfer_methods.py` with LAB, MKL, IDT
@@ -613,6 +652,55 @@ What building it settled, beyond the text above:
   handles that `board add` accepts, the app badges them, and the originals'
   mtimes are unchanged.
 
+**Done 7 November 2026.** `transfer_methods.py` is the registry: LAB, MKL,
+IDT and ModFlows, cheapest first, with measured timings and one `transfer()`
+dispatch. MKL and IDT are new, in `classic_transfer.py`. `generate.py` holds
+sd-turbo, out of Inject Poetry. The ops are `colour methods`, `colour
+transfer`, `colour lut`, `colour harmonize`, `style methods`, `style
+transfer`, `style control-map`, `generate`, `model download` and the four job
+ops. The colour, style and Inject Poetry panels run through them, and the
+colour dropdown, its greyed controls and its note come from the registry.
+
+Measured at 1024 x 683 on an Intel Core Ultra 9 185H and an RTX 4090 Laptop
+GPU, warm, median of three:
+
+| method | CPU | GPU |
+|---|---|---|
+| LAB | 50 ms | 50 ms |
+| MKL | 70 ms | 70 ms |
+| IDT | 1.0 s | 1.0 s |
+| ModFlows, balanced | 3.4 s | 0.47 s |
+
+The acceptance check ran as an agent through MCP into the open app. It
+harmonized two outliers toward a palette taken from the board, ran a
+ControlNet depth transfer and added the result, and the app badged all three
+as derived. The originals' modification times were unchanged.
+
+What building it settled, beyond the text above:
+
+- Effects run without the state lock and take it only to record. A
+  transaction opened for an effect is lazy and locks at its first touch, so a
+  40-second CPU transfer never blocks a board save.
+- `--background` runs any long effect as a job. The job records its result in
+  its own transaction for the actor who started it, so it is undoable.
+- `colour transfer` takes `--reference` (the plan's `--from`; `from` is a
+  Python keyword) or `--palette`. `style transfer` takes `--source`.
+- `generate --for-board` adds the picture to the board, refuses a third
+  generated picture and refuses the hero role. `--folder` writes under
+  output/ only, which Inject Poetry uses for its stories folder.
+- `colour harmonize` uses the board's palette when given neither a picture
+  nor a palette, places each result beside its original, refuses the hero and
+  refuses to take derived pictures past a third of the board.
+- `model download modflows` replaces the app's own download job.
+- The item ops accept out: handles.
+- Dash 4 renders a `dash.no_update` "off" value in a callback's `running=`
+  list as a child. The transfer buttons' status lines did that, which crashed
+  React (error #31) and stopped the page answering clicks. They are gone from
+  `running=`, and the button text says "Working…" instead.
+- `test_parity.py` now also forbids `color_transfer`, `lab_transfer`,
+  `classic_transfer`, `transfer_methods`, `style_transfer`, `lut` and
+  `generate` in the app.
+
 ### P3. HTML boards, the skills, the plugin (about 3 days)
 
 - `compose.py`, `board render`, `board open`, `board show` metrics.
@@ -622,6 +710,38 @@ What building it settled, beyond the text above:
   returns an HTML board with at least four sections, a palette strip, a reason
   per section and no near-duplicate pair, and it is a board the person would
   keep.
+
+**Done 7 November 2026.** `compose.py` renders a board to one HTML file in
+three layouts and to a PNG. `board render` and `board open` are the ops. The
+three skills live in `plugin/skills`, with the plugin manifest, its MCP config
+and a marketplace file at the repo root (`/plugin marketplace add <repo>`,
+then `/plugin install arcana@arcana`). The `moodboard` prompt carries the
+moodboard skill. `evals/` holds the five briefs, a scorer and the protocol.
+
+The acceptance board was built through the `exec` tool from `export-quick`,
+since `japan`'s files have moved and a board of missing files cannot be
+judged. "Gatherings at the edge of light" has four sections each with its
+reason, one hero, a palette taken from its pictures, no near-duplicates, and
+renders as an 842 KB page. One revision followed a look at its PNG: a
+daylight baby portrait came off, and the crowd section now says plainly that
+the archive has no crowd at night. The five-brief comparison with and without
+the skills is the person's to run (`evals/README.md`), since the ranking that
+decides it is theirs.
+
+What building it settled, beyond the text above:
+
+- The skills live in the plugin (`plugin/skills`), since a Claude Code plugin
+  finds skills there. The MCP server reads them from there in a checkout and
+  from `arcana/skills` in the installed build, where P5 copies them.
+- Thumbnails are embedded at 1400 px for the hero and 640 px for the rest, so
+  the page holds up on a large screen. The lightbox opens the original by
+  file:// path when it exists and the embedded copy otherwise.
+- The editorial layout uses flex rows, each role starting from a share of the
+  row (support 30%, texture 22%, detail 14%) and growing to fill it. A
+  12-column grid left a hole whenever the roles in a row summed to 11.
+- Palette names sit in a legend under the strip, since a narrow swatch has no
+  room for its own label.
+- Every op line in a skill is parsed and validated by `tests/test_skills.py`.
 
 ### P4. Dataset lifecycle and the single command (about 2 days)
 
@@ -633,6 +753,41 @@ What building it settled, beyond the text above:
 - **Done when** every row of the README's command-line block has an op
   spelling, and the Datasets tab performs no write outside `ops.call`.
 
+**Done 7 November 2026.** `ops/lifecycle.py` holds `dataset create`,
+`extend`, `finish`, `marks`, `relocate`, `migrate` and `delete`, with `model
+download` from P2. The long ones run as jobs by default and stop cleanly on
+`job cancel`. The Datasets tab and the app's relocate panel call them, and
+`test_parity.py` now fails on any writing function of `db`, `relocate` or
+`legacy` in the app. `aliases.py` turns each old console script into one op
+line, says the new spelling, and runs it, and a flag with no op equivalent
+runs the old script unchanged. The README's command-line block and
+INSTALLATION.md speak `arcana <op>`, and a test parses every line of that
+block.
+
+Checked live: `arcana dataset create` indexed twelve pictures with ViT-B/32
+and palette features in 13 s, and the dataset was searchable at once. In the
+open app, the Datasets tab's marks button ran `dataset marks` as a job, and
+its delete showed the dry-run preview and removed the dataset through
+`dataset delete`.
+
+What building it settled, beyond the text above:
+
+- `dataset finish` is `db.rework_dataset`, which `finish_dataset` already
+  aliased: it lays a dataset out again from its index, whether a run was cut
+  short or the clusters need redoing.
+- `legacy.py` and `relocate.py` fix their data folders as default arguments
+  at import. The ops pass the current folders explicitly, so a test, or any
+  code that changes the data dir, acts on the right one.
+- `server.json` carries a fingerprint of the op vocabulary. A client forwards
+  only to an app that speaks the same vocabulary, and runs the op itself,
+  with a note, when the open app is an older version.
+- `colour lut --out` writes a .cube anywhere for the person and the terminal,
+  which is what `arcana-lut` did. Agents write inside the data folder only.
+- An integer choice (`--dims 2|3`) arrives from a line as text, so the grammar
+  converts it before Pydantic compares it with the choices.
+- `folder_vocabulary` moved from the Datasets tab to `db.py`, so the ops reach
+  it without loading the app.
+
 ### P5. Installer (about 1 day)
 
 - `mcp` into the main dependencies, `--mcp` and `--headless` on the launcher,
@@ -640,6 +795,37 @@ What building it settled, beyond the text above:
   installed over the current one.
 - **Done when** Claude Code registered against the installed `Arcana.exe --mcp`
   lists the datasets, and the GPU build reports its card through `orient`.
+
+**Done 7 November 2026, except the install.** `mcp` is a main dependency,
+the launcher takes `--mcp`, `--headless` and `--version`, the spec bundles the
+ops, the MCP SDK (without its own CLI, which needs typer) and the skills, and
+the Datasets tab has a *Working with an agent* panel with the command for this
+install. Both builds and both installers were rebuilt: 243 MB for CPU, 2.1 GB
+for GPU.
+
+Checked on the built executables, through a real MCP client over stdio:
+`exec` is the one tool, the moodboard prompt carries the bundled skill, a
+search runs, and the GPU build's `orient` reports "Using NVIDIA GeForce RTX
+4090 Laptop GPU (sm_89, fp16)" with the `gpu` capability on. The GPU build
+started headless, wrote `server.json`, served all 60 ops and refused a request
+without its token.
+
+Installing over the September install was refused by the permission check on
+this machine, so it is left to the person:
+`installer\out\Arcana-Setup-0.2.0-GPU.exe /VERYSILENT /CURRENTUSER`, or a
+double-click.
+
+What building it settled:
+
+- In `--mcp` mode the launcher sends only stderr to a log
+  (`arcana-mcp.log`). Its usual log redirect would have sent the protocol into
+  the log file.
+- Building the orient page printed the GPU probe's note to stdout before the
+  transport took fd 1, which would corrupt the protocol stream in the frozen
+  build, where PyTorch loads early. The MCP server now builds it with stdout
+  sent to stderr.
+- The launcher answers `--version` instead of starting the app, which is
+  what it used to do for any flag it did not know.
 
 About fifteen working days to the end of P4. P0 and P1 alone give one grammar
 across the terminal and the agent, and a Moodboard tab that shows what the

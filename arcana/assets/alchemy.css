@@ -64,30 +64,32 @@
 .alc-tag-l { left: 8px; }
 .alc-tag-r { right: 8px; }
 
-/* ── the load bar: a thin glide across the top of the stage ── */
+/* ── the load bar: fills while a step is drawn and completes as the image lands ──
+ * alchemy.js owns it: it shows the bar only for a step expected to take longer
+ * than real time, fills it over the time that step took before, and completes
+ * it when the new image arrives. */
 .alc-loadbar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 3px;
+  height: 4px;
   overflow: hidden;
-  background: rgba(200, 116, 63, 0.18);
   border-radius: 2px;
+  background: rgba(200, 116, 63, 0.16);
   z-index: 3;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
 }
-.alc-loadbar-run {
+.alc-loadbar.on { opacity: 1; }
+.alc-loadbar-fill {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 35%;
+  inset: 0;
+  transform-origin: left center;
+  transform: scaleX(0);
   border-radius: 2px;
-  background: linear-gradient(90deg, rgba(200, 116, 63, 0), #c8743f 45%, #e0a070 60%, rgba(200, 116, 63, 0));
-  animation: alc-glide 1.15s cubic-bezier(0.45, 0, 0.25, 1) infinite;
-}
-@keyframes alc-glide {
-  from { left: -35%; }
-  to { left: 100%; }
+  background: linear-gradient(90deg, #a85a2c, #c8743f 70%, #f0b07a);
 }
 
 /* ── folding sections ── */

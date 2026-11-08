@@ -37,19 +37,32 @@ from matplotlib import pyplot as plt
 try:
     from . import ui_datasets as _ui_datasets
     from . import ui_alchemy as _ui_alchemy
+    from . import ui_collection as _ui_collection
     from . import ui_style as _ui
     from . import jobs
-    from . import boards as _boards
     from . import on1 as _on1
     from . import core as _core
+    # Everything the app changes goes through the ops (OPS_PLAN.md): the same
+    # vocabulary the terminal and an agent use, with transactions and undo.
+    # tests/test_parity.py keeps boards.py and the transfer modules out of here.
+    from . import ops as _ops
+    from . import server as _ops_server
+    from . import ui_agent as _ui_agent
+    from . import state as _state
+    from . import ledger as _ledger
 except ImportError:
     import ui_datasets as _ui_datasets
     import ui_alchemy as _ui_alchemy
+    import ui_collection as _ui_collection
     import ui_style as _ui
     import jobs
-    import boards as _boards
     import on1 as _on1
     import core as _core
+    import ops as _ops
+    import server as _ops_server
+    import ui_agent as _ui_agent
+    import state as _state
+    import ledger as _ledger
 
 # --- palette/style search ---
 try:
@@ -64,40 +77,26 @@ except ImportError:
         search_by_palette = search_by_style = search_combined = None
         load_palette_features = load_style_features = None
 
-# --- color transfer (ModFlows) ---
-try:
-    from .color_transfer import transfer_colors, get_device_info
-    COLOR_TRANSFER_AVAILABLE = True
-except ImportError:
-    try:
-        from color_transfer import transfer_colors, get_device_info
-        COLOR_TRANSFER_AVAILABLE = True
-    except ImportError:
-        COLOR_TRANSFER_AVAILABLE = False
-        transfer_colors = get_device_info = None
+# --- colour and style transfer ---
+# Both run through the ops (`colour transfer`, `style transfer`), which own the
+# method registry, the output files and the ledger. The app asks the registry
+# for its methods once, for the dropdown and the controls each method uses.
+_COLOUR_METHODS = None
 
-# --- LAB color transfer (Reinhard) ---
-try:
-    from . import style_transfer as _style_transfer
-    STYLE_TRANSFER_AVAILABLE = True
-except ImportError:
-    try:
-        import style_transfer as _style_transfer
-        STYLE_TRANSFER_AVAILABLE = True
-    except ImportError:
-        _style_transfer = None
-        STYLE_TRANSFER_AVAILABLE = False
 
-try:
-    from .lab_transfer import lab_color_transfer_pil
-    LAB_TRANSFER_AVAILABLE = True
-except ImportError:
-    try:
-        from lab_transfer import lab_color_transfer_pil
-        LAB_TRANSFER_AVAILABLE = True
-    except ImportError:
-        LAB_TRANSFER_AVAILABLE = False
-        lab_color_transfer_pil = None
+def _colour_methods():
+    global _COLOUR_METHODS
+    if _COLOUR_METHODS is None:
+        _COLOUR_METHODS = _ops.call("colour methods", actor="person")
+    return _COLOUR_METHODS
+
+
+def _colour_method(method_id):
+    return next((m for m in _colour_methods().methods if m.id == method_id), None)
+
+
+def _colour_method_options():
+    return [{"label": m.label, "value": m.id} for m in _colour_methods().methods]
 
 
 
@@ -137,7 +136,6 @@ IMAGES_ROOT = (MEDIA_ROOTS or [os.path.abspath(os.path.join(APP_ROOT, "..", "ima
 
 OUTPUT_DIR = _paths.subdir("output")
 STORIES_DIR = os.path.join(OUTPUT_DIR, "stories")
-SELECTIONS_DIR = os.path.join(OUTPUT_DIR, "selections")
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
 # ---- FAST SPEC CONFIG + CACHE ----
@@ -1004,6 +1002,11 @@ app = dash.Dash(
 )
 
 
+# The ops over HTTP (/ops/exec and friends), so the terminal and an agent reach
+# this process -- its encoders, jobs and GPU -- while the app is open.
+_ops_server.register(app.server)
+
+
 # attach route to the built-in Flask server
 @app.server.route("/thumb")
 def thumb_endpoint():
@@ -1330,6 +1333,9 @@ app.layout = html.Div(
                         {"label": "Generate Story", "value": "story"},
                         {"label": "Moodboard", "value": "moodboard"},
                         {"label": "Alchemy", "value": "alchemy"},
+                        # An agent's own command line, running here in the
+                        # Arcana workspace with Arcana's tools (ui_agent.py).
+                        {"label": "Agent", "value": "agent"},
                     ],
                     value="datasets",
                     # Dash 4 gives labels its own dark design-token colour, which is
@@ -1347,6 +1353,8 @@ app.layout = html.Div(
                     clearable=False,
                     style={"width": "220px", "display": "inline-block", "verticalAlign": "middle", "color": "#000"},
                 ),
+                # The active collection, on every tab (ui_collection.py).
+                _ui_collection.layout(),
             ],
             style={"display": "flex", "alignItems": "center", "marginBottom": "20px"},
         ),
@@ -1384,6 +1392,7 @@ app.layout = html.Div(
         ),
 
         _ui_datasets.layout(),
+        _ui_agent.layout(),
 
         dcc.Store(id="story-cache", storage_type="memory"),
         # Clientside callbacks need somewhere to return to; nothing reads this.
@@ -1403,7 +1412,14 @@ app.layout = html.Div(
         dcc.Store(id="mb-grouped-results", storage_type="memory"),
         dcc.Store(id="mb-carousel-state", storage_type="memory"),
         dcc.Store(id="mb-carousel-order", storage_type="memory"),
-        dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
+        # What the active collection says about each picture: role, section,
+        # note, and whether it was derived. The gallery badges from it.
+        # ui_collection writes it with the collection itself.
+        dcc.Store(id="board-details", storage_type="memory"),
+        # The state version. A write from anywhere (this tab, a terminal, an
+        # agent) moves it, and the board list follows within two seconds.
+        dcc.Store(id="state-signature", storage_type="memory"),
+        dcc.Interval(id="state-poll", interval=2000),
         dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Reference image (palette source for search/transfer)
         dcc.Store(id="selected-target-image", storage_type="memory"),  # Target image (receives colors in transfer)
 
@@ -1478,7 +1494,7 @@ app.layout = html.Div(
                         ),
                         html.Div(
                             [
-                                html.Button("Load", id="board-load-btn", n_clicks=0,
+                                html.Button("Use", id="board-load-btn", n_clicks=0,
                                             style=_ui.button("secondary",
                                                              padding="4px 10px",
                                                              fontSize="12px")),
@@ -1497,7 +1513,7 @@ app.layout = html.Div(
                                                 padding="6px 9px", fontSize="12px",
                                                 boxSizing="border-box"),
                         ),
-                        html.Button("Save board", id="board-save-btn", n_clicks=0,
+                        html.Button("Save a copy", id="board-save-btn", n_clicks=0,
                                     style=_ui.button("success", padding="5px 11px",
                                                      fontSize="12px",
                                                      marginTop="6px", width="100%")),
@@ -1505,6 +1521,15 @@ app.layout = html.Div(
                                  style={"fontSize": "11.5px", "color": _ui.INK_DIM,
                                         "minHeight": "16px", "marginTop": "6px",
                                         "lineHeight": "1.4"}),
+                        # A8: only the person decides whether an agent may see
+                        # thumbnails. Off by default; agents work blind.
+                        dcc.Checklist(
+                            id="agent-pixels",
+                            options=[{"label": " Agents may see thumbnails", "value": "on"}],
+                            value=[], inputStyle={"marginRight": "6px"},
+                            style={"fontSize": "11.5px", "color": _ui.INK_DIM,
+                                   "marginTop": "8px"},
+                        ),
                     ],
                     style={"flex": "0 0 auto", "marginTop": "10px",
                            "paddingTop": "10px",
@@ -1916,13 +1941,10 @@ app.layout = html.Div(
                                             html.Span("Method:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
                                             dcc.Dropdown(
                                                 id="color-transfer-method",
-                                                options=[
-                                                    {"label": "ModFlows (Neural)", "value": "modflows"},
-                                                    {"label": "LAB (Reinhard)", "value": "lab"},
-                                                ],
+                                                options=_colour_method_options(),
                                                 value="modflows",
                                                 clearable=False,
-                                                style={"width": "140px", "color": "#000", "fontSize": "12px"},
+                                                style={"width": "170px", "color": "#000", "fontSize": "12px"},
                                             ),
                                         ], style={"display": "flex", "alignItems": "center"}),
                                         # Strength slider
@@ -2819,7 +2841,7 @@ def toggle_inputs(mode, tool):
             main_row_visible, rail_hidden,
             hidden, hidden, hidden, hidden, hidden, hidden,
         )
-    else:  # datasets
+    else:  # datasets, or the agent tab, which draws its own panel (ui_agent.py)
         # The manager owns the whole width: there is no scatter to show, and
         # nothing here searches.
         return (
@@ -2839,7 +2861,8 @@ def toggle_inputs(mode, tool):
             # it has to claim the leftover height and scroll itself -- with a
             # bare display:block its dataset list was clipped, not scrollable.
             {"display": "block", "flex": "1", "minHeight": "0",
-             "overflowY": "auto", "overflowX": "hidden"},
+             "overflowY": "auto", "overflowX": "hidden"} if mode == "datasets"
+            else {"display": "none"},
             main_row_hidden,
             rail_hidden,
             hidden,
@@ -2877,7 +2900,7 @@ def _persist_upload(contents: str, filename: str | None) -> str | None:
     if not ext:
         ext = ".jpg"
 
-    output_dir = _paths.ensure_dir(os.path.join(OUTPUT_DIR, "_external_refs"))
+    output_dir = _paths.output_dir("imports")
     register_media_root(OUTPUT_DIR)
 
     content_hash = hashlib.md5(decoded).hexdigest()[:12]
@@ -2889,63 +2912,50 @@ def _persist_upload(contents: str, filename: str | None) -> str | None:
 
 
 @app.callback(
-    Output("moodboard-store", "data"),
+    Output("collection-rev", "data", allow_duplicate=True),
     [
         Input({"type": "add-to-moodboard", "index": ALL}, "n_clicks"),
         Input({"type": "remove-from-moodboard", "index": ALL}, "n_clicks"),
         Input("clear-moodboard-btn", "n_clicks"),
         Input("moodboard-external-upload", "contents"),
     ],
-    [State("moodboard-store", "data"),
-     State("moodboard-external-upload", "filename")],
+    [State("moodboard-external-upload", "filename")],
     prevent_initial_call=True,
 )
-def update_moodboard(add_clicks, remove_clicks, clear_clicks, upload_contents,
-                     current_moodboard, upload_filename):
+def update_moodboard(add_clicks, remove_clicks, clear_clicks, upload_contents, upload_filename):
     """
-    Add or remove images from the collection.
+    Add pictures to the active collection, or take them off it.
 
-    The drop zone writes here and nowhere else. There used to be two upload
-    zones -- one in the Similarity Search card, one by the gallery -- and BOTH
-    wrote to selected-moodboard-image, so dropping a picture to search with it
-    silently also made it the colour-transfer palette source. Now there is one
-    intake for the whole page and it does one thing: the picture joins the
-    collection. Giving it a job is a separate, deliberate click on [R] or [T].
+    The collection is a board (ui_collection.py), so every change is a board
+    op and every tab, the terminal and agents see it. The drop zone adds the
+    dropped picture and does nothing else: giving it a job is a separate,
+    deliberate click on [R] or [T].
     """
-    current_moodboard = current_moodboard or []
-    
-    # Use ctx.triggered to get actual trigger info including value
     if not ctx.triggered:
         return dash.no_update
-    
-    trigger_info = ctx.triggered[0]
-    trigger_prop = trigger_info.get("prop_id", "")
-    trigger_value = trigger_info.get("value")
-    
-    # Only process if it was an actual click (value > 0)
+    trigger_prop = ctx.triggered[0].get("prop_id", "")
+    trigger_value = ctx.triggered[0].get("value")
+    # Buttons redrawn with n_clicks 0 fire too; only a real click counts.
     if trigger_value is None or trigger_value == 0:
         return dash.no_update
-    
-    if "clear-moodboard-btn" in trigger_prop:
-        return []
-
-    if "moodboard-external-upload" in trigger_prop and upload_contents:
-        path = _persist_upload(upload_contents, upload_filename)
-        if path and path not in current_moodboard:
-            current_moodboard.append(path)
-        return current_moodboard
-
-    triggered_id = ctx.triggered_id
-    if isinstance(triggered_id, dict):
-        path = triggered_id["index"]
-        if triggered_id.get("type") == "add-to-moodboard":
-            if path and path not in current_moodboard:
-                current_moodboard.append(path)
-        elif triggered_id.get("type") == "remove-from-moodboard":
-            if path in current_moodboard:
-                current_moodboard.remove(path)
-    
-    return current_moodboard
+    try:
+        if "clear-moodboard-btn" in trigger_prop:
+            _ui_collection.clear()
+        elif "moodboard-external-upload" in trigger_prop:
+            path = _persist_upload(upload_contents, upload_filename) if upload_contents else None
+            if not path:
+                return dash.no_update
+            _ui_collection.add([path])
+        elif isinstance(ctx.triggered_id, dict):
+            path = ctx.triggered_id["index"]
+            if ctx.triggered_id.get("type") == "add-to-moodboard":
+                _ui_collection.add([path])
+            elif ctx.triggered_id.get("type") == "remove-from-moodboard":
+                _ui_collection.remove([path])
+    except _ops.Refusal as e:
+        print("  collection:", e.reason, flush=True)
+        return dash.no_update
+    return _ui_collection.rev()
 
 
 @app.callback(
@@ -3052,14 +3062,24 @@ def update_moodboard_ref_display(ref_image, target_image, n_colors, mode):
 @app.callback(
     Output("moodboard-gallery", "children"),
     [
-        Input("moodboard-store", "data"),
+        Input("collection-items", "data"),
         Input("selected-moodboard-image", "data"),
         Input("selected-target-image", "data"),
+        Input("board-details", "data"),
     ],
 )
-def render_moodboard_gallery(moodboard, ref_path, target_path):
-    """Render clickable thumbnails in the moodboard gallery with [R] and [T] toggle badges."""
+def render_moodboard_gallery(moodboard, ref_path, target_path, board_details=None):
+    """
+    Render clickable thumbnails in the moodboard gallery with [R] and [T] toggle badges.
+
+    A picture a transfer or a generator made is badged DERIVED or GENERATED,
+    from the loaded board or from the output ledger, so nothing made here can
+    pass for a photograph from the archive. A role the board gives it (hero,
+    texture...) is shown along the bottom, and its note on hover.
+    """
     moodboard = moodboard or []
+    board_details = board_details or {}
+    made = {e.get("path"): e.get("kind", "derived") for e in _ledger.entries()}
     if not moodboard:
         # gridColumn spans the whole track list: the gallery is a grid of ~100px
         # columns, so without this the sentence wraps to one word per line.
@@ -3067,7 +3087,7 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
             [html.Div("Nothing here yet.",
                       style={"color": _ui.INK, "fontWeight": "600",
                              "marginBottom": "4px"}),
-             html.Div("Search for images, then use “+ Moodboard” to collect "
+             html.Div("Search for images, then use “+ Collection” to collect "
                       "the ones you want to work from.",
                       style={"color": _ui.INK_DIM})],
             style={"gridColumn": "1 / -1", "padding": "26px 20px",
@@ -3104,13 +3124,29 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
         if border_image:
             img_style["borderImage"] = border_image
         
+        d = board_details.get(path) or {}
+        kind = d.get("kind") if d.get("kind") in ("derived", "generated") else made.get(path)
+        marks = []
+        if kind:
+            marks.append(html.Span(kind.upper(), style={
+                "backgroundColor": _ui.WARN, "color": _ui.ACCENT_INK, "fontSize": "9px",
+                "fontWeight": "700", "letterSpacing": "0.6px", "padding": "1px 4px",
+                "borderRadius": "3px"}))
+        if d.get("role"):
+            marks.append(html.Span(d["role"], style={
+                "backgroundColor": _ui.SURFACE_2, "color": _ui.INK, "fontSize": "9.5px",
+                "padding": "1px 4px", "borderRadius": "3px",
+                "border": f"1px solid {_ui.LINE}"}))
         thumbnails.append(
             html.Div([
                 # Image
                 html.Img(
                     src=f"/thumb?p={qpath}",
                     style=img_style,
+                    title=d.get("note") or "",
                 ),
+                html.Div(marks, style={"position": "absolute", "bottom": "5px", "left": "5px",
+                                       "display": "flex", "gap": "3px"}) if marks else None,
                 # [R] badge - top left
                 html.Button(
                     "R",
@@ -3238,28 +3274,67 @@ def select_moodboard_target(clicks, current_target):
 
 
 def _board_options():
-    """Saved boards, newest first, labelled with what is in them."""
+    """Saved boards, newest first, labelled with what is in them and who made them."""
     opts = []
-    for b in _boards.listing():
-        bits = f"{b['count']} image" + ("s" if b["count"] != 1 else "")
-        if b["missing"]:
-            bits += f", {b['missing']} missing"
-        opts.append({"label": f"{b['name']}  ·  {bits}", "value": b["slug"]})
+    for b in _ops.call("board list", actor="person").boards:
+        bits = f"{b.count} image" + ("s" if b.count != 1 else "")
+        if b.missing:
+            bits += f", {b.missing} missing"
+        if b.author == "agent":
+            bits += ", by an agent"
+        opts.append({"label": f"{b.name}  ·  {bits}", "value": b.slug})
     return opts
 
 
 @app.callback(
-    Output("board-picker", "options"),
-    [Input("mode-select", "value"), Input("board-status", "children")],
+    Output("state-signature", "data"),
+    Input("state-poll", "n_intervals"),
+    State("state-signature", "data"),
 )
-def refresh_board_list(mode, _status):
+def poll_state(_n, seen):
+    """Move only when state did: a board written here, by a terminal or by an agent."""
+    sig = _state.STORE.signature()
+    return dash.no_update if sig == seen else sig
+
+
+@app.callback(
+    Output("board-picker", "options"),
+    [Input("mode-select", "value"), Input("board-status", "children"),
+     Input("state-signature", "data")],
+)
+def refresh_board_list(mode, _status, _sig):
     """
     Rebuild the picker whenever a board is written, deleted, or the tab opens.
 
-    board-status is an Input rather than a State on purpose: every action that
-    changes the set of boards writes to it, so this needs no separate signal.
+    board-status covers this tab's own actions. state-signature covers every
+    other writer, so a board an agent builds appears here within two seconds.
     """
     return _board_options()
+
+
+@app.callback(
+    Output("agent-pixels", "value"),
+    Input("mode-select", "value"),
+)
+def show_agent_pixels(_mode):
+    return ["on"] if _ops.archive.settings()["pixels"] else []
+
+
+@app.callback(
+    Output("board-status", "children", allow_duplicate=True),
+    Input("agent-pixels", "value"),
+    prevent_initial_call=True,
+)
+def set_agent_pixels(value):
+    want = "on" if value else "off"
+    if (want == "on") == _ops.archive.settings()["pixels"]:
+        return dash.no_update
+    try:
+        _ops.call("settings set", {"pixels": want}, actor="person")
+    except _ops.Refusal as e:
+        return f"Could not change it: {e.reason}"
+    return ("Agents may now see thumbnails of your pictures." if want == "on"
+            else "Agents work blind again: no picture leaves this machine.")
 
 
 @app.callback(
@@ -3267,13 +3342,14 @@ def refresh_board_list(mode, _status):
      Output("board-picker", "value", allow_duplicate=True)],
     Input("board-save-btn", "n_clicks"),
     [State("board-name", "value"),
-     State("moodboard-store", "data"),
+     State("collection-items", "data"),
      State("selected-moodboard-image", "data"),
      State("selected-target-image", "data"),
-     State("dataset-dropdown", "value")],
+     State("dataset-dropdown", "value"),
+     State("board-picker", "value")],
     prevent_initial_call=True,
 )
-def save_board(n, name, items, reference, target, dataset):
+def save_board(n, name, items, reference, target, dataset, picked=None):
     """Write the collection, plus which image is [R] and which is [T]."""
     if not n:
         return dash.no_update, dash.no_update
@@ -3281,19 +3357,27 @@ def save_board(n, name, items, reference, target, dataset):
         return "Give the board a name first.", dash.no_update
     if not items:
         return "Nothing in the collection to save.", dash.no_update
+    # Save over the board that is loaded while its name is unchanged. A board's
+    # id need not be its name as a slug (an agent picks short ids), and without
+    # this a save from here would fork a second board under a new id.
+    args = {"name": (name or "").strip(), "items": list(items), "reference": reference or "",
+            "transfer": target or "", "dataset": dataset or ""}
+    if picked:
+        loaded = next((b for b in _ops.call("board list", actor="person").boards
+                       if b.slug == picked), None)
+        if loaded is not None and loaded.name == args["name"]:
+            args["id"] = picked
     try:
-        rec = _boards.save((name or "").strip(), list(items),
-                           reference=reference or "", transfer=target or "",
-                           dataset=(dataset or ""))
-    except Exception as e:
-        return f"Could not save: {e}", dash.no_update
-    n_items = len(rec["items"])
-    return (f"Saved “{rec['name']}” — {n_items} image"
-            + ("s" if n_items != 1 else "") + ".", rec["slug"])
+        res = _ops.call("board save", args, actor="person")
+    except _ops.Refusal as e:
+        return f"Could not save: {e.reason}", dash.no_update
+    n_items = res.board.count
+    return (f"Saved “{res.board.name}” — {n_items} image"
+            + ("s" if n_items != 1 else "") + ".", res.board.slug)
 
 
 @app.callback(
-    [Output("moodboard-store", "data", allow_duplicate=True),
+    [Output("collection-rev", "data", allow_duplicate=True),
      Output("selected-moodboard-image", "data", allow_duplicate=True),
      Output("selected-target-image", "data", allow_duplicate=True),
      Output("board-name", "value"),
@@ -3304,33 +3388,40 @@ def save_board(n, name, items, reference, target, dataset):
 )
 def load_board(n, slug):
     """
-    Restore a board, and say plainly if any of its files have gone.
+    Make a board the active collection, and say plainly if any of its files
+    have gone.
 
     A board records paths, so moving or deleting originals leaves holes.
-    Loading the pictures that are still there and naming the count that is not
+    Showing the pictures that are still there and naming the count that is not
     beats dropping them silently.
     """
     if not n or not slug:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    rec = _boards.load(slug)
-    if not rec:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, "That board could not be read."
+        return (dash.no_update,) * 5
+    try:
+        rec = _ops.call("board show", {"board": slug}, actor="person")
+        _ui_collection.use(slug)
+    except _ops.Refusal as e:
+        return (dash.no_update,) * 4 + (f"That board could not be used: {e.reason}",)
 
-    here, gone = _boards.present(rec)
-    ref = rec.get("reference") or ""
-    tgt = rec.get("transfer") or ""
+    here = [i.path for i in rec.items if not i.missing]
+    gone = [i.path for i in rec.items if i.missing]
+    ref = rec.reference or ""
+    tgt = rec.transfer or ""
     if ref and ref not in here:
         ref = ""
     if tgt and tgt not in here:
         tgt = ""
-
-    msg = f"Loaded “{rec['name']}” — {len(here)} image" + ("s" if len(here) != 1 else "")
+    msg = f"Working in “{rec.name}” — {len(here)} image" + ("s" if len(here) != 1 else "")
+    if rec.sections:
+        msg += f" in {len(rec.sections)} section" + ("s" if len(rec.sections) != 1 else "")
+    if rec.author == "agent":
+        msg += ", made by an agent"
     if gone:
         msg += (f". {len(gone)} could not be found; "
                 "run arcana-relocate if the files moved.")
     else:
         msg += "."
-    return here, ref, tgt, rec.get("name", ""), msg
+    return _ui_collection.rev(), ref, tgt, rec.name, msg
 
 
 @app.callback(
@@ -3344,18 +3435,18 @@ def delete_board(n, slug):
     """Delete a saved board. The collection on screen is left alone."""
     if not n or not slug:
         return dash.no_update, dash.no_update
-    rec = _boards.load(slug)
-    label = rec.get("name", slug) if rec else slug
-    if _boards.delete(slug):
-        return f"Deleted “{label}”.", None
-    return f"Could not delete “{label}”.", dash.no_update
+    try:
+        res = _ops.call("board delete", {"board": slug}, actor="person")
+    except _ops.Refusal as e:
+        return f"Could not delete it: {e.reason}", dash.no_update
+    return f"Deleted “{res.board.name}”.", None
 
 
 @app.callback(
     Output("moodboard-save-confirmation", "children"),
     Input("save-moodboard-btn", "n_clicks"),
     [
-        State("moodboard-store", "data"),
+        State("collection-items", "data"),
         State("moodboard-save-folder", "value"),
     ],
     prevent_initial_call=True,
@@ -3369,22 +3460,12 @@ def save_moodboard_images(n_clicks, moodboard, folder_name):
         return html.Span("Please enter a folder name", style={"color": _ui.WARN})
     
     folder_name = folder_name.strip()
-    # Create output path
-    output_dir = _safe_output_dir("moodboards", folder_name)
-    os.makedirs(output_dir, exist_ok=True)
-    
-    saved = 0
-    for path in moodboard:
-        if os.path.exists(path):
-            try:
-                dst = os.path.join(output_dir, os.path.basename(path))
-                import shutil
-                shutil.copy2(path, dst)
-                saved += 1
-            except Exception as e:
-                print(f"Failed to save {path}: {e}")
-    
-    return html.Span(f"Saved {saved} images to {output_dir}", style={"color": _ui.OK})
+    try:
+        res = _ops.call("item export", {"items": list(moodboard), "folder": folder_name,
+                                        "kind": "collections"}, actor="person")
+    except _ops.Refusal as e:
+        return html.Span(e.reason, style={"color": _ui.WARN})
+    return html.Span(f"Saved {res.copied} images to {res.folder}", style={"color": _ui.OK})
 
 
 @app.callback(
@@ -3428,8 +3509,6 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
         return html.Span("Please enter a folder name", style={"color": _ui.WARN})
     
     folder_name = folder_name.strip()
-    output_dir = _safe_output_dir("selections", folder_name)
-    os.makedirs(output_dir, exist_ok=True)
 
     # A card showing twins carries one switch for the whole group, labelled
     # "group::<gid>". This used to skip those outright, so selecting a twin
@@ -3448,23 +3527,20 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
         # Whichever frame of the group is on screen, not always the first.
         return paths[car_state.get(g["gid"], 0) % len(paths)]
 
-    saved = 0
+    chosen = []
     for sel, id_obj in zip(selections, ids):
         if sel and isinstance(id_obj, dict):
             path = _resolve(str(id_obj.get("index", "")))
             if path and os.path.exists(path):
-                try:
-                    dst = os.path.join(output_dir, os.path.basename(path))
-                    import shutil
-                    shutil.copy2(path, dst)
-                    saved += 1
-                except Exception as e:
-                    print(f"Failed to save {path}: {e}")
-    
-    if saved > 0:
-        return html.Span(f"Saved {saved} images to {output_dir}", style={"color": _ui.OK})
-    else:
+                chosen.append(path)
+    if not chosen:
         return html.Span("No images selected", style={"color": _ui.WARN})
+    try:
+        res = _ops.call("item export", {"items": chosen, "folder": folder_name,
+                                        "kind": "search"}, actor="person")
+    except _ops.Refusal as e:
+        return html.Span(e.reason, style={"color": _ui.WARN})
+    return html.Span(f"Saved {res.copied} images to {res.folder}", style={"color": _ui.OK})
 
 
 @app.callback(
@@ -3692,7 +3768,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
             result_elements.append(
                 html.Div([
                     daq.BooleanSwitch(id={"type": "select-image", "owner": "moodboard", "index": first}, on=False),
-                    html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                    html.Button("+ Collection", id={"type": "add-to-moodboard", "index": first}, 
                                n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": _ui.LINE, "border": "none", "borderRadius": "3px", "color": _ui.INK_DIM, "cursor": "pointer"}),
                                     # Finding a picture is a walk: you land near it and then
                     # step. Stepping used to mean adding the image to the
@@ -3768,7 +3844,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
             card_elements.append(
                 html.Div([
                     daq.BooleanSwitch(id={"type": "select-image", "owner": "moodboard", "index": f"group::{g['gid']}"}, on=False),
-                    html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                    html.Button("+ Collection", id={"type": "add-to-moodboard", "index": first}, 
                                n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": _ui.LINE, "border": "none", "borderRadius": "3px", "color": _ui.INK_DIM, "cursor": "pointer"}),
                 ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"})
             )
@@ -3877,15 +3953,14 @@ def update_feature_availability(dataset_value):
 )
 def toggle_method_params(method):
     """
-    Grey out the ModFlows-only controls when LAB is selected.
+    Grey out the quality control for methods that have none.
 
-    LAB (Reinhard) matches per-channel mean and standard deviation in LAB space
-    in one shot: there is no working resolution, no integration steps and no
-    full-res pass to configure. Strength is its only parameter.
+    The registry says which controls each method reads: LAB, MKL and IDT are
+    closed-form or iterative on a fixed working size, so strength is all they
+    take. Only ModFlows has a quality preset.
     """
-    if method == "lab":
-        # LAB is a closed-form statistical transfer: it has no flow to run, so
-        # a quality choice would be a control that changes nothing.
+    m = _colour_method(method)
+    if m is None or "quality" not in m.params:
         return {"display": "flex", "alignItems": "center", "opacity": "0.4",
                 "pointerEvents": "none"}
     return {"display": "flex", "alignItems": "center"}
@@ -3897,11 +3972,6 @@ def toggle_method_params(method):
 
 def _ct_model_card(job_snapshot=None):
     """One line describing whether the neural method can run, plus a way to fix it."""
-    try:
-        from . import color_transfer as _ct
-    except ImportError:
-        import color_transfer as _ct
-
     if job_snapshot and not job_snapshot.get("status") in (None, "done", "failed",
                                                            "cancelled"):
         pct = int(round((job_snapshot.get("fraction") or 0) * 100))
@@ -3921,7 +3991,9 @@ def _ct_model_card(job_snapshot=None):
                         style={"fontSize": "11.5px", "color": _ui.BAD})
 
     try:
-        st = _ct.status()
+        modflows = _ops.call("colour methods", actor="person")
+        modflows = next(m for m in modflows.methods if m.id == "modflows")
+        st = {"ready": modflows.available, "download_mb": 229}
     except Exception:
         return ""
 
@@ -3952,10 +4024,8 @@ def start_modflows_download(n):
     if not n:
         raise dash.exceptions.PreventUpdate
     try:
-        from . import color_transfer as _ct
         from .jobs import MANAGER
     except ImportError:
-        import color_transfer as _ct
         from jobs import MANAGER
 
     # One job at a time, shared with indexing and encoder downloads: they all
@@ -3964,16 +4034,18 @@ def start_modflows_download(n):
         return dash.no_update, dash.no_update, html.Div(
             "Something else is running — wait for it to finish.",
             style={"fontSize": "11.5px", "color": _ui.WARN})
-
-    def job(handle):
-        _ct.download_checkpoint(
-            progress=lambda frac, msg: handle.update(fraction=frac, message=msg))
-        handle.update(fraction=1.0, message="Colour model ready")
-        return {"ok": True}
-
-    jid = MANAGER.submit(job, kind="download", label="Colour model")
-    return jid, False, _ct_model_card({"status": "running", "fraction": 0.0,
-                                       "message": "Starting download..."})
+    try:
+        started = _ops.call("model download", {"model": "modflows", "background": True},
+                            actor="person")
+    except _ops.Refusal as e:
+        return dash.no_update, dash.no_update, html.Div(
+            e.reason, style={"fontSize": "11.5px", "color": _ui.BAD})
+    global _COLOUR_METHODS
+    _COLOUR_METHODS = None            # ModFlows' availability changes when this finishes
+    if not hasattr(started, "job"):
+        return dash.no_update, True, _ct_model_card(None)
+    return started.job, False, _ct_model_card({"status": "running", "fraction": 0.0,
+                                                "message": "Starting download..."})
 
 
 @app.callback(
@@ -4077,23 +4149,21 @@ def preview_reference_filter(ref_path, lightness, saturation):
      Input("color-transfer-method", "value")],
 )
 def describe_transfer_quality(quality, method):
-    """Say what the chosen preset costs, and that the output is full size."""
-    if method == "lab":
-        return "LAB is instant and needs no model."
-    try:
-        from . import color_transfer as _ct
-        from . import gpu as _g
-    except ImportError:
-        import color_transfer as _ct
-        import gpu as _g
-    p = _ct.QUALITY_PRESETS.get(quality or _ct.DEFAULT_QUALITY)
+    """Say what the chosen method or preset costs, and that the output is full size."""
+    m = _colour_method(method)
+    if m is None:
+        return ""
+    if "quality" not in m.params:
+        return f"{m.label} takes {m.timing} at 1024 px and needs no model."
+    presets = {q.id: q for q in _colour_methods().qualities}
+    p = presets.get(quality or "balanced")
     if not p:
         return ""
     # Measured on a 6000x4000 photograph; the GPU numbers barely move between
     # presets because building and applying the LUT is CPU work.
     secs = {"quick": (5, 5), "balanced": (11, 4), "best": (38, 5)}[quality or "balanced"]
-    took = secs[1] if _g.available() else secs[0]
-    return f"{p['note']} — about {took}s here, output at full resolution."
+    took = secs[1] if _gpu.available() else secs[0]
+    return f"{p.note} — about {took}s here, output at full resolution."
 
 
 @app.callback(
@@ -4147,12 +4217,12 @@ def _style_note(method):
      State("cn-strength", "value")],
     # A transfer blocks for seconds. Without this the button sat unchanged the
     # whole time and the only way to tell anything had happened was the result
-    # appearing. Dash flips these for the life of the callback.
+    # appearing. Dash flips these for the life of the callback. The status line
+    # is left out: Dash 4 renders a dash.no_update "off" value as a child, which
+    # crashed React (error #31) and stopped the page answering clicks.
     running=[
         (Output("style-transfer-btn", "disabled"), True, False),
         (Output("style-transfer-btn", "children"), "Working…", "Apply style"),
-        (Output("style-transfer-status", "children"),
-         html.Div("Working…", style={"color": _ui.ACCENT}), dash.no_update),
     ],
     prevent_initial_call=True,
 )
@@ -4168,49 +4238,17 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
     """
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
-    if not STYLE_TRANSFER_AVAILABLE:
-        return html.Div("Style transfer unavailable (check installation)",
-                        style={"color": _ui.BAD}), dash.no_update
-    if not ref_path:
-        return html.Div("No source [R] selected", style={"color": _ui.WARN}), dash.no_update
-    if not target_path:
-        return html.Div("No target [T] selected", style={"color": _ui.WARN}), dash.no_update
-
-    ref_resolved = resolve_path(ref_path)
-    target_resolved = resolve_path(target_path)
-    if not os.path.exists(ref_resolved):
-        return html.Div("Source file not found", style={"color": _ui.BAD}), dash.no_update
-    if not os.path.exists(target_resolved):
-        return html.Div("Target file not found", style={"color": _ui.BAD}), dash.no_update
-
-    import time
-    started = time.time()
-    strength_val = float(strength or 0.6)
+    args = {"target": resolve_path(target_path), "source": resolve_path(ref_path),
+            "method": method or "texture", "strength": float(strength or 0.6),
+            "control": cn_map or "depth", "control_strength": float(cn_strength or 0.9)}
     try:
-        source = Image.open(ref_resolved).convert("RGB")
-        target = Image.open(target_resolved).convert("RGB")
-        control_png = None
-        if method == "controlnet":
-            result, cmap = _style_transfer.controlnet_transfer(
-                source, target,
-                control=cn_map or "depth",
-                scale=strength_val,
-                control_scale=float(cn_strength or 0.9),
-            )
-            # Show the map. "The result looks wrong" and "the depth is wrong"
-            # are different problems, and only the second is one the user can
-            # do anything about.
-            mbuf = BytesIO()
-            mprev = cmap.copy()
-            mprev.thumbnail((360, 360), Image.LANCZOS)
-            mprev.save(mbuf, format="JPEG", quality=85)
-            control_png = base64.b64encode(mbuf.getvalue()).decode()
-        else:
-            result = _style_transfer.transfer(
-                method, source, target,
-                strength=strength_val,
-                scale=strength_val,  # IP-Adapter reads this as its adapter scale
-            )
+        res = _ops.call("style transfer", args, actor="person")
+    except _ops.Refusal as e:
+        hint = ""
+        if method in ("img2img", "ip_adapter", "controlnet") and "diffusers" not in e.reason:
+            hint = (" — the diffusion methods download their weights on first "
+                    "use, which takes a few minutes.")
+        return html.Div(f"{method}: {e.reason}{hint}", style={"color": _ui.BAD}), dash.no_update
     except Exception as e:
         # Print the traceback. Returning only str(e) into the UI is how a
         # dtype mismatch reached a user as one unattributable line with no
@@ -4218,50 +4256,35 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
         import traceback
         print(f"[style-transfer] {method} failed:", flush=True)
         traceback.print_exc()
-        hint = ""
-        if method in ("img2img", "ip_adapter"):
-            hint = (" — the diffusion methods download their weights on first "
-                    "use, which takes a few minutes.")
-        return html.Div(f"{method}: {e}{hint}",
-                        style={"color": _ui.BAD}), dash.no_update
+        return html.Div(f"{method}: {e}", style={"color": _ui.BAD}), dash.no_update
 
-    out_dir = _safe_output_dir("transfers")
-    os.makedirs(out_dir, exist_ok=True)
-    out_name = _paths.fit_filename(
-        out_dir,
-        os.path.splitext(os.path.basename(target_resolved))[0],
-        os.path.splitext(os.path.basename(ref_resolved))[0],
-        method, ".jpg")
-    # fit_filename returns a NAME, not a path.
-    out_path = os.path.join(out_dir, out_name)
-    result.save(out_path, quality=95)
-
+    out_path, out_name = res.path, res.file
     buf = BytesIO()
-    preview = result.copy()
+    preview = Image.open(out_path).convert("RGB")
     preview.thumbnail((1600, 1600), Image.LANCZOS)
     preview.save(buf, format="JPEG", quality=90)
     b64 = base64.b64encode(buf.getvalue()).decode()
+    control_png = None
+    if res.map_path:
+        # Show the map. "The result looks wrong" and "the depth is wrong" are
+        # different problems, and only the second is one the user can fix.
+        mbuf = BytesIO()
+        mprev = Image.open(res.map_path).convert("RGB")
+        mprev.thumbnail((360, 360), Image.LANCZOS)
+        mprev.save(mbuf, format="JPEG", quality=85)
+        control_png = base64.b64encode(mbuf.getvalue()).decode()
 
-    label = {"texture": "Texture", "img2img": "img2img",
-             "ip_adapter": "IP-Adapter",
-             "controlnet": f"ControlNet · {cn_map or 'depth'}"}[method]
-    # Texture is OpenCV arithmetic and never touches the GPU, so reporting one
-    # because the machine has one would be untrue about what just ran.
-    device = "CPU" if method == "texture" else ("GPU" if _gpu.available() else "CPU")
-    elapsed = time.time() - started
-    status = html.Div(f"{label} · {device} · {elapsed:.1f}s · saved to {out_path}",
+    status = html.Div(f"{res.label} · {res.device} · {res.elapsed:.1f}s · saved to {out_path}",
                       style={"color": _ui.OK})
     # The stage, laid out like the colour-transfer one: a header bar naming
     # what ran, the picture, then its supporting material, then the action.
-    # The map and the button used to be inline blocks after a centred image,
-    # so the button floated beside the map at whatever height the map ended.
     stage = [
         html.Div(
             [
-                html.Span(f"STYLE · {label}", style={
+                html.Span(f"STYLE · {res.label}", style={
                     "fontWeight": "700", "fontSize": "12px",
                     "letterSpacing": "1px", "color": _ui.INK}),
-                html.Span(f"{result.size[0]}×{result.size[1]} · {device} · {elapsed:.1f}s",
+                html.Span(f"{res.width}×{res.height} · {res.device} · {res.elapsed:.1f}s",
                           style={"color": _ui.INK_DIM, "fontSize": "11px"}),
             ],
             style={"display": "flex", "alignItems": "baseline", "gap": "10px",
@@ -4285,7 +4308,7 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
                             "borderRadius": "4px", "border": f"1px solid {_ui.LINE}"}),
         ], style={"marginTop": "14px"}))
     stage += [
-        html.Div(f"Saved to {os.path.join('output', 'transfers')}",
+        html.Div(f"Saved to {os.path.join('output', 'transfers')} as {res.handle}",
                  style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
         html.Div(out_name, style={"color": _ui.INK_FAINT, "fontSize": "10px",
                                   "wordBreak": "break-all"}),
@@ -4318,8 +4341,6 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
     running=[
         (Output("color-transfer-btn", "disabled"), True, False),
         (Output("color-transfer-btn", "children"), "Working…", "Transfer colors"),
-        (Output("color-transfer-status", "children"),
-         html.Div("Working…", style={"color": _ui.ACCENT}), dash.no_update),
     ],
     prevent_initial_call=True,
 )
@@ -4335,151 +4356,16 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
     if not target_path:
         return html.Div("⚠️ No Target [T] image selected", style={"color": _ui.WARN}), ""
     
-    # Check method availability
-    if method == "modflows" and not COLOR_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ ModFlows not available (check installation)", style={"color": _ui.BAD}), ""
-    if method == "lab" and not LAB_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ LAB transfer not available", style={"color": _ui.BAD}), ""
-    
+    l_min, l_max = (ct_lightness or [0, 100])
+    s_min, s_max = (ct_saturation or [0, 100])
+    args = {"target": resolve_path(target_path), "reference": resolve_path(ref_path),
+            "method": method or None, "strength": float(strength) if strength else 1.0,
+            "quality": quality or "balanced",
+            "l_min": l_min, "l_max": l_max, "s_min": s_min, "s_max": s_max}
     try:
-        import time
-        start_time = time.time()
-        
-        # Resolve paths
-        ref_resolved = resolve_path(ref_path)
-        target_resolved = resolve_path(target_path)
-        
-        if not os.path.exists(ref_resolved):
-            return html.Div(f"⚠️ Reference file not found", style={"color": _ui.BAD}), ""
-        if not os.path.exists(target_resolved):
-            return html.Div(f"⚠️ Target file not found", style={"color": _ui.BAD}), ""
-        
-        # Parse options
-        strength_val = float(strength) if strength else 1.0
-        
-        # Load images
-        content_img = Image.open(target_resolved).convert("RGB")
-        style_img = Image.open(ref_resolved).convert("RGB")
-
-        # Narrow the reference to the colours the user actually chose. Both
-        # methods below read a colour *distribution* from style_img and nothing
-        # else, so swapping in a proxy built from the surviving pixels steers
-        # them without either method needing to know this feature exists.
-        l_min, l_max = (ct_lightness or [0, 100])
-        s_min, s_max = (ct_saturation or [0, 100])
-        try:
-            from . import refselect
-        except ImportError:
-            import refselect
-        style_img, kept_frac = refselect.filter_reference(
-            style_img, l_min, l_max, s_min, s_max)
-        # An impossible range returns the original untouched rather than a blank
-        # reference; say so instead of silently ignoring the sliders.
-        filter_note = ""
-        if kept_frac == 0.0:
-            filter_note = " — colour range matched nothing, used the whole reference"
-        elif kept_frac < 1.0:
-            filter_note = f" — from {kept_frac * 100:.1f}% of the reference"
-        
-        # Perform transfer based on method
-        if method == "lab":
-            result_img = lab_color_transfer_pil(content_img, style_img, strength=strength_val)
-            method_label = "LAB (Reinhard)"
-            device_str = "CPU"
-        else:
-            # ModFlows. The flow runs at the preset's size; the colour
-            # mapping it finds is then applied to the original picture at full
-            # resolution, so the output is never smaller than the input.
-            try:
-                from . import color_transfer as _ct
-            except ImportError:
-                import color_transfer as _ct
-            preset = _ct.QUALITY_PRESETS.get(quality or _ct.DEFAULT_QUALITY,
-                                             _ct.QUALITY_PRESETS[_ct.DEFAULT_QUALITY])
-            low = transfer_colors(
-                content=content_img,
-                style=style_img,
-                strength=strength_val,
-                steps=preset["steps"],
-                max_size=preset["max_size"],
-            )
-            result_img = _ct.transfer_at_full_resolution(
-                target_resolved, low, preset["lut"])
-            method_label = f"ModFlows, {preset['label'].lower()}"
-            device_info = get_device_info() if get_device_info else {"device": "unknown"}
-            device_str = device_info.get("device", "unknown")
-        
-        elapsed = time.time() - start_time
-        
-        # Save to output/color_transfer/
-        output_dir = _paths.ensure_dir(os.path.join(OUTPUT_DIR, "color_transfer"))
-
-        target_name = os.path.splitext(os.path.basename(target_resolved))[0]
-        ref_name = os.path.splitext(os.path.basename(ref_resolved))[0]
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-        method_suffix = "lab" if method == "lab" else "mf"
-        output_filename = _paths.fit_filename(
-            output_dir, target_name, ref_name, f"{method_suffix}_{timestamp}", ".png"
-        )
-        output_path = os.path.join(output_dir, output_filename)
-        # The filename has to be truncated to fit the filesystem, which loses
-        # which images this actually came from. Keep the full provenance inside
-        # the PNG so a result is always traceable back to its inputs.
-        from PIL import PngImagePlugin
-        meta = PngImagePlugin.PngInfo()
-        meta.add_text("arcana:target", str(target_resolved))
-        meta.add_text("arcana:reference", str(ref_resolved))
-        meta.add_text("arcana:method", method_label)
-        meta.add_text("arcana:strength", str(strength_val))
-        meta.add_text("arcana:device", str(device_str))
-        result_img.save(output_path, "PNG", pnginfo=meta)
-        
-        # Show the result, not just a filename. Embedded as a downscaled JPEG
-        # data URI rather than a /preview URL: the output directory is not a
-        # media root, and one preview does not justify making it servable.
-        preview = result_img.copy()
-        preview.thumbnail((640, 640), Image.LANCZOS)
-        buf = BytesIO()
-        preview.convert("RGB").save(buf, "JPEG", quality=88)
-        preview_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-        receipt = html.Div(f"✓ Done in {elapsed:.1f}s — see the panel on the right",
-                           style={"color": _ui.OK, "fontSize": "11.5px"})
-        stage = html.Div([
-            html.Div(
-                [
-                    html.Span(f"TRANSFER · {method_label}{filter_note}", style={
-                        "fontWeight": "700", "fontSize": "12px",
-                        "letterSpacing": "1px", "color": _ui.INK}),
-                    html.Span(
-                        f"{result_img.size[0]}×{result_img.size[1]} · {device_str} · {elapsed:.2f}s",
-                        style={"color": _ui.INK_DIM, "fontSize": "11px"}),
-                ],
-                style={"display": "flex", "alignItems": "baseline", "gap": "10px",
-                       "flexWrap": "wrap", "margin": "0 -12px 12px",
-                       "padding": "9px 12px",
-                       "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
-            ),
-            html.Img(
-                src=preview_uri,
-                title=output_filename,
-                style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
-                       "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
-            ),
-            html.Div(f"Saved to {os.path.join('output', 'color_transfer')}",
-                     style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
-            html.Div(output_filename,
-                     style={"color": _ui.INK_FAINT, "fontSize": "10px",
-                            "wordBreak": "break-all"}),
-            html.Button("+ Collection",
-                        id={"type": "add-to-moodboard", "index": output_path},
-                        n_clicks=0,
-                        title="Add this result to the collection",
-                        style=_ui.button("success", marginTop="10px", fontSize="11.5px",
-                                         padding="5px 11px")),
-        ])
-        return receipt, stage
-
+        res = _ops.call("colour transfer", args, actor="person")
+    except _ops.Refusal as e:
+        return html.Div(f"⚠️ {e.reason}", style={"color": _ui.WARN, "wordBreak": "break-word"}), ""
     except Exception as e:
         # Print the traceback. Returning only str(e) is how a dtype mismatch
         # reached a user as one unattributable line, with nothing in the log to
@@ -4489,6 +4375,57 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
         traceback.print_exc()
         return (html.Div(f"✗ Error: {str(e)}",
                          style={"color": _ui.BAD, "wordBreak": "break-word"}), "")
+
+    filter_note = ""
+    if res.kept == 0.0:
+        filter_note = " — colour range matched nothing, used the whole reference"
+    elif res.kept < 1.0:
+        filter_note = f" — from {res.kept * 100:.1f}% of the reference"
+
+    # Show the result, not just a filename. Embedded as a downscaled JPEG data
+    # URI rather than a /preview URL: the output directory is not a media root,
+    # and one preview does not justify making it servable.
+    preview = Image.open(res.path).convert("RGB")
+    preview.thumbnail((640, 640), Image.LANCZOS)
+    buf = BytesIO()
+    preview.save(buf, "JPEG", quality=88)
+    preview_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    receipt = html.Div(f"✓ Done in {res.elapsed:.1f}s — see the panel on the right",
+                       style={"color": _ui.OK, "fontSize": "11.5px"})
+    stage = html.Div([
+        html.Div(
+            [
+                html.Span(f"TRANSFER · {res.label}{filter_note}", style={
+                    "fontWeight": "700", "fontSize": "12px",
+                    "letterSpacing": "1px", "color": _ui.INK}),
+                html.Span(f"{res.width}×{res.height} · {res.device} · {res.elapsed:.2f}s",
+                          style={"color": _ui.INK_DIM, "fontSize": "11px"}),
+            ],
+            style={"display": "flex", "alignItems": "baseline", "gap": "10px",
+                   "flexWrap": "wrap", "margin": "0 -12px 12px",
+                   "padding": "9px 12px",
+                   "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
+        ),
+        html.Img(
+            src=preview_uri,
+            title=res.file,
+            style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
+                   "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
+        ),
+        html.Div(f"Saved to {os.path.join('output', 'color_transfer')} as {res.handle}",
+                 style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
+        html.Div(res.file,
+                 style={"color": _ui.INK_FAINT, "fontSize": "10px",
+                        "wordBreak": "break-all"}),
+        html.Button("+ Collection",
+                    id={"type": "add-to-moodboard", "index": res.path},
+                    n_clicks=0,
+                    title="Add this result to the collection",
+                    style=_ui.button("success", marginTop="10px", fontSize="11.5px",
+                                     padding="5px 11px")),
+    ])
+    return receipt, stage
 
 
 def _poetry_job(story_cache, folder, strength_val):
@@ -4501,112 +4438,49 @@ def _poetry_job(story_cache, folder, strength_val):
     scene, because on the CPU a single scene is over half a minute.
     """
     def run(handle):
-        import torch
-        from PIL import Image as _Image
+        subfolder = folder or _paths.dated_name("story")
+        output_dir = _safe_output_dir("stories", subfolder, "poetry")
 
-        subfolder = folder or "story"
-        output_dir = _safe_output_dir("stories", subfolder, "poetry_injected")
-        os.makedirs(output_dir, exist_ok=True)
-
-        device = _gpu.device()
         # hardware_note(), not describe(): on the packaged build this is where
         # a user first meets the 37.5 s-per-scene CPU path, and it should say
         # plainly that the card in their machine is not being used.
         handle.update(fraction=0.0, message="Loading the image model",
                       detail=_gpu.hardware_note())
 
-        from diffusers import StableDiffusionImg2ImgPipeline
-        # fp16 is a CUDA thing: on CPU most fp16 kernels are unimplemented, so
-        # asking for the fp16 variant made story mode raise on every machine
-        # without an NVIDIA GPU rather than merely being slow.
-        if device == "cuda":
-            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                "stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16"
-            ).to(device)
-        else:
-            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                "stabilityai/sd-turbo", torch_dtype=torch.float32
-            ).to(device)
-
-        # xformers is CUDA-only and optional; it raises when unavailable.
-        try:
-            pipe.enable_xformers_memory_efficient_attention()
-        except Exception as e:
-            print(f"[INFO] xformers attention unavailable, continuing without it: {e}")
-        pipe.enable_vae_slicing()
-        pipe.safety_checker = None
-        pipe.watermark = None
-
         strength = 0.72 if strength_val is None else max(0.0, min(1.0, float(strength_val)))
         num_steps = 4
-        guidance_scale = 1.0
-        negative_prompt = "text, letters, watermark, logo, blurry, low quality"
-
         scenes = story_cache["story"]
         n = len(scenes)
         out_items = []
+        ctx = _ops.context("person")
 
         for idx, item in enumerate(scenes):
             handle.raise_if_cancelled()
-            img_path = resolve_path(item["path"])
             prompt = item["text"]
-            handle.update(done=idx, total=n,
-                          message=f"Scene {idx + 1} of {n}",
+            handle.update(done=idx, total=n, message=f"Scene {idx + 1} of {n}",
                           detail=prompt[:70])
-
-            init_img = _Image.open(img_path).convert("RGB")
-            max_width = 1024
-            w, h = init_img.size
-            if w > max_width:
-                scale = max_width / float(w)
-                new_w = (max_width // 8) * 8
-                new_h = (int(h * scale) // 8) * 8
-            else:
-                new_w, new_h = (w // 8) * 8, (h // 8) * 8
-            init_img = init_img.resize((new_w, new_h), _Image.LANCZOS)
 
             # Within-scene reporting. Without it the bar would sit still for the
             # ~37 s a single CPU scene takes, which is the whole complaint.
-            def _step_cb(pipe_ref, step, timestep, cbk, _idx=idx, _p=prompt):
-                frac = (_idx + (step + 1) / float(num_steps)) / float(n)
-                handle.update(fraction=frac,
+            def _step(frac, msg, _idx=idx, _p=prompt):
+                handle.update(fraction=(_idx + (frac or 0)) / float(n),
                               message=f"Scene {_idx + 1} of {n}",
-                              detail=f"step {step + 1}/{num_steps} · {_p[:50]}")
-                return cbk
-
-            gen = torch.manual_seed(2222 + idx)
-            out_img = pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                image=init_img,
-                strength=strength,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance_scale,
-                generator=gen,
-                callback_on_step_end=_step_cb,
-            ).images[0]
-
-            gen_name = _short_poetry_name(img_path, prompt, idx, ext="png")
-            poetry_img_path = os.path.join(output_dir, gen_name)
-            out_img.save(_win_longpath(poetry_img_path))
-            poetry_img_path = os.path.abspath(poetry_img_path)
+                              detail=f"{msg} · {_p[:50]}")
+            ctx.progress = _step
+            res = _ops.call("generate", {
+                "prompt": prompt, "init": resolve_path(item["path"]), "strength": strength,
+                "steps": num_steps, "seed": 2222 + idx,
+                "folder": f"stories/{subfolder}/poetry"}, ctx=ctx)
 
             buffered = BytesIO()
-            out_img.save(buffered, format="JPEG")
-            poetry_img_str = base64.b64encode(buffered.getvalue()).decode()
-
+            Image.open(res.path).convert("RGB").save(buffered, format="JPEG")
             out_items.append({
                 "text": prompt,
                 "path": item["path"],
                 "original_img_str": item.get("img_str", ""),
-                "poetry_img_str": poetry_img_str,
-                "poetry_img_path": poetry_img_path,
+                "poetry_img_str": base64.b64encode(buffered.getvalue()).decode(),
+                "poetry_img_path": res.path,
             })
-
-        pipe.to("cpu")
-        del pipe
-        if device == "cuda":
-            torch.cuda.empty_cache()
 
         handle.update(fraction=1.0, done=n, total=n, message="Done", detail="")
         return {"items": out_items, "output_dir": output_dir}
@@ -4710,7 +4584,7 @@ def poll_poetry(_n, job_ref):
                     html.Div([
                         daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": it["path"]},
                                           on=True, style={"display": "none"}),
-                        html.Button("+ Moodboard",
+                        html.Button("+ Collection",
                                     id={"type": "add-to-moodboard", "index": it["path"]},
                                     n_clicks=0,
                                     style={"fontSize": "12px", "padding": "2px 8px"}),
@@ -5077,7 +4951,7 @@ def update_images(
                     html.Audio(src=f"/audio?p={qpath}", controls=True, style={"width": "100%"}),
                 ])
             # Story results are ordinary images from the same dataset, so they
-            # get the same "+ Moodboard" action the prompt-search cards have.
+            # get the same "+ Collection" action the prompt-search cards have.
             # Without it a picture found by writing a scene could only be
             # collected by going back to Prompt Search and hunting for it
             # again. The pattern id matches the one update_moodboard already
@@ -5089,7 +4963,7 @@ def update_images(
                         media,
                         html.Div(
                             html.Button(
-                                "+ Moodboard",
+                                "+ Collection",
                                 id={"type": "add-to-moodboard", "index": img["path"]},
                                 n_clicks=0,
                                 style={"fontSize": "12px", "padding": "2px 8px"},
@@ -5180,7 +5054,7 @@ def update_images(
                             preview,
                             html.Div([
                                 daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": first}, on=False),
-                                html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first},
+                                html.Button("+ Collection", id={"type": "add-to-moodboard", "index": first},
                                            n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                             ], style={"display": "flex", "alignItems": "center"}),
                             html.Span(" (no twins)", style={"marginLeft": "10px", "opacity": 0.7}),
@@ -5236,7 +5110,7 @@ def update_images(
                                     style={"textAlign": "center", "margin": "4px 0 8px 0", "opacity": 0.8}),
                             html.Div([
                                 daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": f"group::{g['gid']}"}, on=False),
-                                html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
+                                html.Button("+ Collection", id={"type": "add-to-moodboard", "index": first}, 
                                            n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                             ], style={"display": "flex", "alignItems": "center"}),
                             html.Span(f" twins: {n}", style={"marginLeft": "10px", "opacity": 0.7}),
@@ -5295,7 +5169,7 @@ def update_images(
                     media,
                     html.Div([
                         daq.BooleanSwitch(id={"type": "select-image", "owner": "search", "index": media_path}, on=False),
-                        html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": media_path}, 
+                        html.Button("+ Collection", id={"type": "add-to-moodboard", "index": media_path}, 
                                    n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                     ], style={"display": "flex", "alignItems": "center"}),
                 ],
@@ -5593,20 +5467,15 @@ def do_relocate(_check, _apply, new_root, dataset_value):
     apply_it = ctx.triggered_id == "relocate-apply-btn"
     try:
         name, _dim, modality = _parse_dataset_value(dataset_value)
-        from .relocate import relocate_legacy
-        from .legacy import discover
-    except ImportError:
-        from relocate import relocate_legacy
-        from legacy import discover
     except Exception as e:
         return html.Span(f"Could not parse the dataset: {e}", style={"color": _ui.BAD})
 
-    matches = [d for d in discover() if d.name == name and d.modality == modality]
-    if not matches:
-        return html.Span(f"No dataset named {name}.", style={"color": _ui.BAD})
-
     try:
-        r = relocate_legacy(matches[0], new_root, dry_run=not apply_it)
+        r = _ops.call("dataset relocate", {
+            "dataset": name if modality == "image" else f"{name}@{modality}",
+            "root": new_root, "dry_run": not apply_it}, actor="person").model_dump()
+    except _ops.Refusal as e:
+        return html.Span(e.reason, style={"color": _ui.BAD})
     except Exception as e:
         return html.Span(f"Relocation failed: {type(e).__name__}: {e}",
                          style={"color": _ui.BAD})
@@ -5697,9 +5566,12 @@ def toggle_spec_inline(dataset_value):
         State("story-cache", "data"),
         State("grouped-results", "data"),
         State("carousel-state", "data"),
+        State("search-box", "value"),
+        State("story-box", "value"),
     ],
 )
-def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, story_cache, groups, car_state):
+def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, story_cache, groups, car_state,
+                prompt=None, story_text=None):
     msg = ""
     triggered = ctx.triggered_id if hasattr(ctx, "triggered_id") else None
 
@@ -5712,8 +5584,9 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
         return g["paths"][cur]
 
     if triggered == "save-button":
-        subfolder = folder or "session"
-        save_dir = _safe_output_dir("selections", subfolder)
+        # Unnamed, a save goes to a folder named for the day and the prompt it answered.
+        subfolder = folder or _paths.dated_name(prompt or "search")
+        save_dir = _safe_output_dir("search", subfolder)
         os.makedirs(save_dir, exist_ok=True)
 
         selections = selections or []
@@ -5765,9 +5638,9 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
 
 
     elif triggered == "save-story-btn":
-        subfolder = folder or "story"
+        subfolder = folder or _paths.dated_name((story_text or "story")[:40])
         save_dir = _safe_output_dir("stories", subfolder)
-        poetry_dir = os.path.join(save_dir, "poetry_injected")
+        poetry_dir = os.path.join(save_dir, "poetry")
         original_dir = os.path.join(save_dir, "original")
         os.makedirs(poetry_dir, exist_ok=True)
         os.makedirs(original_dir, exist_ok=True)
@@ -5800,7 +5673,9 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
 # The dataset manager registers its own callbacks; done here so the layout
 # it refers to already exists.
 _ui_datasets.register(app)
+_ui_collection.register(app)
 _ui_alchemy.register(app)
+_ui_agent.register(app)
 
 
 def main():
@@ -5814,6 +5689,8 @@ def main():
     #
     # Override with ARCANA_DEV_PORT when running several branches side by side.
     port = int(os.environ.get("ARCANA_DEV_PORT", "8051"))
+    # server.json tells the terminal and an agent's server where to send ops.
+    _ops_server.announce(port)
     app.run(host="127.0.0.1", port=port, debug=False)
 
 

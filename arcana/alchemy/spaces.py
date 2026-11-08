@@ -105,7 +105,7 @@ def enlarge(image, keep=False):
                 net = _held["esrgan"] = upscale.load(_esrgan_weights(), "cuda" if device().startswith("cuda") else "cpu")
     MODELS.used(key)
     with _lock:
-        return upscale.enlarge(net, image, keep)
+        return upscale.enlarge(net, image, keep) if keep else upscale.enlarge_tiled(net, image)
 
 
 # ─────────────────────────── principal axes and the four looks ───────────────────────────

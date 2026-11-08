@@ -21,7 +21,8 @@ except ImportError:                                   # pragma: no cover
 
 def handles_arg(lo: int, hi: int):
     return positional(0, min_length=lo, max_length=hi,
-                      description="Pictures, as dataset:key.",
+                      description="Pictures, as handles: japan:1423, or out:3f9c1e for a "
+                                  "derived one.",
                       json_schema_extra={"metavar": "HANDLE"})
 
 
@@ -37,17 +38,34 @@ def _open_rgb(path: str):
     return im
 
 
-def _describe(path: str, ds) -> str:
+def _describe(path: str, ds=None) -> str:
     """CLIP's words for a picture. Any CLIP will do; the dataset's own is preferred."""
     try:
         from .. import style_transfer as _st
     except ImportError:                               # pragma: no cover
         import style_transfer as _st
     try:
-        model_id = core.text_model_for_dim(int(ds.index.ndim))
+        model_id = core.text_model_for_dim(int(ds.index.ndim)) if ds is not None else None
     except RuntimeError:
         model_id = None
     return _st.describe(path, model_id=model_id) or ""
+
+
+def _lookup(ref: str, actor: str):
+    """(item, dataset or None, key or None). Archive handles bring the index's facts."""
+    it = archive.resolve_item(ref, actor)
+    if it.dataset and it.handle:
+        ds = archive.open_dataset(it.dataset)
+        return it, ds, archive.parse_handle(it.handle)[1]
+    return it, None, None
+
+
+def _hit(num: int, it, ds, key) -> Hit:
+    if ds is not None:
+        return archive.make_hit(num, it.dataset, ds, key, it.path)
+    return Hit(num=num, handle=it.handle or it.ref, file=os.path.basename(it.path), path=it.path,
+               metric=it.kind if it.kind != "archive" else None,
+               missing=not os.path.exists(it.path))
 
 
 # ─────────────────────────── item show ───────────────────────────
@@ -115,14 +133,16 @@ def _item_show(a: ItemShowArgs, ctx: Context) -> ItemShowResult:
     describe = (not ctx.sheets) if a.describe is None else a.describe
     out = ItemShowResult(items=[])
     for h in a.handles:
-        ds_id, key = archive.parse_handle(h)
-        ds = archive.open_dataset(ds_id)
-        path = ds.idx2path.get(key)
-        if path is None:
-            out.items.append(ItemInfo(handle=h, error=f"not in {ds_id}."))
+        try:
+            it, ds, key = _lookup(h, ctx.actor)
+        except ValueError as e:
+            out.items.append(ItemInfo(handle=h, error=str(e)))
             continue
-        info = ItemInfo(handle=h, file=os.path.basename(path), path=path,
-                        facts=archive.facts(ds, key))
+        path = it.path
+        facts = archive.facts(ds, key) if ds is not None else {}
+        if it.kind in ("derived", "generated"):
+            facts = {"kind": it.kind, **({"derived from": it.derived_from} if it.derived_from else {})}
+        info = ItemInfo(handle=it.handle or h, file=os.path.basename(path), path=path, facts=facts)
         try:
             with _open_rgb(path) as im:
                 info.width, info.height = im.width, im.height
@@ -185,12 +205,8 @@ class ItemSheetArgs(Args):
 def _item_sheet(a: ItemSheetArgs, ctx: Context) -> SheetResult:
     hits = []
     for i, h in enumerate(a.handles, 1):
-        hid, key = archive.parse_handle(h)
-        d = archive.open_dataset(hid)          # cached by core, so cheap after the first
-        path = d.idx2path.get(key)
-        if path is None:
-            raise ValueError(f"{h} is not in {hid}.")
-        hits.append(archive.make_hit(i, hid, d, key, path))
+        it, ds, key = _lookup(h, ctx.actor)
+        hits.append(_hit(i, it, ds, key))
     out = SheetResult(hits=hits, withheld=not ctx.pixels)
     if ctx.pixels:
         out.attachments.append(archive.sheet([h.path for h in hits], [h.num for h in hits],
@@ -236,8 +252,8 @@ def _item_palette(a: ItemPaletteArgs, ctx: Context) -> PaletteResult:
         from .. import refselect as _refselect
     except ImportError:                               # pragma: no cover
         import refselect as _refselect
-    ds_id, ds, (key,) = archive.resolve_handles([a.handle])
-    path = ds.idx2path[key]
+    it, ds, key = _lookup(a.handle, ctx.actor)
+    path = it.path
     if not os.path.exists(path):
         raise ValueError(f"{a.handle}'s file is not where the index says ({path}).")
     with _open_rgb(path) as im:
@@ -275,8 +291,7 @@ class ItemDescribeArgs(Args):
     """,
     examples=("item describe japan:12",))
 def _item_describe(a: ItemDescribeArgs, ctx: Context) -> DescribeResult:
-    ds_id, ds, (key,) = archive.resolve_handles([a.handle])
-    path = ds.idx2path[key]
-    if not os.path.exists(path):
-        raise ValueError(f"{a.handle}'s file is not where the index says ({path}).")
-    return DescribeResult(handle=a.handle, words=_describe(path, ds))
+    it, ds, key = _lookup(a.handle, ctx.actor)
+    if not os.path.exists(it.path):
+        raise ValueError(f"{a.handle}'s file is not where the index says ({it.path}).")
+    return DescribeResult(handle=a.handle, words=_describe(it.path, ds))

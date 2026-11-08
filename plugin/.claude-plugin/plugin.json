@@ -1,0 +1,9 @@
+{
+  "name": "arcana",
+  "version": "0.2.0",
+  "description": "Search your own picture archive by what the pictures show, build moodboards from it, recolour and restyle pictures, and lay boards out as HTML, through Arcana's op vocabulary. Includes the Arcana MCP server and the moodboard, board-design and harmonize skills.",
+  "author": {
+    "name": "Kairos Hive"
+  },
+  "keywords": ["moodboard", "images", "clip", "colour transfer", "archive"]
+}

@@ -2509,3 +2509,39 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def folder_vocabulary(root: str, limit: int = 60) -> list[str]:
+    """
+    Subfolder names, cleaned up, for use as a label vocabulary.
+
+    Arcana names a cluster by finding the nearest word in a fixed 100-word list
+    (Portrait, Street, Sunset...). That list knows nothing about the pictures:
+    a library of circuit boards gets named out of a vocabulary with no word for
+    circuit board. Most people have already written a better vocabulary without
+    realising -- it is their folder tree.
+
+    Only directories that actually contain media are counted, so an "originals"
+    or "export" wrapper folder does not become a label.
+    """
+    if not root or not os.path.isdir(root):
+        return []
+    words: list[str] = []
+    for entry in sorted(os.listdir(root)):
+        sub = os.path.join(root, entry)
+        if not os.path.isdir(sub):
+            continue
+        has_media = False
+        for _r, _d, files in os.walk(sub):
+            if any(os.path.splitext(f)[1].lower() in IMAGE_EXTS | AUDIO_EXTS
+                   for f in files):
+                has_media = True
+                break
+        if not has_media:
+            continue
+        cleaned = " ".join(w for w in entry.replace("_", " ").replace("-", " ").split())
+        if cleaned and cleaned.lower() not in {w.lower() for w in words}:
+            words.append(cleaned)
+        if len(words) >= limit:
+            break
+    return words

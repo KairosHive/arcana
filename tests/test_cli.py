@@ -127,3 +127,14 @@ def test_completion_from_the_command_line(tmp, ds, capsys):
 def test_an_unknown_global_option_shows_usage(capsys):
     code, _, err = run(capsys, "--frobnicate")
     assert code == 2 and "Usage" in err
+
+
+def test_every_line_in_the_readmes_command_block_is_an_op():
+    text = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    block = text.split("## Command line", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+    lines = [l.split("  #")[0].strip() for l in block.splitlines()]
+    lines = [l[len("arcana "):] for l in lines if l.startswith("arcana ")]
+    assert len(lines) >= 10
+    from arcana import ops
+    for line in lines:
+        ops.parse_line(line)

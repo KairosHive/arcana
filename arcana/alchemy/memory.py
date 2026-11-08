@@ -50,6 +50,26 @@ def free_commit():
         return 1 << 62
 
 
+def committed():
+    """Bytes committed system-wide (Windows: RAM plus page file in use)."""
+    if os.name == "nt":
+        class Perf(ctypes.Structure):
+            _fields_ = [("cb", ctypes.c_ulong), ("CommitTotal", ctypes.c_size_t), ("CommitLimit", ctypes.c_size_t),
+                        ("CommitPeak", ctypes.c_size_t), ("PhysicalTotal", ctypes.c_size_t),
+                        ("PhysicalAvailable", ctypes.c_size_t), ("SystemCache", ctypes.c_size_t),
+                        ("KernelTotal", ctypes.c_size_t), ("KernelPaged", ctypes.c_size_t),
+                        ("KernelNonpaged", ctypes.c_size_t), ("PageSize", ctypes.c_size_t),
+                        ("HandleCount", ctypes.c_ulong), ("ProcessCount", ctypes.c_ulong),
+                        ("ThreadCount", ctypes.c_ulong)]
+        p = Perf()
+        p.cb = ctypes.sizeof(Perf)
+        k32 = ctypes.windll.kernel32
+        k32.K32GetPerformanceInfo.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        k32.K32GetPerformanceInfo(ctypes.byref(p), p.cb)
+        return int(p.CommitTotal) * int(p.PageSize)
+    return 0
+
+
 def private_bytes():
     """This process's committed memory (Windows: its private bytes)."""
     if os.name == "nt":
@@ -185,6 +205,17 @@ class Models:
             self._sweeper = threading.Thread(target=loop, name="memory", daemon=True)
             self._sweeper.start()
 
+    def short_of(self, key, guess, free):
+        """Why a load was refused, with what Alchemy holds and what the rest of the system holds."""
+        with self.guard:
+            held = sorted(self.held.values(), key=lambda e: -(e.ram + e.gpu))
+        mine = private_bytes()
+        others = max(0.0, (committed() - mine) / GB)
+        bits = ", ".join(f"{e.key} {(e.ram + e.gpu) / GB:.1f} GB" for e in held) or "no models"
+        return (f"Not enough memory to load {key}. It needs about {guess:.1f} GB and {free / GB:.1f} GB is free. "
+                f"Alchemy holds {bits}, in a process of {mine / GB:.1f} GB. Other programs hold the other "
+                f"{others:.0f} GB in use, so closing one of them makes room.")
+
     def report(self):
         now = time.monotonic()
         with self.guard:
@@ -203,14 +234,16 @@ class _Loading:
     def __enter__(self):
         LOAD.acquire()
         try:
+            need = (self.guess + 0.5) * GB
             self.m.room(ram=self.guess * GB, gpu=self.guess * GB)
+            if free_commit() < need:
+                # The model asked for now matters more than one used a moment ago.
+                self.m.room(ram=self.guess * GB, gpu=self.guess * GB, protect=0)
             # A load that cannot fit is refused here, as an error the page shows: let through, it
             # fails inside the checkpoint read as an access violation and takes the server with it.
             free = free_commit()
-            if free < (self.guess + 0.5) * GB:
-                raise MemoryError(f"not enough memory to load {self.key}: about {self.guess:.0f} GB needed, "
-                                  f"{free / GB:.1f} GB free; close other programs, or let the lab's idle "
-                                  f"models go (they go after {PROTECT:.0f} s unused)")
+            if free < need:
+                raise MemoryError(self.m.short_of(self.key, self.guess, free))
             self.ram0, self.gpu0 = private_bytes(), gpu_used()
         except BaseException:
             LOAD.release()

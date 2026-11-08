@@ -26,8 +26,20 @@ from pydantic import Field  # noqa: E402
 import synth  # noqa: E402
 
 
+# The slow examples use this machine's ModFlows checkpoint, found here before
+# a fixture points the data dir at a scratch folder that has none.
+REAL_CHECKPOINT = None
+if os.environ.get("ARCANA_SLOW_EXAMPLES"):
+    from arcana import color_transfer as _ct
+    REAL_CHECKPOINT = _ct.checkpoint_path()
+
+
 @pytest.fixture
 def ds(tmp, monkeypatch):
+    if REAL_CHECKPOINT is not None:
+        from arcana import color_transfer as _ct
+        monkeypatch.setattr(_ct, "checkpoint_path", lambda: REAL_CHECKPOINT)
+    monkeypatch.setenv("ARCANA_NO_BROWSER", "1")
     out = synth.use(tmp, monkeypatch, palette_features=True)
     from arcana import style_transfer
     monkeypatch.setattr(style_transfer, "describe", lambda *a, **k: "lake, mist")
@@ -69,13 +81,47 @@ def test_every_op_is_fully_declared():
             assert info.description, f"{o.name}: field {name} has no description"
 
 
-def test_p0_registers_the_read_ops_of_four_nouns():
+VOCABULARY = {
+    # P0: reads
+    "orient", "op list", "help", "settings show", "dataset list", "dataset show",
+    "dataset survey", "model list", "search text", "search facets", "search like",
+    "search palette", "item show", "item sheet", "item palette", "item describe",
+    # P1: state and boards
+    "settings set", "undo", "redo", "history", "board list", "board show", "board create",
+    "board copy", "board save", "board add", "board remove", "board move", "board note",
+    "board set", "board section add", "board section set", "board section remove",
+    "board palette set", "board palette extract", "board export", "board delete",
+    "item export",
+    # P2: colour, style, generation, jobs
+    "colour methods", "colour transfer", "colour lut", "colour harmonize", "style methods",
+    "style transfer", "style control-map", "generate", "model download",
+    "job list", "job show", "job wait", "job cancel",
+    # P3: boards as pages
+    "board render", "board open",
+    # P4: the dataset lifecycle
+    "dataset create", "dataset extend", "dataset finish", "dataset marks", "dataset relocate",
+    "dataset migrate", "dataset delete",
+}
+
+# Examples that load a large model. They run when ARCANA_SLOW_EXAMPLES is set,
+# and their behaviour is tested with stubs in test_colour_ops.py either way.
+# `model download` fetches hundreds of megabytes, so its example never runs here.
+SLOW = {"generate", "colour lut", "alchemy make"}
+NETWORK = {"model download"}
+# Examples that index or rewrite a real folder. test_lifecycle.py runs these
+# ops against the synthetic dataset with the encoding stubbed.
+INDEXING = {"dataset create", "dataset extend", "dataset finish", "dataset relocate",
+            "dataset migrate"}
+
+
+def test_the_vocabulary_is_registered():
     names = {o.name for o in ops.all_ops()}
-    assert {"orient", "op list", "help", "settings show", "dataset list", "dataset show",
-            "dataset survey", "model list", "search text", "search facets", "search like",
-            "search palette", "item show", "item sheet", "item palette",
-            "item describe"} <= names
-    assert all(o.kind == "read" for o in ops.all_ops() if not o.name.startswith("alchemy "))
+    assert VOCABULARY <= names, sorted(VOCABULARY - names)
+
+
+def test_the_person_keeps_what_only_the_person_decides():
+    for name in ("settings set", "board delete"):
+        assert "agent" not in ops.get(name).actors, name
 
 
 def test_help_renders_and_names_every_field():
@@ -100,22 +146,50 @@ def test_the_schema_generates_and_forbids_unknown_fields():
 
 # ─────────────────────────── examples run ───────────────────────────
 
+def _fixture_board(tmp, author):
+    """The board the board ops' examples name: monsoon, with sections s1 and s2."""
+    from arcana import boards
+    folder = boards.boards_dir()
+    for name in os.listdir(folder):
+        os.remove(os.path.join(folder, name))
+    idx2path = core.open_dataset("synth").idx2path
+    keys = [12, 7, 3, 1, 2]
+    rec = {"schema": 2, "name": "Monsoon", "slug": "monsoon", "author": author,
+           "items": [idx2path[k] for k in keys],
+           "details": {idx2path[k]: {"handle": f"synth:{k}",
+                                     "section": "s1" if k in (12, 7) else "s2"} for k in keys},
+           "sections": [{"id": "s1", "title": "Water"}, {"id": "s2", "title": "Shelter"}]}
+    with open(os.path.join(folder, "monsoon.json"), "w", encoding="utf-8") as fh:
+        json.dump(rec, fh)
+
+
 @pytest.mark.parametrize("actor,pixels_on", [("cli", False), ("agent", False), ("agent", True)])
-def test_every_example_runs_and_writes_nothing(tmp, ds, actor, pixels_on):
+def test_every_example_runs(tmp, ds, actor, pixels_on):
+    """Each example from scratch: reads change nothing, writes are allowed to."""
+    from arcana import jobs
     synth.pixels(tmp, pixels_on)
-    before = _files(tmp)
     ctx = ops.context(actor)
-    # Effects write by design (their examples are checked to parse at registration).
+    slow = bool(os.environ.get("ARCANA_SLOW_EXAMPLES"))
     for o in ops.all_ops():
-        if o.kind != "read":
+        if actor not in o.actors or o.name in NETWORK | INDEXING or (o.name in SLOW and not slow):
             continue
         for line in o.examples:
+            _fixture_board(tmp, "agent" if actor == "agent" else "person")
+            if o.name == "board create":
+                os.remove(os.path.join(tmp, "boards", "monsoon.json"))
+            if o.name.startswith("job "):
+                # A job that waits a moment, so cancel finds it running.
+                jid = jobs.MANAGER.submit(lambda h: __import__("time").sleep(0.3) or {"text": "ok"},
+                                          kind="test", label="example")
+                line = line.replace("3f9c1e2a7b4d", jid)
+            before = _files(tmp)
             batch = ops.exec_lines([_as_synth(line)], ctx=ctx)
             step = batch.steps[0]
             assert step.refusal is None, (line, step.refusal and step.refusal["reason"])
             assert step.result.text().strip()
             json.dumps(ops.render.result_json(step.result))
-    assert _files(tmp) == before
+            if o.kind == "read":
+                assert _files(tmp) == before, line
 
 
 # ─────────────────────────── acceptance ───────────────────────────
@@ -220,8 +294,6 @@ def test_register_refuses_what_would_break_the_rule(scratch):
         ops.register(bad(args=Loose))
     with pytest.raises(TypeError, match="lowercase words"):
         ops.register(bad(name="Thing"))
-    with pytest.raises(TypeError, match="state.Store"):
-        ops.register(bad(kind="write"))
     with pytest.raises(TypeError, match="does not parse"):
         ops.register(bad(args=Needy, examples=("test thing --n ten",)))
     assert ops.get("test thing") is None

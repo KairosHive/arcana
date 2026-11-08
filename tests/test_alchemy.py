@@ -184,10 +184,11 @@ def test_saved_recipes_are_listed_and_replace_their_namesake(tmp, monkeypatch):
 
 def test_the_ops_are_registered_with_their_kinds():
     kinds = {o.name: o.kind for o in ops.all_ops() if o.name.startswith("alchemy ")}
-    assert kinds == {"alchemy methods": "read", "alchemy preview": "read", "alchemy make": "effect",
+    assert kinds == {"alchemy methods": "read", "alchemy memory": "read", "alchemy preview": "read",
+                     "alchemy make": "effect",
                      "alchemy mask presets": "read", "alchemy mask preview": "read",
                      "alchemy recipe list": "read", "alchemy recipe show": "read",
-                     "alchemy recipe save": "effect"}
+                     "alchemy recipe save": "write"}
 
 
 def test_settings_are_routed_and_strays_refused():
@@ -215,7 +216,20 @@ def test_preview_and_make_on_the_synthetic_dataset(tmp, ds):
     m = ops.call("alchemy make", {"picture": "synth:12", "material": ["synth:7"],
                                   "method": "colour.lab", "size": 256})
     assert m.id.startswith("out:") and os.path.isfile(m.path)
-    assert os.path.isfile(os.path.splitext(m.path)[0] + ".json")
+    # Kept pictures go to output/edited/<family>/<date>/<picture>__<method>__<time>.png, and the
+    # ledger records them, derived from the picture they came from, under the out: handle.
+    folder, name = os.path.split(m.path)
+    assert os.path.basename(os.path.dirname(folder)) == "colour"
+    assert os.path.basename(os.path.dirname(os.path.dirname(folder))) == "edited"
+    assert name.startswith("img_012__lab__")
+    from arcana import ledger
+    entry = ledger.get(m.id)
+    assert entry["path"] == m.path and entry["op"] == "alchemy make" and entry["derived_from"] == "synth:12"
+    from arcana.alchemy import inputs
+    assert inputs.resolve(m.id) == m.path
+    # With no size, a Keep has the picture's own size (the synthetic pictures are 64 x 48).
+    full = ops.call("alchemy make", {"picture": "synth:12", "material": ["synth:7"], "method": "colour.lab"})
+    assert full.size == [64, 48] and full.drawn is None
     again = ops.call("alchemy preview", {"picture": m.id, "material": ["synth:7"],
                                          "method": "pixels.displace", "size": 256})
     assert again.size[0] == 256
@@ -238,3 +252,21 @@ def test_the_tab_turns_its_controls_into_op_arguments():
     assert a["finish"] == {"exposure": 0.3, "scope": "mask"}
     from arcana.ops.alchemy import AlchemyPreviewArgs
     AlchemyPreviewArgs(**a)
+
+
+def test_recipe_save_is_undone_like_any_write(tmp, ds, monkeypatch):
+    monkeypatch.setattr(recipes, "_store", lambda: os.path.join(tmp, "recipes.json"))
+    ops.exec_lines(['alchemy recipe save "warm sky" --method colour.lab --set finish.temperature=20'],
+                   actor="cli")
+    assert any(r.name == "warm sky" for r in recipes.own())
+    ops.call("undo", {}, actor="cli")
+    assert not any(r.name == "warm sky" for r in recipes.own())
+
+
+def test_an_agent_names_pictures_by_handle(tmp, ds):
+    path = ds[12]
+    with pytest.raises(ops.Refusal, match="by handle"):
+        ops.call("alchemy preview", {"picture": path, "material": ["synth:7"], "method": "colour.lab",
+                                     "size": 256}, actor="agent")
+    ops.call("alchemy preview", {"picture": "synth:12", "material": ["synth:7"], "method": "colour.lab",
+                                 "size": 256}, actor="agent")

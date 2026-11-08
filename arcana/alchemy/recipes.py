@@ -90,6 +90,11 @@ BUILTIN = [
 ]
 
 
+def store_path() -> str:
+    """The file the person's own recipes are kept in."""
+    return _store()
+
+
 def _store() -> str:
     try:
         from .. import paths

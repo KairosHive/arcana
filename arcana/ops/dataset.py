@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from . import archive
 from .archive import DatasetInfo, Hit, dataset_arg
-from .registry import Args, Context, Result, op
+from .registry import Args, Context, Result, op, positional
 
 try:
     from .. import core
@@ -279,3 +279,81 @@ def _model_list(a: ModelListArgs, ctx: Context) -> ModelListResult:
                                  dim=d["dim"], download_mb=d["download_mb"],
                                  quality=d["quality"], downloaded=d["downloaded"]))
     return ModelListResult(models=rows)
+
+
+# ─────────────────────────── model download ───────────────────────────
+
+class DownloadResult(Result):
+    model: str
+    path: str
+    already: bool = False
+
+    def text(self) -> str:
+        if self.already:
+            return f"{self.model} is already here: {self.path}\n"
+        return f"Downloaded {self.model} to {self.path}\n"
+
+
+class ModelDownloadArgs(Args):
+    model: str = positional(0, description="An encoder id from `model list`, or modflows for "
+                                           "the colour model.",
+                            json_schema_extra={"metavar": "MODEL"})
+    background: bool = Field(True, description="Return a job id at once. Downloads take "
+                                               "minutes. --no-background waits.")
+
+
+@op("model download", "effect", ModelDownloadArgs, DownloadResult,
+    doc="""
+    Fetch a model from Hugging Face. It takes an encoder for indexing, or the
+    ModFlows colour model, into Arcana's model cache. Runs as a job by default, since the
+    encoders run from 0.6 to 3.9 GB.
+    """,
+    examples=("model download modflows --no-background",))
+def _model_download(a: ModelDownloadArgs, ctx: Context):
+    from .effects import run_effect
+    if a.model == "modflows":
+        try:
+            from .. import color_transfer as _ct
+        except ImportError:                           # pragma: no cover
+            import color_transfer as _ct
+        if _ct.status()["ready"]:
+            return DownloadResult(model="modflows", path=_ct.status()["checkpoint"], already=True)
+
+        def compute(progress):
+            return str(_ct.download_checkpoint(
+                progress=(lambda f, m: progress(f, m)) if progress else None))
+    else:
+        known = {m.id for m in _models.MODELS}
+        if a.model not in known:
+            raise ValueError(f"No model called {a.model!r}. Models: modflows, "
+                             + ", ".join(sorted(known)) + ".")
+        if _models.is_downloaded(a.model):
+            return DownloadResult(model=a.model, path=_models.cache_dir(), already=True)
+
+        class _Handle:
+            def __init__(self, progress):
+                self.progress = progress
+
+            def update(self, fraction=None, message=None, **_):
+                if self.progress:
+                    self.progress(fraction, message)
+
+            def raise_if_cancelled(self):
+                pass
+
+        def compute(progress):
+            path = _models.download_model(a.model, _Handle(progress))
+            # Every encoder names clusters from its own label matrix, so build
+            # it now rather than at the end of the first indexing run.
+            try:
+                from .. import db as _db
+            except ImportError:                       # pragma: no cover
+                import db as _db
+            if progress:
+                progress(0.95, "Preparing labels")
+            _db.warm_label_cache(a.model, _models.get(a.model).modality)
+            return path
+
+    return run_effect(ctx, f"model download {a.model}", compute,
+                      lambda tx, path: DownloadResult(model=a.model, path=str(path)),
+                      a.background, kind="download")

@@ -79,3 +79,5 @@ installer/file_version_info.txt
 
 # Per-user Claude Code permissions; launch.json is shared.
 .claude/settings.local.json
+# The Agent tab's workspace (workspace.py), beside arcana/output in a checkout.
+arcana/workspace/

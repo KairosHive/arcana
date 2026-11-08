@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -151,8 +152,17 @@ def settings_of(a: StepSettings) -> dict:
     return spec
 
 
-def _with_pictures(a: StepInputs, spec: dict) -> dict:
-    return {**spec, "picture": a.picture, "materials": list(a.material)}
+def _with_pictures(a: StepInputs, spec: dict, ctx: Context) -> dict:
+    """The spec with its pictures, each checked against the caller's rules by the one resolver every
+    op uses: an agent names pictures by handle, the person and the terminal may also give paths."""
+    from . import archive
+
+    for line in (spec.get("mask") or {}).get("layers", []):
+        if str(line).startswith("picture:"):
+            archive.resolve_item(str(line)[8:], ctx.actor)
+    picture = archive.resolve_item(a.picture, ctx.actor).ref if a.picture else None
+    materials = [archive.resolve_item(m, ctx.actor).ref for m in a.material]
+    return {**spec, "picture": picture, "materials": materials}
 
 
 def _jpeg(image, side=None, quality=90) -> bytes:
@@ -166,9 +176,13 @@ def _jpeg(image, side=None, quality=90) -> bytes:
 
 
 def _run(spec, long_side, view):
+    """(image, the picture as it was or None, info). `view` compare draws both in one pass."""
     _, _, _, _, pipeline, _ = _mods()
     try:
-        return pipeline.run(spec, long_side=long_side, view=view)
+        if view == "compare":
+            return pipeline.run_compare(spec, long_side=long_side)
+        image, info = pipeline.run(spec, long_side=long_side, view=view)
+        return image, None, info
     except MemoryError as e:
         # call() turns a ValueError into a refusal the caller reads; running short of memory is one.
         raise ValueError(str(e) or "Not enough memory for this step. Close other programs and try again.") from None
@@ -276,6 +290,57 @@ def _alchemy_methods(a: AlchemyMethodsArgs, ctx: Context) -> MethodsResult:
         detail=bool(a.method or a.family))
 
 
+# ─────────────────────────── alchemy memory ───────────────────────────
+
+class HeldModel(BaseModel):
+    model: str
+    ram_gb: float
+    gpu_gb: float
+    idle_s: float
+    uses: int
+
+
+class MemoryResult(Result):
+    models: list[HeldModel]
+    process_gb: float
+    committed_gb: float
+    free_commit_gb: float
+    free_gpu_gb: float | None = None
+
+    def text(self) -> str:
+        lines = [f"This process: {self.process_gb:.1f} GB. System: {self.committed_gb:.1f} GB committed, "
+                 f"{self.free_commit_gb:.1f} GB free"
+                 + (f", {self.free_gpu_gb:.1f} GB free on the card." if self.free_gpu_gb is not None else ".")]
+        if not self.models:
+            lines.append("Alchemy holds no models.")
+        for m in self.models:
+            lines.append(f"  {m.model:<26} {m.ram_gb:>5.1f} GB RAM  {m.gpu_gb:>5.1f} GB card  "
+                         f"idle {m.idle_s:.0f} s, {m.uses} uses")
+        return "\n".join(lines) + "\n"
+
+
+class AlchemyMemoryArgs(Args):
+    pass
+
+
+@op("alchemy memory", "read", AlchemyMemoryArgs, MemoryResult,
+    doc="""
+    What Alchemy holds in memory, model by model, and how much the system has
+    left. A model unused for a while is let go when memory runs short, and
+    loaded again on its next use.
+    """,
+    examples=("alchemy memory",))
+def _alchemy_memory(a: AlchemyMemoryArgs, ctx: Context) -> MemoryResult:
+    try:
+        from ..alchemy import memory
+    except ImportError:                               # pragma: no cover
+        from alchemy import memory
+    r = memory.MODELS.report()
+    return MemoryResult(models=[HeldModel(**m) for m in r["models"]], process_gb=r["process_gb"],
+                        committed_gb=round(memory.committed() / memory.GB, 1),
+                        free_commit_gb=r["free_commit_gb"], free_gpu_gb=r["free_gpu_gb"])
+
+
 # ─────────────────────────── alchemy preview, alchemy make ───────────────────────────
 
 class StepResult(Result):
@@ -286,12 +351,15 @@ class StepResult(Result):
     mask_share: float | None = None
     recipe: str | None = None
     view: str = "result"
+    drawn: list[int] | None = None
     id: str | None = None
     path: str | None = None
     withheld: bool = False
 
     def text(self) -> str:
         bits = [f"{self.method}", f"{self.size[0]} x {self.size[1]}", f"{self.ms} ms"]
+        if self.drawn:
+            bits.insert(2, f"drawn at {self.drawn[0]} x {self.drawn[1]} and enlarged by Real-ESRGAN")
         if self.recipe:
             bits.insert(0, f"recipe {self.recipe}")
         if self.mask_share is not None:
@@ -327,44 +395,70 @@ class AlchemyPreviewArgs(StepInputs):
               "--set finish.exposure=0.3",
               "alchemy preview japan:12 --mask \"from the top\" --view mask"))
 def _alchemy_preview(a: AlchemyPreviewArgs, ctx: Context) -> StepResult:
-    spec = _with_pictures(a, settings_of(a))
-    image, info = _run(spec, a.size, "result" if a.view == "compare" else a.view)
+    spec = _with_pictures(a, settings_of(a), ctx)
+    image, before, info = _run(spec, a.size, a.view)
     out = StepResult(**info, view=a.view, withheld=not ctx.pixels)
     if ctx.pixels:
         out.attachments.append(Attachment(caption=f"{info['method']} {a.view}", data=_jpeg(image)))
-        if a.view == "compare":
-            before, _ = _run(spec, a.size, "before")
+        if before is not None:
             out.attachments.append(Attachment(caption="before", data=_jpeg(before)))
     return out
 
 
 class AlchemyMakeArgs(StepInputs):
-    size: int = Field(1024, ge=256, le=2048, description="Longest side of the picture made, in pixels, "
-                      "before any enlarging.")
-    enlarge: bool = Field(False, description="Enlarge the result four times with Real-ESRGAN.")
+    size: int = Field(0, ge=0, le=8192, description="Longest side of the picture kept, in pixels. 0 keeps "
+                      "the leading picture's own size. Past the largest size a method draws, Real-ESRGAN "
+                      "enlarges the result.")
+    background: bool = Field(False, description="Return a job id at once instead of waiting.")
 
 
 @op("alchemy make", "effect", AlchemyMakeArgs, StepResult,
     doc="""
-    One Alchemy step, drawn at full size and kept. The picture is written to
-    output/alchemy with a sidecar naming this op, its arguments and its
-    sources. It answers with an out: handle that any step, or a board, can
-    take as an input.
+    One Alchemy step, drawn at full size and kept. By default the picture keeps
+    the size of the photograph it came from. It is written to
+    output/edited/<family>/<date>/ and recorded in the ledger, which gives it
+    an out: handle that any step, a board or a transfer takes as an input.
     """,
     examples=("alchemy make japan:12 --material japan:7 --recipe \"water light\"",
               "alchemy make japan:12 --material japan:7 --material japan:3 "
-              "--weight 0.7 --weight 0.3 --method tokens.weave --size 1536 --enlarge"))
-def _alchemy_make(a: AlchemyMakeArgs, ctx: Context) -> StepResult:
-    _, inputs, _, _, _, _ = _mods()
+              "--weight 0.7 --weight 0.3 --method tokens.weave --size 4096 --background"))
+def _alchemy_make(a: AlchemyMakeArgs, ctx: Context) -> Result:
+    from . import archive
+    from .effects import run_effect
+
+    try:
+        from .. import ledger as _ledger
+    except ImportError:                               # pragma: no cover
+        import ledger as _ledger
+    _, inputs, _, methods, pipeline, _ = _mods()
     settings = settings_of(a)
-    spec = {**_with_pictures(a, settings), "enlarge": a.enlarge}
-    image, info = _run(spec, a.size, "result")
-    sources = [r for r in [a.picture, *a.material] if r]
-    oid, path = inputs.save(image, "alchemy make", {**settings, "size": a.size, "enlarge": a.enlarge}, sources)
-    out = StepResult(**info, id=oid, path=path, withheld=ctx.actor == "agent" and not ctx.pixels)
-    if ctx.actor == "agent" and ctx.pixels:
-        out.attachments.append(Attachment(caption=oid, data=_jpeg(image, side=1024)))
-    return out
+    spec = _with_pictures(a, settings, ctx)
+    method = methods.get(pipeline.resolved(spec)["method"])
+    sources = [archive.resolve_item(r, ctx.actor) for r in [a.picture, *a.material] if r]
+
+    def compute(progress):
+        if progress:
+            progress(0.05, f"drawing {method.label}")
+        image, _, info = _run(spec, a.size or None, "result")
+        lead = os.path.splitext(os.path.basename(sources[0].path))[0] if sources else "kept"
+        path = inputs.write(image, method.family, f"{lead}__{method.id.split('.')[-1]}",
+                            {"op": "alchemy make", "method": method.id, "sources": [s.ref for s in sources],
+                             "settings": settings})
+        if progress:
+            progress(1.0, "kept")
+        return {"path": path, "info": info, "image": image}
+
+    def record(tx, payload):
+        entry = _ledger.record(tx, payload["path"], op="alchemy make", args={**settings, "size": a.size},
+                               sources=[s.handle or s.ref for s in sources],
+                               derived_from=(sources[0].handle or sources[0].ref) if sources else None)
+        out = StepResult(**payload["info"], id=entry["handle"], path=payload["path"],
+                         withheld=ctx.actor == "agent" and not ctx.pixels)
+        if ctx.actor == "agent" and ctx.pixels:
+            out.attachments.append(Attachment(caption=entry["handle"], data=_jpeg(payload["image"], side=1024)))
+        return out
+
+    return run_effect(ctx, f"alchemy make {method.id}", compute, record, a.background)
 
 
 # ─────────────────────────── masks ───────────────────────────
@@ -552,7 +646,7 @@ class AlchemyRecipeSaveArgs(StepSettings):
     group: str = Field("mine", description="The group it is listed under.")
 
 
-@op("alchemy recipe save", "effect", AlchemyRecipeSaveArgs, RecipeShowResult,
+@op("alchemy recipe save", "write", AlchemyRecipeSaveArgs, RecipeShowResult,
     doc="""
     Keep a recipe of the person's own. It holds any subset of a step's settings
     under a name, listed with the built-in recipes. Settings come as for `alchemy
@@ -568,4 +662,5 @@ def _alchemy_recipe_save(a: AlchemyRecipeSaveArgs, ctx: Context) -> RecipeShowRe
     spec.pop("recipe", None)
     if not {k: v for k, v in spec.items() if k in recipes.SETTING_KEYS}:
         raise ValueError("A recipe needs at least one setting: a method, knobs, a mask or a finish.")
+    ctx.tx.touch(recipes.store_path())          # undoable like any other write
     return RecipeShowResult(recipe=RecipeInfo(**recipes.save(a.name, spec, a.doc, a.group).public()))

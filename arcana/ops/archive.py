@@ -51,7 +51,10 @@ def settings() -> dict:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    return {"pixels": bool(data.get("pixels", False)), "path": path}
+    collection = data.get("collection")
+    return {"pixels": bool(data.get("pixels", False)),
+            "collection": collection if isinstance(collection, str) and collection else None,
+            "path": path}
 
 
 def mode_line(cfg: dict | None = None) -> str:
@@ -357,3 +360,100 @@ def sheet(paths: list[str], numbers: list[int] | None = None, *, tile: int = SCA
     from .registry import Attachment
     data = _sheets.contact_sheet(paths, numbers, tile=tile, cols=cols, title=title)
     return Attachment(caption=caption or title or "contact sheet", data=data)
+
+
+# ─────────────────────────── items: handles, derived pictures, paths ───────────────────────────
+
+class Item(BaseModel):
+    """A picture an op was given, resolved to its file."""
+    ref: str                           # what the caller wrote
+    path: str
+    handle: str | None = None          # japan:1423 or out:3f9c1e
+    dataset: str | None = None
+    kind: str = "archive"              # archive, derived, generated, file
+    derived_from: str | None = None    # a handle, for derived pictures
+
+
+def is_path(ref: str) -> bool:
+    """A file path rather than a handle: handles never hold a slash."""
+    return "/" in ref or "\\" in ref
+
+
+def resolve_item(ref: str, actor: str = "cli") -> Item:
+    """
+    A picture reference to its file.
+
+    Handles (japan:1423) and ledger handles (out:3f9c1e) work for everyone. A
+    plain path works for the person and the terminal, which is how the app's
+    collection (a list of paths) reaches the board ops. An agent names
+    pictures by handle only (A6).
+    """
+    try:
+        from .. import ledger as _ledger
+    except ImportError:                               # pragma: no cover
+        import ledger as _ledger
+    ref = (ref or "").strip()
+    if ref.startswith(_ledger.PREFIX):
+        e = _ledger.get(ref)
+        if e is None:
+            raise ValueError(f"No derived picture called {ref}. `item show` takes out: handles "
+                             f"that colour transfer, style transfer and generate return.")
+        return Item(ref=ref, path=e["path"], handle=e["handle"], kind=e.get("kind", "derived"),
+                    derived_from=(e.get("sources") or [None])[0])
+    if is_path(ref):
+        if actor == "agent":
+            raise ValueError(f"Name pictures by handle (japan:1423), not by path. Got {ref!r}.")
+        found = handle_for_path(ref)
+        if found:
+            return Item(ref=ref, path=ref, handle=found, dataset=split_handle_ds(found))
+        e = _ledger.for_path(ref)
+        if e:
+            return Item(ref=ref, path=ref, handle=e["handle"], kind=e.get("kind", "derived"),
+                        derived_from=(e.get("sources") or [None])[0])
+        return Item(ref=ref, path=ref, kind="file")
+    ds_id, key = parse_handle(ref)
+    ds = open_dataset(ds_id)
+    p = ds.idx2path.get(key)
+    if p is None:
+        raise ValueError(f"Not in {ds_id}: {ref}.")
+    return Item(ref=ref, path=p, handle=handle(ds_id, key), dataset=ds_id)
+
+
+def split_handle_ds(h: str) -> str:
+    return h.rpartition(":")[0]
+
+
+_REVERSE: dict = {}
+
+
+def handle_for_path(p: str, prefer: str | None = None) -> str | None:
+    """
+    The handle of a file that some dataset indexed, or None.
+
+    Boards saved by the app hold paths only, so showing one to an agent needs
+    the way back. Each dataset's path-to-key map is built once and kept while
+    its index file is unchanged.
+    """
+    norm = os.path.normcase(os.path.abspath(p))
+    found = core.find_datasets()
+    order = sorted(found, key=lambda d: dataset_id(d["name"], d["modality"]) != prefer)
+    for d in order:
+        ds_id = dataset_id(d["name"], d["modality"])
+        ipath = core.index_path(d["name"], d["modality"])
+        try:
+            stamp = os.path.getmtime(ipath)
+        except OSError:
+            continue
+        cached = _REVERSE.get(ds_id)
+        if cached is None or cached[0] != stamp:
+            try:
+                ds = open_dataset(ds_id)
+            except Exception:
+                continue
+            cached = (stamp, {os.path.normcase(os.path.abspath(v)): k
+                              for k, v in ds.idx2path.items()})
+            _REVERSE[ds_id] = cached
+        key = cached[1].get(norm)
+        if key is not None:
+            return handle(ds_id, key)
+    return None

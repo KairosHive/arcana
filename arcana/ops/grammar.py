@@ -208,6 +208,21 @@ def _bool(op: Op, flag: str, raw: str) -> bool:
     raise Refusal(op.name, f"`--{flag}` is on or off, got {raw!r}.", help_text(op))
 
 
+def _coerce(spec: Spec, raw: str):
+    """
+    A word from the line, as the field's choices expect it.
+
+    Pydantic coerces "12" to an int field, but leaves "3" unequal to a choice
+    of the integer 3, so integer choices (--dims 2|3) are converted here.
+    """
+    if spec.choices and all(isinstance(c, int) and not isinstance(c, bool) for c in spec.choices):
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
+    return raw
+
+
 def parse_tokens(tokens: list[str]) -> Parsed:
     """Words (already split, as the CLI receives them) into an op and its args dict."""
     op, rest = resolve(list(tokens))
@@ -264,7 +279,7 @@ def parse_tokens(tokens: list[str]) -> Parsed:
                 refuse(f"`--{name}` needs a value ({spec.metavar}).")
             val, i = rest[i], i + 1
         if spec.shape == "list":
-            values.setdefault(spec.name, []).append(val)
+            values.setdefault(spec.name, []).append(_coerce(spec, val))
         elif spec.shape == "model_list":
             got = _json_arg(op, name, val)
             values.setdefault(spec.name, []).extend(got if isinstance(got, list) else [got])
@@ -273,7 +288,7 @@ def parse_tokens(tokens: list[str]) -> Parsed:
         else:
             if spec.name in values:
                 refuse(f"`--{name}` was given twice.")
-            values[spec.name] = val
+            values[spec.name] = _coerce(spec, val)
 
     # Bare words fill the positional fields in order; a list takes the rest.
     slots = sorted((s for s in fields if s.positional is not None), key=lambda s: s.positional)
@@ -378,7 +393,7 @@ def help_text(op: Op) -> str:
     """The op's help page, generated from its declaration."""
     lines = _wrap_terms(usage_terms(op), WIDTH)
     lines.append(f"({op.kind}" + (f", needs {', '.join(sorted(op.needs))}" if op.needs else "")
-                 + (f", for {', '.join(a for a in registry.ACTORS if a in op.actors)} only"
+                 + (f", {' and '.join(a for a in registry.ACTORS if a in op.actors)} only"
                     if op.actors != frozenset(registry.ACTORS) else "") + ")")
     lines.append("")
     for para in op.doc.split("\n\n"):
@@ -442,6 +457,17 @@ def _dataset_ids() -> list[str]:
     return [archive.dataset_id(d["name"], d["modality"]) for d in core.find_datasets()]
 
 
+def _board_ids() -> list[str]:
+    try:
+        from .. import boards as _boards
+    except ImportError:                              # pragma: no cover
+        import boards as _boards
+    return [b["slug"] for b in _boards.listing()]
+
+
+_COMPLETERS = {"dataset": _dataset_ids, "board": _board_ids}
+
+
 def complete(partial: str) -> list[str]:
     """
     Candidates for the word being typed at the end of `partial`.
@@ -481,8 +507,8 @@ def complete(partial: str) -> list[str]:
             if s.shape != "bool":
                 if s.choices:
                     return [str(c) for c in s.choices if str(c).startswith(current)]
-                if s.complete == "dataset":
-                    return [d for d in _dataset_ids() if d.startswith(current)]
+                if s.complete in _COMPLETERS:
+                    return [d for d in _COMPLETERS[s.complete]() if d.startswith(current)]
                 return []
     if current.startswith("-"):
         flags = []
@@ -495,8 +521,8 @@ def complete(partial: str) -> list[str]:
     # A bare word: the next positional, if it completes.
     used = sum(1 for w in rest if not w.startswith("--"))
     slots = sorted((s for s in fields if s.positional is not None), key=lambda s: s.positional)
-    if used < len(slots) and slots[used].complete == "dataset":
-        return [d for d in _dataset_ids() if d.startswith(current)]
+    if used < len(slots) and slots[used].complete in _COMPLETERS:
+        return [d for d in _COMPLETERS[slots[used].complete]() if d.startswith(current)]
     return []
 
 

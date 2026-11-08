@@ -2,7 +2,7 @@
   "mcpServers": {
     "arcana": {
       "command": "uv",
-      "args": ["run", "--extra", "agent", "arcana-mcp"]
+      "args": ["run", "arcana-mcp"]
     }
   }
 }

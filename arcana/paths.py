@@ -34,8 +34,9 @@ ENV_MEDIA_ROOTS = "ARCANA_MEDIA_ROOTS"
 # "boards" holds saved moodboards as JSON. They live here rather than in
 # browser localStorage so they survive clearing site data, and so two
 # machines sharing ARCANA_DATA_DIR share their boards along with datasets.
+# "state" holds the ops layer's undo history and version counter (state.py).
 _SUBDIRS = ("databases", "latents", "bundles", "output", "cache", "models",
-            "boards")
+            "boards", "state")
 
 # Legacy in-package locations, kept working for existing checkouts.
 _LEGACY = {
@@ -110,6 +111,43 @@ def ensure_dir(path: str) -> str:
             f"to a folder you can write to and restart."
         ) from e
     return path
+
+
+# ─────────────────────────── where outputs go ───────────────────────────
+# One layout for everything Arcana makes, grouped by where it came from:
+#
+#   output/search/<date> <prompt>/        pictures saved from a Prompt Search
+#   output/stories/<date> <title>/        a story's frames, its poetry in poetry/
+#   output/edited/<kind>/<date>/          pictures made from others: Alchemy's
+#                                         families (tokens, pixels, colour,
+#                                         generative), colour and style transfer
+#   output/generated/                     pictures generated from words
+#   output/collections/<name>/            copies of a collection, to hand on
+#   output/imports/                       pictures dropped into the app
+#   output/boards/, sheets/, luts/        boards as pages, contact sheets, LUTs
+#   output/ledger.json                    the record of every derived picture
+
+def output_dir(*parts: str) -> str:
+    """A folder under output/, created. `parts` come from code, never from a client
+    (a name a client gives goes through safe_join)."""
+    return ensure_dir(os.path.join(subdir("output"), *parts))
+
+
+def edited_dir(kind: str) -> str:
+    """Where pictures made from others go, one folder a day: output/edited/<kind>/<date>."""
+    import datetime
+
+    return output_dir("edited", kind, datetime.date.today().isoformat())
+
+
+def dated_name(text: str, limit: int = 60) -> str:
+    """'<date> <text>' as a folder name: today's date and the text without characters a
+    filesystem refuses."""
+    import datetime
+
+    keep = "".join(ch if ch.isalnum() or ch in " -_,." else " " for ch in str(text or ""))
+    words = " ".join(keep.split())[:limit].strip(" .")
+    return f"{datetime.date.today().isoformat()} {words}".strip()
 
 
 def listdir_safe(path: str) -> list[str]:

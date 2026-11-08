@@ -18,12 +18,14 @@ try:
     from . import models as _models
     from . import paths as _paths
     from . import db as _db
+    from . import ops as _ops
     from .jobs import MANAGER
     from . import gpu as _gpu
 except ImportError:                      # loose-script fallback
     import models as _models
     import paths as _paths
     import db as _db
+    import ops as _ops
     from jobs import MANAGER
     import gpu as _gpu
 
@@ -442,8 +444,32 @@ def layout() -> html.Div:
                                 "minHeight": "17px", "marginTop": "4px"}),
                 html.Div(id="dm-models"),
             ]),
+            # -- working with an agent ----------------------------------------
+            html.Details(style={**CARD, "marginBottom": "4px"}, children=[
+                html.Summary("Working with an agent", style={
+                    **SECTION_TITLE, "cursor": "pointer", "marginBottom": "0",
+                    "userSelect": "none"}),
+                html.Div("An agent such as Claude Code can search these datasets, build "
+                         "moodboards and recolour pictures with the same ops you have here. "
+                         "It changes only boards it made, and sees thumbnails only if you "
+                         "allow it in the Moodboard tab. To connect Claude Code, run:",
+                         style={**SECTION_HINT, "marginTop": "10px"}),
+                html.Pre(agent_command(), style={
+                    "fontSize": "12px", "color": INK, "backgroundColor": SURFACE_2,
+                    "padding": "8px 10px", "borderRadius": "6px", "whiteSpace": "pre-wrap",
+                    "wordBreak": "break-all", "margin": "6px 0 0"}),
+            ]),
         ],
     )
+
+
+def agent_command() -> str:
+    """The command that registers this Arcana with Claude Code, for this install."""
+    import sys
+    if getattr(sys, "frozen", False):
+        return f'claude mcp add arcana -- "{sys.executable}" --mcp'
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return f'claude mcp add arcana -- uv run --directory "{repo}" arcana-mcp'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -484,40 +510,9 @@ def next_name(folder: str, current_name: str | None, last_suggested: str | None)
     return None
 
 
-def folder_vocabulary(root: str, limit: int = 60) -> list[str]:
-    """
-    Subfolder names, cleaned up, for use as a label vocabulary.
-
-    Arcana names a cluster by finding the nearest word in a fixed 100-word list
-    (Portrait, Street, Sunset...). That list knows nothing about the pictures:
-    a library of circuit boards gets named out of a vocabulary with no word for
-    circuit board. Most people have already written a better vocabulary without
-    realising -- it is their folder tree.
-
-    Only directories that actually contain media are counted, so an "originals"
-    or "export" wrapper folder does not become a label.
-    """
-    if not root or not os.path.isdir(root):
-        return []
-    words: list[str] = []
-    for entry in sorted(os.listdir(root)):
-        sub = os.path.join(root, entry)
-        if not os.path.isdir(sub):
-            continue
-        has_media = False
-        for _r, _d, files in os.walk(sub):
-            if any(os.path.splitext(f)[1].lower() in IMAGE_EXTS | AUDIO_EXTS
-                   for f in files):
-                has_media = True
-                break
-        if not has_media:
-            continue
-        cleaned = " ".join(w for w in entry.replace("_", " ").replace("-", " ").split())
-        if cleaned and cleaned.lower() not in {w.lower() for w in words}:
-            words.append(cleaned)
-        if len(words) >= limit:
-            break
-    return words
+# Moved to db.py, beside the media extensions it reads, so the dataset ops
+# reach it without loading the app.
+folder_vocabulary = _db.folder_vocabulary
 
 
 def scan_both(folder: str, cap: int = 200_000, keep: int = 40) -> dict:
@@ -965,13 +960,11 @@ def register(app) -> None:
                  "padding": "12px 14px", "backgroundColor": f"{BAD}0f"}
         if not pending:
             return "", hidden
+        ds_id = (pending["name"] if pending["modality"] == "image"
+                 else f"{pending['name']}@{pending['modality']}")
         try:
-            from .legacy import delete_dataset
-        except ImportError:
-            from legacy import delete_dataset
-        try:
-            preview = delete_dataset(pending["name"], pending["modality"],
-                                     dry_run=True)
+            preview = _ops.call("dataset delete", {"dataset": ds_id, "dry_run": True},
+                                actor="person").model_dump()
         except Exception as e:
             return (html.Div(f"Could not inspect that dataset: {e}",
                              style={"fontSize": "12px", "color": BAD}), shown)
@@ -1001,11 +994,12 @@ def register(app) -> None:
     def _do_delete(n, pending, token):
         if not n or not pending:
             return no_update, no_update, no_update
+        ds_id = (pending["name"] if pending["modality"] == "image"
+                 else f"{pending['name']}@{pending['modality']}")
         try:
-            from .legacy import delete_dataset
-        except ImportError:
-            from legacy import delete_dataset
-        res = delete_dataset(pending["name"], pending["modality"])
+            res = _ops.call("dataset delete", {"dataset": ds_id}, actor="person").model_dump()
+        except _ops.Refusal as e:
+            return no_update, no_update, html.Span(e.reason, style={"color": BAD})
         invalidate_dataset_cache()
         if res["failed"]:
             msg = html.Span(
@@ -1287,39 +1281,17 @@ def register(app) -> None:
         if MANAGER.active():
             return err("Something is already running. Wait for it, or cancel it.")
 
-        modality = modality or "image"
         feats = set(features or [])
-        feature_arg = ",".join(["clip"] + sorted(feats & {"palette", "style"}))
-
-        # _read_label_list takes either a path or an inline comma list, so a
-        # vocabulary built from folder names needs no temporary file.
-        label_src = None                       # None -> the built-in list
-        if vocab == "folders":
-            words = folder_vocabulary(folder)
-            label_src = ",".join(words) if words else None
-        elif vocab == "none":
-            label_src = ""                     # empty -> clusters stay numbered
-
-        def job(handle):
-            handle.update(fraction=0.0, message="Preparing")
-            _models.ensure_model(model_id, handle)
-            # Cluster names come from label embeddings in this encoder's space,
-            # so build them before the long part rather than failing after it.
-            if vocab != "none":
-                _db.warm_label_cache(model_id, modality)
-            handle.update(fraction=0.02, message="Indexing")
-            return _db.index_dataset(
-                folder, name, modality=modality, model_id=model_id,
-                features=feature_arg, thumbnails=("thumbnails" in feats),
-                k=int(k or 0), labels=label_src,
-                progress=lambda f, m, d, t: handle.update(
-                    fraction=f, message=(m or None),
-                    detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),
-                should_cancel=lambda: handle.cancelled,
-            )
-
-        jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
-        return jid, False, html.Span("Started.", style={"color": _ui.OK})
+        try:
+            res = _ops.call("dataset create", {
+                "name": name, "folder": folder, "modality": modality or "image",
+                "model": model_id or None, "feature": sorted(feats & {"palette", "style"}),
+                "thumbnails": "thumbnails" in feats, "k": int(k or 0),
+                "labels": vocab if vocab in ("folders", "none") else "builtin",
+                "background": True}, actor="person")
+        except _ops.Refusal as e:
+            return err(e.reason)
+        return res.job, False, html.Span("Started.", style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),
@@ -1347,35 +1319,14 @@ def register(app) -> None:
                 style={"color": _ui.BAD})
 
         name, _, modality = str(trig["index"]).partition("::")
-        modality = modality or "image"
+        ds_id = name if (modality or "image") == "image" else f"{name}@{modality}"
         try:
-            from .relocate import dataset_health
-        except ImportError:
-            from relocate import dataset_health
-        root = (dataset_health(name, modality, sample=1) or {}).get("root") or ""
-        if not root or not os.path.isdir(root):
-            return no_update, no_update, html.Span(
-                f"Cannot find {root or 'the folder'} for {name}. If the files moved, "
-                f"relocate the dataset first.", style={"color": _ui.BAD})
-
-        def job(handle):
-            handle.update(fraction=0.0, message="Looking for new files")
-            result = _db.extend_dataset(
-                root, name, modality=modality,
-                progress=lambda f, m, d, t: handle.update(
-                    fraction=f, message=(m or None),
-                    detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),
-                should_cancel=lambda: handle.cancelled,
-            )
-            added = result.get("added", 0)
-            handle.update(fraction=1.0,
-                          message=(f"Added {added:,} file(s)" if added
-                                   else "Nothing new to add"))
-            return result
-
-        jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
-        return jid, False, html.Span(f"Checking {root} for new files…",
-                                     style={"color": _ui.OK})
+            res = _ops.call("dataset extend", {"dataset": ds_id, "background": True},
+                            actor="person")
+        except _ops.Refusal as e:
+            return no_update, no_update, html.Span(e.reason, style={"color": _ui.BAD})
+        return res.job, False, html.Span(f"Checking {name}'s folder for new files…",
+                                         style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-rework-panel", "style"),
@@ -1457,48 +1408,17 @@ def register(app) -> None:
                 style={"color": _ui.BAD})
 
         name, _, modality = str(pending).partition("::")
-        modality = modality or "image"
+        ds_id = name if (modality or "image") == "image" else f"{name}@{modality}"
         feats = set(features or [])
-        feature_arg = ",".join(["clip"] + sorted(feats & {"palette", "style"}))
-
         try:
-            from .relocate import dataset_health
-        except ImportError:
-            from relocate import dataset_health
-        health = dataset_health(name, modality, sample=40) or {}
-        root = health.get("root") or ""
-        if health.get("missing"):
-            # Reworking reuses the recorded paths without globbing, so a moved
-            # collection would be laid out from paths pointing at nothing.
-            return no_update, no_update, html.Span(
-                f"{health['missing']:,} of {name}'s files are not where the index "
-                f"expects them. Relocate it first.", style={"color": _ui.BAD})
-
-        label_src = None                       # None -> the built-in word list
-        if vocab == "folders":
-            words = folder_vocabulary(root) if root else []
-            label_src = ",".join(words) if words else None
-        elif vocab == "none":
-            label_src = ""                     # empty -> groups stay numbered
-
-        def job(handle):
-            handle.update(fraction=0.0, message="Reading the index")
-            result = _db.rework_dataset(
-                name, modality=modality, n_components=int(dims or 2),
-                features=feature_arg, thumbnails=("thumbnails" in feats),
-                k=int(k or 0), labels=label_src,
-                progress=lambda f, m, d, t: handle.update(
-                    fraction=f, message=(m or None),
-                    detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),
-                should_cancel=lambda: handle.cancelled,
-            )
-            handle.update(fraction=1.0,
-                          message=f"Reworked {result.get('n_items', 0):,} items")
-            return result
-
-        jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
-        return jid, False, html.Span(f"Reworking {name}…",
-                                     style={"color": _ui.OK})
+            res = _ops.call("dataset finish", {
+                "dataset": ds_id, "k": int(k or 0), "dims": int(dims or 2),
+                "labels": vocab if vocab in ("folders", "none") else "builtin",
+                "feature": sorted(feats & {"palette", "style"}),
+                "thumbnails": "thumbnails" in feats, "background": True}, actor="person")
+        except _ops.Refusal as e:
+            return no_update, no_update, html.Span(e.reason, style={"color": _ui.BAD})
+        return res.job, False, html.Span(f"Reworking {name}…", style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),
@@ -1524,23 +1444,13 @@ def register(app) -> None:
                 style={"color": _ui.BAD})
 
         name, _, modality = str(trig["index"]).partition("::")
-        modality = modality or "image"
-
-        def job(handle):
-            handle.update(fraction=0.0, message="Reading the index")
-            result = _db.finish_dataset(
-                name, modality=modality,
-                progress=lambda f, m, d, t: handle.update(
-                    fraction=f, message=(m or None),
-                    detail=(f"{d:,} of {t:,}" if t else ""), done=d, total=t),
-                should_cancel=lambda: handle.cancelled,
-            )
-            handle.update(fraction=1.0,
-                          message=f"Mapped {result.get('n_items', 0):,} items")
-            return result
-
-        jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
-        return jid, False, html.Span(
+        ds_id = name if (modality or "image") == "image" else f"{name}@{modality}"
+        try:
+            res = _ops.call("dataset finish", {"dataset": ds_id, "background": True},
+                            actor="person")
+        except _ops.Refusal as e:
+            return no_update, no_update, html.Span(e.reason, style={"color": _ui.BAD})
+        return res.job, False, html.Span(
             f"Laying out {name} from the index it already has…",
             style={"color": _ui.OK})
 
@@ -1568,34 +1478,14 @@ def register(app) -> None:
                 style={"color": _ui.BAD})
 
         name, _, modality = str(trig["index"]).partition("::")
-        modality = modality or "image"
-
-        def job(handle):
-            handle.update(fraction=0.0, message="Reading sidecars")
-            summary = {}
-            # Every 2-D and 3-D layout of this dataset holds its own copy of the
-            # columns, so refreshing one and not the other would leave the two
-            # views disagreeing about which pictures are worth looking at.
-            for n_components in (2, 3):
-                try:
-                    summary = _db.refresh_marks(
-                        name, modality=modality, n_components=n_components,
-                        progress=lambda d, t: handle.update(
-                            fraction=(d / t if t else 0.0),
-                            detail=f"{d:,} of {t:,}", done=d, total=t),
-                    ) or summary
-                except FileNotFoundError:
-                    continue
-            stars = summary.get("stars") or {}
-            rated = sum(v for k, v in stars.items() if k)
-            handle.update(fraction=1.0,
-                          message=(f"{summary.get('sidecars', 0):,} sidecars, "
-                                   f"{rated:,} rated"))
-            return summary
-
-        jid = MANAGER.submit(job, kind="index", label="Reading marks for " + name)
-        return jid, False, html.Span(f"Re-reading ON1 marks for {name}…",
-                                     style={"color": _ui.OK})
+        ds_id = name if (modality or "image") == "image" else f"{name}@{modality}"
+        try:
+            res = _ops.call("dataset marks", {"dataset": ds_id, "background": True},
+                            actor="person")
+        except _ops.Refusal as e:
+            return no_update, no_update, html.Span(e.reason, style={"color": _ui.BAD})
+        return res.job, False, html.Span(f"Re-reading ON1 marks for {name}…",
+                                         style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),
@@ -1622,18 +1512,14 @@ def register(app) -> None:
                 "Something else is running -- wait for it to finish.",
                 style={"color": WARN})
 
-        def job(handle):
-            _models.ensure_model(model_id, handle)
-            # Every encoder needs its own label matrix, audio included. This was
-            # gated on modality == "image", so CLAP's labels were never built
-            # from here even though assets/labels_audio.txt exists.
-            handle.update(fraction=0.9, message="Preparing labels")
-            _db.warm_label_cache(model_id, m.modality)
-            handle.update(fraction=1.0, message=m.label + " is ready")
-            return {"model_id": model_id}
-
-        jid = MANAGER.submit(job, kind="download", label="Getting " + m.label)
-        return jid, False, html.Span(f"Preparing {m.label}...")
+        try:
+            res = _ops.call("model download", {"model": model_id, "background": True},
+                            actor="person")
+        except _ops.Refusal as e:
+            return no_update, no_update, html.Span(e.reason, style={"color": BAD})
+        if not hasattr(res, "job"):
+            return no_update, no_update, html.Span(f"{m.label} is ready.")
+        return res.job, False, html.Span(f"Preparing {m.label}...")
 
     @app.callback(
         [Output("dm-job-card", "style"), Output("dm-job-title", "children"),

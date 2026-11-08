@@ -102,8 +102,11 @@ def _cast():
             html.Div("Click a picture to put it on the timeline at the playhead. A picture on the "
                      "timeline is dragged along it to change when the film passes it.",
                      style=_ui.hint(fontSize="11.5px")),
+            # A height of its own: when the subtab wraps in a narrow window, the column's height is
+            # its content's, so a grid that only filled the column would shrink to nothing.
             html.Div(id="film-cast", style={"display": "grid", "gridTemplateColumns": "repeat(auto-fill, minmax(70px, 1fr))",
-                                            "gap": "6px", "alignContent": "start", "flex": "1 1 0", "minHeight": "0",
+                                            "gap": "6px", "alignContent": "start", "flex": "1 1 auto",
+                                            "minHeight": "160px", "maxHeight": "62vh",
                                             "overflowY": "auto", "padding": "8px 2px"}),
         ],
         style={"flex": "0 0 220px", "minWidth": "0", "minHeight": "0", "display": "flex", "flexDirection": "column",
@@ -128,7 +131,7 @@ def _stage():
             html.Div(id="film-timeline", className="film-timeline", tabIndex="0"),
             html.Div(id="film-status", style=_ui.hint(fontSize="12px", marginTop="6px", maxWidth="none", color=_ui.INK)),
         ],
-        style={"flex": "1 1 auto", "minWidth": "0", "minHeight": "0", "overflowY": "auto",
+        style={"flex": "1 1 460px", "minWidth": "min(460px, 100%)", "minHeight": "0",
                **_ui.card(padding="12px", marginBottom="0")},
     )
 
@@ -219,7 +222,7 @@ def _settings():
                            style={"display": "none", "width": "100%", "marginTop": "8px", "borderRadius": "6px"}),
             ], note="save, open, video"),
         ],
-        style={"flex": "0 0 330px", "minWidth": "0", "minHeight": "0", "overflowY": "auto", "paddingRight": "4px"},
+        style={"flex": "0 0 330px", "maxWidth": "100%", "minWidth": "0", "minHeight": "0", "paddingRight": "4px"},
     )
 
 

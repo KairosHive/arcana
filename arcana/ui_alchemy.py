@@ -65,6 +65,8 @@ SLIDER_TIP = {"placement": "bottom", "always_visible": False}
 SMALL = {"fontSize": "12px"}
 PANEL_VISIBLE = {"display": "flex", "flexDirection": "column", "flex": "1 1 auto", "minWidth": "0", "minHeight": "0"}
 VIEW = {"display": "flex", "gap": "14px", "flex": "1 1 auto", "minWidth": "0", "minHeight": "0"}
+# The Video subtab wraps: in a narrow window its settings drop below the player rather than squeeze it.
+VIDEO_VIEW = {**VIEW, "flexWrap": "wrap", "alignContent": "flex-start", "overflowY": "auto"}
 
 
 # ─────────────────────────── building blocks ───────────────────────────
@@ -432,7 +434,7 @@ def register(app) -> None:
     @app.callback(Output("alc-image-view", "style"), Output("alc-video-view", "style"), Input("alc-subtab", "value"))
     def _subtab(sub):
         hidden = {"display": "none"}
-        return (hidden, VIEW) if sub == "video" else (VIEW, hidden)
+        return (hidden, VIDEO_VIEW) if sub == "video" else (VIEW, hidden)
 
     @app.callback(Output("alc-cast", "children"), Output("alc-slots", "children"),
                   *[Output(f"alc-w-wrap-{i}", "style") for i in (1, 2, 3)],

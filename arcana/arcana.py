@@ -45,6 +45,7 @@ try:
     # tests/test_parity.py keeps boards.py and the transfer modules out of here.
     from . import ops as _ops
     from . import server as _ops_server
+    from . import ui_agent as _ui_agent
     from . import state as _state
     from . import ledger as _ledger
 except ImportError:
@@ -55,6 +56,7 @@ except ImportError:
     import core as _core
     import ops as _ops
     import server as _ops_server
+    import ui_agent as _ui_agent
     import state as _state
     import ledger as _ledger
 
@@ -1327,6 +1329,9 @@ app.layout = html.Div(
                         {"label": "Prompt Search", "value": "prompt"},
                         {"label": "Generate Story", "value": "story"},
                         {"label": "Moodboard", "value": "moodboard"},
+                        # An agent's own command line, running here in the
+                        # Arcana workspace with Arcana's tools (ui_agent.py).
+                        {"label": "Agent", "value": "agent"},
                     ],
                     value="datasets",
                     # Dash 4 gives labels its own dark design-token colour, which is
@@ -1381,6 +1386,7 @@ app.layout = html.Div(
         ),
 
         _ui_datasets.layout(),
+        _ui_agent.layout(),
 
         dcc.Store(id="story-cache", storage_type="memory"),
         # Clientside callbacks need somewhere to return to; nothing reads this.
@@ -2821,7 +2827,7 @@ def toggle_inputs(mode, tool):
             results_list if tool == "search" else hidden,
             hidden if tool == "search" else transfer_stage,
         )
-    else:  # datasets
+    else:  # datasets, or the agent tab, which draws its own panel (ui_agent.py)
         # The manager owns the whole width: there is no scatter to show, and
         # nothing here searches.
         return (
@@ -2841,7 +2847,8 @@ def toggle_inputs(mode, tool):
             # it has to claim the leftover height and scroll itself -- with a
             # bare display:block its dataset list was clipped, not scrollable.
             {"display": "block", "flex": "1", "minHeight": "0",
-             "overflowY": "auto", "overflowX": "hidden"},
+             "overflowY": "auto", "overflowX": "hidden"} if mode == "datasets"
+            else {"display": "none"},
             main_row_hidden,
             rail_hidden,
             hidden,
@@ -5663,6 +5670,7 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
 # The dataset manager registers its own callbacks; done here so the layout
 # it refers to already exists.
 _ui_datasets.register(app)
+_ui_agent.register(app)
 
 
 def main():

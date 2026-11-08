@@ -111,6 +111,8 @@ hiddenimports = [
     "arcana.compose", "arcana.aliases", "arcana.generate", "arcana.transfer_methods",
     "arcana.classic_transfer", "arcana.mcp_server", "arcana.sheets", "arcana.lut",
     "arcana.style_transfer", "arcana.modflows_net", "arcana.boards", "arcana.core",
+    # The Agent tab: a terminal on an agent's command line, in the workspace.
+    "arcana.agent_term", "arcana.ui_agent", "arcana.workspace", "winpty",
     # scientific bits reached only from inside functions
     "sklearn.decomposition", "sklearn.manifold", "sklearn.cluster", "sklearn.metrics",
     "scipy.special.cython_special",

@@ -173,7 +173,12 @@ def main(argv=None) -> int:
 
     from . import server
     remote = None if local else server.find()
-    ctx = ops.context("cli", sheets=sheets)
+    # An agent running in the app's Agent tab uses this command as itself:
+    # the tab's terminal sets ARCANA_ACTOR=agent, so the agent's rules (its own
+    # boards only, no deletes) hold here as they do over MCP. Nothing can claim
+    # to be the person from a terminal.
+    actor = "agent" if os.environ.get("ARCANA_ACTOR") == "agent" else "cli"
+    ctx = ops.context(actor, sheets=sheets)
 
     if batch_file is not None:
         try:
@@ -186,7 +191,7 @@ def main(argv=None) -> int:
             _print(f"Could not read {batch_file}: {e.strerror}.", sys.stderr)
             return 2
         if remote:
-            return _print_remote(server.remote_exec(remote, lines, "cli", sheets), as_json, False)
+            return _print_remote(server.remote_exec(remote, lines, actor, sheets), as_json, False)
         batch = ops.exec_lines(lines, ctx=ctx)
         for step in batch.steps:
             if step.result is not None and (sheets or step.op == "item sheet"):
@@ -204,7 +209,7 @@ def main(argv=None) -> int:
             return 0
         if remote:
             line = ops.grammar.join(argv)
-            return _print_remote(server.remote_exec(remote, [line], "cli", sheets), as_json, True)
+            return _print_remote(server.remote_exec(remote, [line], actor, sheets), as_json, True)
         result = ops.call(parsed.op.name, parsed.args, ctx=ctx, label=ops.grammar.join(argv))
     except ops.Refusal as e:
         if as_json:

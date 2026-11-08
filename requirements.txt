@@ -70,3 +70,9 @@ pydantic>=2.6,<3
 # MIT, pure Python and small. Shipped in the installer since P5 of OPS_PLAN.md,
 # so the installed app is an agent's server too.
 mcp>=1.10
+
+# --- The Agent tab's terminal (arcana/agent_term.py) ---
+# A pseudo-terminal, so an agent's command line (Claude Code) runs inside the
+# app as it would in a terminal. pywinpty is MIT, ptyprocess ISC.
+pywinpty>=2.0; sys_platform == "win32"
+ptyprocess>=0.7; sys_platform != "win32"

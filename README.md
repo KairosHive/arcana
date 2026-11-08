@@ -144,7 +144,14 @@ instead and nothing leaves at all.
 
 ## Working with an agent
 
-Arcana offers your archive to an AI agent over MCP, as one tool that takes the
+The **Agent** tab runs an agent inside Arcana: Claude Code, or another agent
+command line found on your machine, in a terminal in the app. It works in the
+Arcana workspace, a folder beside Arcana's outputs, where it finds Arcana's
+tools and the moodboard, board-design and harmonize skills already set up.
+Close the tab and it keeps running; open it again and its session is still
+there. Add other agents in `agents.json` in Arcana's data folder.
+
+Arcana also offers your archive to an AI agent outside the app over MCP, as one tool that takes the
 same op lines you type after `arcana`. An agent can survey a dataset, search it
 for several ideas at once, build a moodboard with sections, notes and a
 palette, recolour or restyle pictures, generate the odd missing picture, and

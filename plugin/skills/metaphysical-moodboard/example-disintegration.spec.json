@@ -1,0 +1,553 @@
+{
+ "title": "Disintegration",
+ "description": "A metaphysical moodboard following the dissolution of the elements, with photographs from the textures archive and fragments from Artaud, the Bardo Thödol, Baudelaire, Dōgen, Rilke, the Heart Sutra and Ikkyū.",
+ "lang": "en",
+ "images": "C:/Users/skite/AppData/Local/Arcana/output/moodboards/disintegration",
+ "out": "C:/Users/skite/AppData/Local/Arcana/output/boards/disintegration.page.html",
+ "max_side": 1500,
+ "quality": 76,
+ "theme": {
+  "force": "light",
+  "paper": "#ebe9e4",
+  "ink": "#3b3935",
+  "ink_faint": "#8f8b84"
+ },
+ "spreads": [
+  {
+   "id": "title",
+   "label": "",
+   "decay": 0,
+   "items": [
+    {
+     "type": "image",
+     "src": "DSC09783.JPG",
+     "x": 150,
+     "y": 0,
+     "w": 147,
+     "h": 210,
+     "trace": true,
+     "opacity": 0.1
+    },
+    {
+     "type": "text",
+     "cls": "title",
+     "lines": [
+      "disintegration"
+     ],
+     "x": 30,
+     "y": 112,
+     "w": 150,
+     "size": 9
+    },
+    {
+     "type": "text",
+     "cls": "small",
+     "lang": "fr",
+     "lines": [
+      "Toutes ces pages traînent comme des glaçons dans l’esprit."
+     ],
+     "x": 31,
+     "y": 136,
+     "w": 160,
+     "size": 3.6,
+     "tr": [
+      "All these pages drift like shards of ice in the mind."
+     ],
+     "cite": "Antonin Artaud · L’Ombilic des limbes · 1925"
+    },
+    {
+     "type": "mark",
+     "text": "a metaphysical moodboard · textures archive · after the Bardo Thödol",
+     "x": 31,
+     "y": 186,
+     "w": 200
+    }
+   ]
+  },
+  {
+   "id": "earth",
+   "label": "i · earth sinks into water",
+   "decay": 0.05,
+   "items": [
+    {
+     "type": "image",
+     "src": "DSC00110.JPG",
+     "x": 22,
+     "y": 26,
+     "w": 116,
+     "h": 158,
+     "fade": 0.08
+    },
+    {
+     "type": "image",
+     "src": "DSC09320.JPG",
+     "x": 176,
+     "y": 26,
+     "w": 64,
+     "h": 84,
+     "fade": 0.12
+    },
+    {
+     "type": "image",
+     "src": "DSC08914.JPG",
+     "x": 246,
+     "y": 92,
+     "w": 30,
+     "h": 20,
+     "fade": 0.2
+    },
+    {
+     "type": "text",
+     "lang": "fr",
+     "lines": [
+      "Sous cette croûte d’os et de peau,",
+      "qui est ma tête,",
+      "il y a une constance d’angoisses"
+     ],
+     "x": 176,
+     "y": 118,
+     "w": 104,
+     "size": 3.9,
+     "tr": [
+      "Under this crust of bone and skin, which is my head,",
+      "there is a constancy of anguish"
+     ],
+     "cite": "Antonin Artaud · Le Pèse-nerfs · 1925"
+    },
+    {
+     "type": "text",
+     "cls": "small",
+     "lines": [
+      "Now the symptoms of earth sinking into water are come."
+     ],
+     "x": 22,
+     "y": 190,
+     "w": 116,
+     "size": 3.0,
+     "decay": 0.55
+    },
+    {
+     "type": "mark",
+     "text": "i",
+     "x": 22,
+     "y": 14,
+     "w": 20
+    }
+   ]
+  },
+  {
+   "id": "water",
+   "label": "ii · water sinks into fire",
+   "decay": 0.2,
+   "items": [
+    {
+     "type": "image",
+     "src": "DSC00110.JPG",
+     "x": 18,
+     "y": 18,
+     "w": 92,
+     "h": 125,
+     "trace": true
+    },
+    {
+     "type": "image",
+     "src": "DSC00124.JPG",
+     "x": 118,
+     "y": 18,
+     "w": 156,
+     "h": 172,
+     "fade": 0.22
+    },
+    {
+     "type": "image",
+     "src": "DSC00637.JPG",
+     "x": 26,
+     "y": 136,
+     "w": 62,
+     "h": 42,
+     "fade": 0.3
+    },
+    {
+     "type": "image",
+     "src": "DSC09285.JPG",
+     "x": 92,
+     "y": 160,
+     "w": 20,
+     "h": 20,
+     "fade": 0.4
+    },
+    {
+     "type": "text",
+     "lang": "fr",
+     "ghost": true,
+     "lines": [
+      "Les formes [[s’effaçaient]] et n’étaient",
+      "plus qu’un rêve,",
+      "Une ébauche lente à venir"
+     ],
+     "x": 26,
+     "y": 34,
+     "w": 90,
+     "size": 3.9,
+     "tr": [
+      "The forms were fading, no more than a dream,",
+      "a sketch slow to come"
+     ],
+     "cite": "Charles Baudelaire · Une charogne · 1857"
+    },
+    {
+     "type": "text",
+     "cls": "small",
+     "lines": [
+      "As a lump of salt, when thrown into water,",
+      "becomes [[dissolved]] into water"
+     ],
+     "x": 26,
+     "y": 104,
+     "w": 80,
+     "size": 3.0,
+     "decay": 0.7,
+     "cite": "Bṛhadāraṇyaka Upaniṣad II.4.12"
+    },
+    {
+     "type": "mark",
+     "text": "ii",
+     "x": 26,
+     "y": 14,
+     "w": 20
+    }
+   ]
+  },
+  {
+   "id": "fire",
+   "label": "iii · fire sinks into air",
+   "decay": 0.36,
+   "items": [
+    {
+     "type": "image",
+     "src": "DSC00124.JPG",
+     "x": 190,
+     "y": 0,
+     "w": 107,
+     "h": 118,
+     "trace": true
+    },
+    {
+     "type": "image",
+     "src": "DSC01054.JPG",
+     "x": 38,
+     "y": 40,
+     "w": 104,
+     "h": 126,
+     "fade": 0.32
+    },
+    {
+     "type": "image",
+     "src": "DSC00076.JPG",
+     "x": 168,
+     "y": 128,
+     "w": 40,
+     "h": 40,
+     "fade": 0.4
+    },
+    {
+     "type": "text",
+     "lang": "ja",
+     "lines": [
+      "たき木、はいとなる、",
+      "さらにかへりてたき木となるべきにあらず。"
+     ],
+     "x": 168,
+     "y": 48,
+     "w": 106,
+     "size": 3.6,
+     "tr": [
+      "Firewood becomes ash.",
+      "It cannot return and become firewood again."
+     ],
+     "cite": "Dōgen · Shōbōgenzō, Genjōkōan · 1233"
+    },
+    {
+     "type": "text",
+     "cls": "small",
+     "lines": [
+      "a feeling as though the body were being [[blown to atoms]]"
+     ],
+     "x": 214,
+     "y": 156,
+     "w": 64,
+     "size": 3.0,
+     "decay": 0.7
+    },
+    {
+     "type": "mark",
+     "text": "iii",
+     "x": 38,
+     "y": 28,
+     "w": 20
+    }
+   ]
+  },
+  {
+   "id": "air",
+   "label": "iv · air sinks into consciousness",
+   "decay": 0.52,
+   "items": [
+    {
+     "type": "image",
+     "src": "DSC08593.JPG",
+     "x": 0,
+     "y": 0,
+     "w": 297,
+     "h": 210,
+     "decay": 0.85,
+     "opacity": 0.22,
+     "fade": 0.6
+    },
+    {
+     "type": "image",
+     "src": "DSC01054.JPG",
+     "x": 30,
+     "y": 30,
+     "w": 70,
+     "h": 84,
+     "trace": true
+    },
+    {
+     "type": "image",
+     "src": "DSC00320.JPG",
+     "x": 152,
+     "y": 34,
+     "w": 112,
+     "h": 96,
+     "fade": 0.55
+    },
+    {
+     "type": "image",
+     "src": "DSC08428.JPG",
+     "x": 44,
+     "y": 128,
+     "w": 46,
+     "h": 46,
+     "fade": 0.5
+    },
+    {
+     "type": "text",
+     "lang": "de",
+     "ghost": true,
+     "lines": [
+      "Die Blätter fallen, fallen wie von weit,",
+      "als welkten in den Himmeln ferne Gärten"
+     ],
+     "x": 40,
+     "y": 42,
+     "w": 106,
+     "size": 3.9,
+     "tr": [
+      "The leaves are falling, falling as from far away,",
+      "as if distant gardens withered in the skies"
+     ],
+     "cite": "Rainer Maria Rilke · Herbst · 1902"
+    },
+    {
+     "type": "text",
+     "cls": "small",
+     "lang": "fr",
+     "lines": [
+      "Les mots [[pourrissent]] à l’appel inconscient du cerveau"
+     ],
+     "x": 152,
+     "y": 148,
+     "w": 112,
+     "size": 3.0,
+     "decay": 0.75
+    },
+    {
+     "type": "mark",
+     "text": "iv",
+     "x": 40,
+     "y": 30,
+     "w": 20
+    }
+   ]
+  },
+  {
+   "id": "light",
+   "label": "v · the clear light",
+   "decay": 0.76,
+   "ground": "#f1f0ec",
+   "items": [
+    {
+     "type": "image",
+     "src": "DSC01089.JPG",
+     "x": 40,
+     "y": 20,
+     "w": 220,
+     "h": 150,
+     "trace": true
+    },
+    {
+     "type": "text",
+     "lang": "zh",
+     "lines": [
+      "色即是空　空即是色"
+     ],
+     "x": 28,
+     "y": 70,
+     "w": 241,
+     "size": 15,
+     "align": "center",
+     "decay": 0.97,
+     "opacity": 0.16
+    },
+    {
+     "type": "image",
+     "src": "DSC09265.JPG",
+     "x": 70,
+     "y": 40,
+     "w": 160,
+     "h": 100,
+     "fade": 0.75
+    },
+    {
+     "type": "image",
+     "src": "DSC00589.JPG",
+     "x": 238,
+     "y": 150,
+     "w": 28,
+     "h": 20,
+     "fade": 0.5
+    },
+    {
+     "type": "text",
+     "ghost": true,
+     "lines": [
+      "thy present intellect, in real nature void,",
+      "not formed into anything as regards characteristics or colour,",
+      "naturally void, is the very Reality"
+     ],
+     "x": 58,
+     "y": 152,
+     "w": 182,
+     "size": 3.4,
+     "align": "center",
+     "decay": 0.55,
+     "cite": "Bardo Thödol · trans. Kazi Dawa-Samdup and W. Y. Evans-Wentz · 1927"
+    }
+   ]
+  },
+  {
+   "id": "void",
+   "label": "vi",
+   "decay": 0.9,
+   "ground": "#15120f",
+   "dark": true,
+   "items": [
+    {
+     "type": "image",
+     "src": "DSC00110.JPG",
+     "x": 100,
+     "y": 30,
+     "w": 97,
+     "h": 132,
+     "trace": true,
+     "opacity": 0.05
+    },
+    {
+     "type": "image",
+     "src": "DSC09971.JPG",
+     "x": 132,
+     "y": 66,
+     "w": 33,
+     "h": 44,
+     "decay": 0.3,
+     "fade": 0.3
+    },
+    {
+     "type": "text",
+     "lines": [
+      "But when is it not a dream?",
+      "Who is not a skeleton?"
+     ],
+     "x": 88,
+     "y": 146,
+     "w": 121,
+     "size": 3.4,
+     "align": "center",
+     "decay": 0.25,
+     "cite": "Ikkyū · Gaikotsu · 1457"
+    },
+    {
+     "type": "text",
+     "cls": "small",
+     "lang": "fr",
+     "lines": [
+      "[[Toutes ces]] pages [[traînent comme des]] glaçons [[dans l’esprit]]"
+     ],
+     "x": 88,
+     "y": 186,
+     "w": 121,
+     "size": 3.0,
+     "align": "center",
+     "decay": 0.8
+    }
+   ]
+  },
+  {
+   "id": "colophon",
+   "label": "",
+   "decay": 0,
+   "items": [
+    {
+     "type": "mark",
+     "text": "colophon",
+     "x": 30,
+     "y": 26,
+     "w": 100
+    },
+    {
+     "type": "text",
+     "lines": [
+      "Structure after the dissolution of the elements in the Bardo Thödol. Each spread is one stage, and the page decays as it goes.",
+      "Photographs from the person’s textures archive, handles textures:41 · 548 · 434 · 46 · 141 · 526 · 238 · 28 · 285 · 67 · 318 · 511 · 251 · 104 · 618 · 582."
+     ],
+     "x": 30,
+     "y": 36,
+     "w": 237,
+     "size": 2.7
+    },
+    {
+     "type": "text",
+     "lines": [
+      "Antonin Artaud, L’Ombilic des limbes and Le Pèse-nerfs (1925), fr.wikisource.org.",
+      "Charles Baudelaire, “Une charogne”, Les Fleurs du mal (1857), fr.wikisource.org.",
+      "Dōgen, Shōbōgenzō, “Genjōkōan” (1233), Japanese text from sotozen.com.",
+      "Rainer Maria Rilke, “Herbst”, Das Buch der Bilder (1902), de.wikisource.org.",
+      "Bṛhadāraṇyaka Upaniṣad II.4.12, trans. F. Max Müller, Sacred Books of the East 15 (1884).",
+      "Bardo Thödol, trans. Kazi Dawa-Samdup, ed. W. Y. Evans-Wentz, The Tibetan Book of the Dead (Oxford, 1927).",
+      "Heart Sutra, Chinese of Xuanzang (649), zh.wikisource.org.",
+      "Ikkyū Sōjun, Gaikotsu (1457), trans. R. H. Blyth and N. A. Waddell, The Eastern Buddhist VI.1 (1973). Quoted briefly.",
+      "English renderings of Artaud, Baudelaire, Dōgen and Rilke are by Claude for this board."
+     ],
+     "x": 30,
+     "y": 64,
+     "w": 237,
+     "size": 2.7
+    },
+    {
+     "type": "text",
+     "cls": "small",
+     "lines": [
+      "Also read for this board: Nāgārjuna, Zhuangzi, the kusōzu nine-stage poems, Ono no Komachi, the Dhammapada, the Aṣṭāvakra Gītā, Meister Eckhart, Ecclesiastes, Walt Whitman, Paul Celan, Samuel Beckett, E. M. Cioran, Henri Michaux, Clarice Lispector, Edmond Jabès."
+     ],
+     "x": 30,
+     "y": 156,
+     "w": 237,
+     "size": 2.7,
+     "decay": 0.3
+    }
+   ]
+  }
+ ],
+ "text_scale": 1.3
+}

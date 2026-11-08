@@ -69,6 +69,9 @@ def test_prepare_writes_the_guide_the_server_and_the_skills(data):
     assert "arcana" in settings["enabledMcpjsonServers"]
     for name in workspace.SKILLS:
         assert os.path.isfile(os.path.join(ws, ".claude", "skills", name, "SKILL.md"))
+    # helpers beside a SKILL.md travel with it
+    assert os.path.isfile(os.path.join(ws, ".claude", "skills", "metaphysical-moodboard",
+                                       "build_page.py"))
 
 
 def test_prepare_keeps_what_the_person_wrote(data):

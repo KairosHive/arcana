@@ -83,6 +83,30 @@ textarea.dash-textarea {
     border: none !important;
 }
 
+/* Dash 4 puts a − and a + beside every number field, white and wide enough to
+   squeeze the number out of a narrow column. Here they are small and dark, and
+   the number keeps room for a few digits. */
+.dash-input-container .dash-input-element[type="number"] {
+    min-width: 3.2em;
+}
+.dash-input-stepper {
+    flex: 0 0 auto !important;
+    width: 20px !important;
+    min-width: 0 !important;
+    padding: 0 !important;
+    background: var(--arc-surface-2) !important;
+    color: var(--arc-ink-dim) !important;
+    border: 1px solid var(--arc-line) !important;
+    border-radius: 4px !important;
+    font-size: 12px !important;
+    line-height: 1 !important;
+    cursor: pointer;
+}
+.dash-input-stepper:hover {
+    color: var(--arc-ink) !important;
+    border-color: var(--arc-accent) !important;
+}
+
 .dash-input-element::placeholder,
 .dash-textarea::placeholder {
     color: var(--arc-ink-dim) !important;

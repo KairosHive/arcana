@@ -17,6 +17,7 @@
 #mode-select label:has(input[value="story"])    { --tab: #8fae6e; }   /* moss */
 #mode-select label:has(input[value="moodboard"]){ --tab: #c8743f; }   /* terracotta */
 #mode-select label:has(input[value="alchemy"])  { --tab: #b07fc0; }   /* plum */
+#mode-select label:has(input[value="archive"])  { --tab: #c9b48a; }   /* parchment */
 #mode-select label:has(input[value="agent"])    { --tab: #5fa8a0; }   /* teal */
 
 #mode-select label {

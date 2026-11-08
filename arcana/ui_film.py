@@ -99,8 +99,8 @@ def _cast():
     return html.Div(
         [
             html.Div("Pictures", style=_ui.section_title()),
-            html.Div("Click a picture to put it on the timeline at the playhead. A picture on the "
-                     "timeline is dragged along it to change when the film passes it.",
+            html.Div("Drag a picture onto the timeline, or click it to put it at the playhead. Drag it "
+                     "along the timeline to change when the film passes it.",
                      style=_ui.hint(fontSize="11.5px")),
             # A height of its own: when the subtab wraps in a narrow window, the column's height is
             # its content's, so a grid that only filled the column would shrink to nothing.
@@ -139,6 +139,62 @@ def _stage():
 def _settings():
     return html.Div(
         [
+            _section("Look", [
+                html.Div(id="film-look-summary", style=_ui.hint(fontSize="12px", color=_ui.INK, maxWidth="none")),
+                html.Div([
+                    html.Button("Edit in Image", id="film-look-edit", n_clicks=0,
+                                title="Open this look in the Image subtab, to change its method, materials or mask",
+                                style=_ui.button("secondary", padding="4px 9px", fontSize="11.5px")),
+                    html.Button("Use Image's step", id="film-look-replace", n_clicks=0,
+                                title="Replace this look with the step set in the Image subtab now",
+                                style=_ui.button("secondary", padding="4px 9px", fontSize="11.5px")),
+                ], style=_ui.row("6px", marginTop="8px")),
+                html.Div([
+                    html.Button("Add Image's step here", id="film-look-add", n_clicks=0,
+                                title="A new look at the playhead, from the Image subtab's step",
+                                style=_ui.button("secondary", padding="4px 9px", fontSize="11.5px")),
+                    html.Button("Remove look", id="film-look-remove", n_clicks=0,
+                                style=_ui.button("ghost", padding="4px 9px", fontSize="11.5px")),
+                ], style=_ui.row("6px", marginTop="6px")),
+            ], note="method, materials, mask"),
+            _section("Lanes", [
+                html.Div("A lane moves one number of the look over the film. Pick what to animate, add it, then "
+                         "set its keys on the timeline.", style=_ui.hint(fontSize="11.5px")),
+                html.Div([
+                    dcc.Dropdown(id="film-lane-pick", placeholder="what to animate...",
+                                 style={**SMALL, "flex": "1", "minWidth": "0"}),
+                    html.Button("Add lane", id="film-lane-add", n_clicks=0,
+                                style=_ui.button("secondary", padding="5px 10px", fontSize="12px")),
+                ], style={"display": "flex", "gap": "6px", "marginTop": "8px"}),
+                html.Div(id="film-lane-doc", style=_ui.hint(fontSize="11px", marginTop="6px")),
+            ], note="what moves over time"),
+            _section("Key", [
+                html.Div(id="film-key-title", style=_ui.hint(fontSize="12px", color=_ui.INK)),
+                html.Div(id="film-key-doc", style=_ui.hint(fontSize="11px", marginTop="2px")),
+                html.Div([
+                    html.Div([html.Div("TIME (S)", style=LABEL), _input("film-key-t", step=0.05)], style={"flex": "1"}),
+                    html.Div([html.Div("VALUE", style=LABEL), _input("film-key-v", step="any")], id="film-key-v-wrap",
+                             style={"flex": "1"}),
+                ], style={"display": "flex", "gap": "8px"}),
+                html.Div("CURVE TO THE NEXT KEY", style=LABEL),
+                dcc.RadioItems(id="film-key-ease", className="film-eases", inline=True,
+                               options=[{"label": lab, "value": v} for v, lab in
+                                        (("linear", "straight"), ("smooth", "smooth"), ("in", "slow start"),
+                                         ("out", "slow end"), ("hold", "hold"))]),
+                html.Button("Remove key", id="film-key-remove", n_clicks=0,
+                            style=_ui.button("ghost", padding="4px 8px", fontSize="11.5px", marginTop="8px")),
+            ], note="time, value, curve"),
+            _section("Pictures timing", [
+                html.Div("Re-time every picture between the first and the last, to speed the morph up or "
+                         "slow it down.", style=_ui.hint(fontSize="11.5px")),
+                html.Div([html.Button(lab, id={"type": "film-space-pics", "shape": key}, n_clicks=0,
+                                      title=doc, style=_ui.button("secondary", padding="4px 8px", fontSize="11.5px"))
+                          for key, lab, doc in (("even", "even", "every passage as long"),
+                                                ("faster", "speeding up", "each passage shorter than the one before"),
+                                                ("slower", "slowing down", "each passage longer than the one before"),
+                                                ("smooth", "slow at both ends", "slow to start and to end"))],
+                         style=_ui.row("6px", marginTop="8px")),
+            ], open_=False, note="speed up, slow down"),
             _section("Film", [
                 html.Div("NAME", style=LABEL), _input("film-name", type_="text"),
                 html.Div([
@@ -159,39 +215,7 @@ def _settings():
                 dcc.Checklist(id="film-flags", style={**SMALL, "marginTop": "8px"},
                               options=[{"label": " loop back to the first picture", "value": "loop"},
                                        {"label": " even motion between pictures", "value": "even"}]),
-            ], note="length, shape, model"),
-            _section("Timeline", [
-                html.Div("SPACE THE PICTURES", style={**LABEL, "marginTop": "0"}),
-                html.Div([html.Button(lab, id={"type": "film-space-pics", "shape": key}, n_clicks=0,
-                                      title=doc, style=_ui.button("secondary", padding="4px 8px", fontSize="11.5px"))
-                          for key, lab, doc in (("even", "even", "every passage as long"),
-                                                ("faster", "speeding up", "each passage shorter than the one before"),
-                                                ("slower", "slowing down", "each passage longer than the one before"),
-                                                ("smooth", "slow at both ends", "slow to start and to end"))],
-                         style=_ui.row("6px")),
-                html.Div("ADD A LANE", style=LABEL),
-                html.Div([
-                    dcc.Dropdown(id="film-lane-pick", placeholder="a setting to key in time...", style={**SMALL, "flex": "1",
-                                                                                                         "minWidth": "0"}),
-                    html.Button("Add", id="film-lane-add", n_clicks=0,
-                                style=_ui.button("secondary", padding="5px 10px", fontSize="12px")),
-                ], style={"display": "flex", "gap": "6px"}),
-                html.Div("Looks come from the Image subtab: set a step there and press Add look to film. "
-                         "Between two looks every number moves from one to the other.",
-                         style=_ui.hint(fontSize="11px", marginTop="8px")),
-            ], note="spacing, lanes"),
-            _section("Selected key", [
-                html.Div(id="film-key-title", style=_ui.hint(fontSize="12px", color=_ui.INK)),
-                html.Div([
-                    html.Div([html.Div("TIME (S)", style=LABEL), _input("film-key-t", step=0.05)], style={"flex": "1"}),
-                    html.Div([html.Div("VALUE", style=LABEL), _input("film-key-v", step="any")], id="film-key-v-wrap",
-                             style={"flex": "1"}),
-                ], style={"display": "flex", "gap": "8px"}),
-                html.Div("EASE TO THE NEXT KEY", style=LABEL),
-                dcc.Dropdown(id="film-key-ease", options=EASE_OPTIONS, clearable=False, style=SMALL),
-                html.Button("Remove key", id="film-key-remove", n_clicks=0,
-                            style=_ui.button("ghost", padding="4px 8px", fontSize="11.5px", marginTop="8px")),
-            ], note="time, value, ease"),
+            ], open_=False, note="length, shape, model"),
             _section("Keep and render", [
                 html.Div([
                     dcc.Dropdown(id="film-pick", placeholder="Kept films...", style={**SMALL, "flex": "1", "minWidth": "0"}),
@@ -228,8 +252,26 @@ def _settings():
 
 # ─────────────────────────── the film's lanes ───────────────────────────
 
+REFINE_DOC = {"feather": "how soft the mask's edge is, in pixels at 768",
+              "grow": "the mask's edge moved out (more) or in (less), in pixels at 768",
+              "follow": "how closely the mask's edge snaps to the picture's contours",
+              "ragged": "the mask's edge broken by grown noise",
+              "amount": "how strongly the step shows through the mask: 0 shows the morph alone"}
+NUMBER_DOC = {"x": "where the spot's centre sits across the frame, 0 left to 1 right",
+              "y": "where it sits down the frame, 0 top to 1 bottom",
+              "r": "the spot's radius, as a share of the frame",
+              "angle": "the direction, in degrees", "height": "the band's height, as a share of the frame",
+              "count": "how many stripes", "near": "the nearest depth the band takes, 0 to 1",
+              "far": "the farthest depth it takes", "size": "the size of the pattern, in pixels at 768",
+              "coverage": "how much of the picture the layer takes, 0 to 1"}
+GROUP_TITLE = {"method": "The look's method", "mask": "The look's mask", "pictures": "The materials",
+               "finish": "The finish", "other": "Other"}
+
+
 def lane_meta(spec: dict) -> tuple[list, dict]:
-    """The settings a lane can key, and each one's label and range: (options, {path: meta})."""
+    """What a lane can animate, with each one's label, range and what it controls: (options grouped
+    under headers, {path: meta}). Mask lanes are offered only when a look has a mask, and they name
+    the layer they move."""
     film = _film()
     meta: dict = {}
     methods = {k.get("settings", {}).get("method") for k in spec.get("looks") or []}
@@ -241,35 +283,52 @@ def lane_meta(spec: dict) -> tuple[list, dict]:
         for k in method.knobs:
             if k.kind in ("float", "int", "angle") and k.lo is not None:
                 meta[f"knobs.{k.key}"] = {"label": f"{method.label} · {k.label}", "lo": k.lo, "hi": k.hi,
-                                          "step": k.step or 0.01, "group": "method"}
-    for key, group, label, lo, hi, step, doc in _finish.SPEC:
-        meta[f"finish.{key}"] = {"label": f"finish · {label}", "lo": lo, "hi": hi, "step": step, "group": "finish"}
-    for key, (lo, hi, step) in REFINE_RANGE.items():
-        meta[f"mask.{key}"] = {"label": f"mask · {key}", "lo": lo, "hi": hi, "step": step, "group": "mask"}
+                                          "step": k.step or 0.01, "group": "method", "doc": k.doc}
     most_layers, most_materials = [], 0
     for k in spec.get("looks") or []:
-        s = k.get("settings") or {}
-        m = s.get("mask") or {}
-        layers = m.get("layers") if isinstance(m, dict) else ([m] if isinstance(m, str) else m) or []
+        st = k.get("settings") or {}
+        m = st.get("mask") or {}
+        layers = m.get("layers") if isinstance(m, dict) else ([m] if isinstance(m, str) else m)
         if len(layers or []) > len(most_layers):
             most_layers = list(layers)
-        most_materials = max(most_materials, len([x for x in s.get("materials") or [] if x]))
-    for i, line in enumerate(most_layers, 1):
-        meta[f"mask.{i}.coverage"] = {"label": f"mask {i} · coverage", "lo": 0.02, "hi": 1, "step": 0.01, "group": "mask"}
-        got = film.layer_numbers(line)
-        if got:
-            for name in got[1]:
-                lo, hi, step = NUMBER_RANGE[name]
-                meta[f"mask.{i}.{name}"] = {"label": f"mask {i} · {got[0]} {name}", "lo": lo, "hi": hi, "step": step,
-                                            "group": "mask"}
+        most_materials = max(most_materials, len([x for x in st.get("materials") or [] if x]))
+    if most_layers:
+        for key, (lo, hi, step) in REFINE_RANGE.items():
+            meta[f"mask.{key}"] = {"label": f"mask · {key}", "lo": lo, "hi": hi, "step": step, "group": "mask",
+                                   "doc": REFINE_DOC[key]}
+        for i, line in enumerate(most_layers, 1):
+            meta[f"mask.{i}.coverage"] = {"label": f"mask layer {i} ({line}) · coverage", "lo": 0.02, "hi": 1,
+                                          "step": 0.01, "group": "mask", "doc": NUMBER_DOC["coverage"]}
+            got = film.layer_numbers(line)
+            if got:
+                for name in got[1]:
+                    lo, hi, step = NUMBER_RANGE[name]
+                    meta[f"mask.{i}.{name}"] = {"label": f"mask layer {i} ({line}) · {name}", "lo": lo, "hi": hi,
+                                                "step": step, "group": "mask", "doc": NUMBER_DOC[name]}
     for i in range(1, most_materials + 1):
-        meta[f"weights.{i}"] = {"label": f"share of [{i}]", "lo": 0, "hi": 1, "step": 0.05, "group": "pictures"}
-    meta["zoom"] = {"label": "material zoom", "lo": 0.5, "hi": 4, "step": 0.25, "group": "pictures"}
+        meta[f"weights.{i}"] = {"label": f"share of material [{i}]", "lo": 0, "hi": 1, "step": 0.05,
+                                "group": "pictures", "doc": f"how much of the mix material [{i}] takes"}
+    if most_materials:
+        meta["zoom"] = {"label": "material zoom", "lo": 0.5, "hi": 4, "step": 0.25, "group": "pictures",
+                        "doc": "how large the materials are drawn: 2 shows half of each, twice as large"}
+    for key, group, label, lo, hi, step, doc in _finish.SPEC:
+        meta[f"finish.{key}"] = {"label": f"finish · {label}", "lo": lo, "hi": hi, "step": step, "group": "finish",
+                                 "doc": doc}
     for path, keys in (spec.get("lanes") or {}).items():
         if path not in meta:
             vs = [float(k["v"]) for k in keys] or [0.0]
-            meta[path] = {"label": path, "lo": min(vs + [0.0]), "hi": max(vs + [1.0]), "step": 0.01, "group": "other"}
-    options = [{"label": v["label"], "value": p} for p, v in meta.items() if p not in (spec.get("lanes") or {})]
+            meta[path] = {"label": path, "lo": min(vs + [0.0]), "hi": max(vs + [1.0]), "step": 0.01, "group": "other",
+                          "doc": "a lane the looks no longer have: it moves nothing until a look has it again"}
+    taken = set(spec.get("lanes") or {})
+    options = []
+    for group, title in GROUP_TITLE.items():
+        these = [{"label": v["label"], "value": p} for p, v in meta.items() if v["group"] == group and p not in taken]
+        if these:
+            options.append({"label": f"── {title} ──", "value": f"__group {group}", "disabled": True})
+            options += these
+    if not most_layers:
+        options.append({"label": "── The look's mask: set one in the Image subtab, then Use Image's step ──",
+                        "value": "__group nomask", "disabled": True})
     return options, meta
 
 
@@ -342,7 +401,7 @@ def register(app) -> None:
         if not items:
             return html.Div("The active collection is empty. Pictures added with + Collection on any tab "
                             "appear here.", style=_ui.hint(gridColumn="1 / -1", fontSize="11.5px"))
-        return [html.Img(src=_thumb(p), alt="", title=os.path.basename(p), n_clicks=0,
+        return [html.Img(src=_thumb(p), alt="", title=os.path.basename(p), n_clicks=0, draggable="true",
                          id={"type": "film-add", "index": p},
                          style={"width": "100%", "aspectRatio": "1", "objectFit": "cover", "borderRadius": "5px",
                                 "border": f"1px solid {_ui.LINE}", "cursor": "copy", "display": "block",
@@ -396,14 +455,15 @@ def register(app) -> None:
         length = f["length"] if f else max([float(p["t"]) for p in s.get("pictures") or []] + [GAP])
         status = "" if f or len(s.get("pictures") or []) < 2 else why
         empty = "" if len(s.get("pictures") or []) >= 2 else \
-            "Click two or more pictures on the left to start a film. Each lands at the playhead."
+            "Click two or more pictures on the left to start a film, each at the playhead, or drag them "             "onto the timeline where you want them."
         return ({"length": length, "lanes": meta, "pictures": pictures, "looks": looks, "ok": f is not None},
                 options, status, empty)
 
-    # The timeline is drawn in the browser (assets/film.js) from the film and its meta.
+    # The timeline is drawn in the browser (assets/film.js) from the film and its meta. With no film
+    # open it draws an empty one, so the first picture can be dropped straight onto it.
     app.clientside_callback(
-        "function (spec, meta, t, sel) { if (window.filmTimeline) window.filmTimeline.draw(spec, meta, t, sel);"
-        " return window.dash_clientside.no_update; }",
+        "function (spec, meta, t, sel) { if (window.filmTimeline) window.filmTimeline.draw(spec || "
+        + json.dumps(EMPTY_FILM) + ", meta, t, sel); return window.dash_clientside.no_update; }",
         Output("film-sink", "data"),
         Input("film-spec", "data"), Input("film-meta", "data"), Input("film-time", "data"),
         Input("film-selected", "data"),
@@ -464,16 +524,86 @@ def register(app) -> None:
         return {**s, "lanes": lanes}, {"lane": path, "i": 0}
 
     # The selected key, in the panel.
-    @app.callback(Output("film-key-title", "children"), Output("film-key-t", "value"), Output("film-key-v", "value"),
+    @app.callback(Output("film-key-title", "children"), Output("film-key-doc", "children"),
+                  Output("film-key-t", "value"), Output("film-key-v", "value"),
                   Output("film-key-v-wrap", "style"), Output("film-key-ease", "value"),
-                  Input("film-selected", "data"), Input("film-spec", "data"), State("film-meta", "data"))
+                  Input("film-selected", "data"), Input("film-spec", "data"), Input("film-meta", "data"))
     def _key_fields(sel, spec, meta):
         key, label = _selected(spec, sel, meta)
         if key is None:
-            return "Click a key on the timeline to edit it here.", None, None, {"flex": "1"}, None
+            return ("No key selected.", "Click a key on the timeline to edit it here. To add one, double-click a "
+                    "lane, or press \u25c6 on a lane to key it at the playhead.", None, None, {"flex": "1"}, None)
         has_v = "v" in key
-        return (label, round(float(key["t"]), 3), key.get("v") if has_v else None,
+        lane = (sel or {}).get("lane")
+        m = ((meta or {}).get("lanes") or {}).get(lane) or {}
+        doc = (f"{m.get('doc', '')}. From {m['lo']:g} to {m['hi']:g}." if has_v and "lo" in m else
+               "When the film passes this picture." if lane == "pictures" else
+               "From here the film moves toward the next look." if lane == "looks" else "")
+        return (label, doc, round(float(key["t"]), 3), key.get("v") if has_v else None,
                 {"flex": "1"} if has_v else {"display": "none"}, key.get("ease", "linear"))
+
+    @app.callback(Output("film-lane-doc", "children"), Input("film-lane-pick", "value"), State("film-meta", "data"))
+    def _lane_doc(path, meta):
+        m = ((meta or {}).get("lanes") or {}).get(path) if path else None
+        return f"{m['doc']}. From {m['lo']:g} to {m['hi']:g}." if m else ""
+
+    # The look at the playhead: what the film does with the morph there, and where to change it.
+    @app.callback(Output("film-look-summary", "children"), Input("film-spec", "data"), Input("film-time", "data"))
+    def _look_summary(spec, t):
+        looks = sorted((spec or {}).get("looks") or [], key=lambda k: float(k["t"]))
+        i = _look_index(looks, float(t or 0.0))
+        if i is None:
+            return [html.Div("No look yet: the film is the morph alone, with the finish lanes on top."),
+                    html.Div("To mix materials or use a mask, set a step in the Image subtab (method, materials, "
+                             "mask), then press Add Image's step here.", style={"color": _ui.INK_DIM, "marginTop": "4px"})]
+        st = looks[i].get("settings") or {}
+        m = st.get("method") or "none"
+        name = "morph only" if m == "none" else (_methods.get(m).label if m in _methods.METHODS else m)
+        model = (st.get("knobs") or {}).get("model")
+        mask = st.get("mask") or {}
+        layers = [str(x) for x in (mask.get("layers") or [])] if isinstance(mask, dict) else []
+        combine = mask.get("combine") or [] if isinstance(mask, dict) else []
+        line = layers[0] if layers else ""
+        for k, x in enumerate(layers[1:]):
+            line += f" {combine[k] if k < len(combine) else 'and'} {x}"
+        changed = [f"{k} {v:g}" for k, v in (st.get("finish") or {}).items()
+                   if isinstance(v, (int, float)) and v != getattr(_finish.Finish(), k, v)]
+        mats = [x for x in st.get("materials") or [] if x]
+        rows = [html.Div(f"Look {i + 1} of {len(looks)}, from {float(looks[i]['t']):.2f} s", style={"fontWeight": "600"}),
+                html.Div(f"Method: {name}" + (f", {model}" if model else "")),
+                html.Div(f"Mask: {line}" if layers else "Mask: none, so the step covers the whole frame")]
+        if mats:
+            rows.append(html.Div([html.Span("Materials: ")] + [
+                html.Img(src=_thumb(x), alt="", title=os.path.basename(x),
+                         style={"width": "28px", "height": "28px", "objectFit": "cover", "borderRadius": "3px",
+                                "marginRight": "4px", "verticalAlign": "middle"}) for x in mats]))
+        if changed:
+            rows.append(html.Div("Finish: " + ", ".join(changed)))
+        rows.append(html.Div("Lanes move these numbers over time. To change the method, materials or mask, press "
+                             "Edit in Image, change them there, and come back to Use Image's step.",
+                             style={"color": _ui.INK_DIM, "marginTop": "4px"}))
+        return rows
+
+    @app.callback(Output("alc-load", "data"), Output("alc-roles", "data", allow_duplicate=True),
+                  Output("alc-w1", "value"), Output("alc-w2", "value"), Output("alc-w3", "value"),
+                  Output("alc-subtab", "value"), Output("film-render-status", "children", allow_duplicate=True),
+                  Input("film-look-edit", "n_clicks"), State("film-spec", "data"), State("film-time", "data"),
+                  State("alc-roles", "data"), prevent_initial_call=True)
+    def _look_edit(n, spec, t, roles):
+        import time as _t
+
+        looks = sorted((spec or {}).get("looks") or [], key=lambda k: float(k["t"]))
+        i = _look_index(looks, float(t or 0.0))
+        if not n or i is None:
+            return (no_update,) * 6 + ("There is no look here to edit.",)
+        st = looks[i].get("settings") or {}
+        mats = [x for x in st.get("materials") or [] if x][:3]
+        roles = {**(roles or {}), **{str(k + 1): (mats[k] if k < len(mats) else None) for k in range(3)}}
+        w = list(st.get("weights") or [])
+        weights = [float(w[k]) if k < len(w) else 1.0 for k in range(3)]
+        return ({"settings": st, "at": _t.time()}, roles, *weights, "image",
+                f"Look {i + 1} is open in the Image subtab.")
+
 
     @app.callback(Output("film-spec", "data", allow_duplicate=True), Output("film-selected", "data", allow_duplicate=True),
                   Input("film-key-t", "value"), Input("film-key-v", "value"), Input("film-key-ease", "value"),
@@ -587,28 +717,44 @@ def register(app) -> None:
         import ui_alchemy as _ia
 
     @app.callback(Output("film-spec", "data", allow_duplicate=True), Output("alc-keep-status", "children", allow_duplicate=True),
-                  inputs={"n": Input("alc-snap", "n_clicks")},
+                  Output("film-render-status", "children", allow_duplicate=True),
+                  inputs={"n": Input("alc-snap", "n_clicks"), "add": Input("film-look-add", "n_clicks"),
+                          "replace": Input("film-look-replace", "n_clicks"), "remove": Input("film-look-remove", "n_clicks")},
                   state={**_ia._controls("state"), **_ia.ID_STATES, "spec": State("film-spec", "data"),
                          "t": State("film-time", "data")},
                   prevent_initial_call=True)
-    def _snapshot(n, **v):
-        if not n:
-            return no_update, no_update
+    def _snapshot(n, add, replace, remove, **v):
+        hit = ctx.triggered_id
+        if not ctx.triggered or not ctx.triggered[0].get("value"):
+            return no_update, no_update, no_update
+        s = {**EMPTY_FILM, **(v.get("spec") or {})}
+        looks = sorted(s.get("looks") or [], key=lambda k: float(k["t"]))
+        at = _look_index(looks, float(v.get("t") or 0.0))
+        if hit == "film-look-remove":
+            if at is None:
+                return no_update, no_update, "There is no look here to remove."
+            gone = looks.pop(at)
+            return {**s, "looks": looks}, no_update, f"Removed the look at {float(gone['t']):.2f} s."
         args = _ia.settings(v)
         from .ops.alchemy import AlchemyPreviewArgs, settings_of
         try:
             look = settings_of(AlchemyPreviewArgs(**{k: val for k, val in args.items()
                                                      if k not in ("picture", "material", "weight")}))
         except (ValueError, _ops.Refusal) as e:
-            return no_update, f"Could not take this look: {e}"
+            return no_update, f"Could not take this look: {e}", f"Could not take the Image subtab's step: {e}"
         look["materials"] = list(args.get("material") or [])
         if args.get("weight"):
             look["weights"] = list(args["weight"])
-        s = {**EMPTY_FILM, **(v.get("spec") or {})}
+        if hit == "film-look-replace":
+            if at is None:
+                return no_update, no_update, "There is no look here to replace. Add Image's step here instead."
+            looks[at] = {**looks[at], "settings": look}
+            return {**s, "looks": looks}, no_update, f"Look {at + 1} now holds the Image subtab's step."
         t = round(float(v.get("t") or 0.0), 3)
-        looks = [k for k in s.get("looks") or [] if round(float(k["t"]), 3) != t]
+        looks = [k for k in looks if round(float(k["t"]), 3) != t]
         s["looks"] = sorted(looks + [{"t": t, "ease": "smooth", "settings": look}], key=lambda k: float(k["t"]))
-        return s, f"Added this look to the film at {t:.2f} s. The Video subtab shows it on the look lane."
+        said = f"Added a look at {t:.2f} s from the Image subtab's step."
+        return s, said + " The Video subtab shows it on the look lane.", said
 
     # Frames: one request at a time (the gate in film.js), the newest film and moment next.
     app.clientside_callback(
@@ -635,6 +781,14 @@ def register(app) -> None:
             return no_update, f"{type(e).__name__}: {e}"
         src = "data:image/jpeg;base64," + base64.b64encode(res.attachments[0].data).decode() if res.attachments else no_update
         return src, f"{res.size[0]} x {res.size[1]} · {res.ms} ms"
+
+
+def _look_index(looks: list, t: float):
+    """The look in force at time t: the last one at or before it, or the first when t is before them all."""
+    if not looks:
+        return None
+    before = [k for k, look in enumerate(looks) if float(look["t"]) <= t + 1e-6]
+    return before[-1] if before else 0
 
 
 def _keys_of(spec: dict, sel: dict):

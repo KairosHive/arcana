@@ -318,6 +318,9 @@ def layout() -> html.Div:
             dcc.Store(id="alc-knob-seed", storage_type="memory"),
             dcc.Store(id="alc-before-key", storage_type="memory"),
             dcc.Store(id="alc-request", storage_type="memory"),
+            # A whole step to load into the controls, as a recipe loads: the Video subtab's
+            # "Edit in Image" writes it with a look's settings.
+            dcc.Store(id="alc-load", storage_type="memory"),
             dcc.RadioItems(id="alc-subtab", className="alc-subtabs", value="image", inline=True,
                            options=[{"label": "Image", "value": "image"}, {"label": "Video", "value": "video"}]),
             html.Div([_cast_column(), _stage_column(), _settings_column()], id="alc-image-view", style=VIEW),
@@ -498,18 +501,21 @@ def register(app) -> None:
 
     @app.callback(Output("alc-family", "value"), Output("alc-method", "options"), Output("alc-method", "value"),
                   Output("alc-knob-seed", "data"), Output("alc-family-doc", "children"),
-                  Input("alc-family", "value"), Input("alc-recipe-apply", "n_clicks"),
+                  Input("alc-family", "value"), Input("alc-recipe-apply", "n_clicks"), Input("alc-load", "data"),
                   State("alc-method", "value"), State("alc-recipe", "value"))
-    def _choose_method(family, _apply, current, recipe):
-        if ctx.triggered_id == "alc-recipe-apply":
-            if not recipe:
+    def _choose_method(family, _apply, load, current, recipe):
+        if ctx.triggered_id in ("alc-recipe-apply", "alc-load"):
+            if ctx.triggered_id == "alc-load":
+                settings = (load or {}).get("settings") or {}
+            elif recipe:
+                settings = _recipes.get(recipe).settings
+            else:
                 return (no_update,) * 5
-            r = _recipes.get(recipe)
-            m = r.settings.get("method")
-            if not m:
+            m = settings.get("method")
+            if not m or m == "none":
                 return (no_update,) * 5
             fam = _methods.get(m).family
-            return (fam, _method_options(fam), m, {"method": m, "knobs": r.settings.get("knobs") or {}},
+            return (fam, _method_options(fam), m, {"method": m, "knobs": settings.get("knobs") or {}},
                     _methods.FAMILIES[fam])
         opts = _method_options(family)
         value = current if current in {o["value"] for o in opts} else opts[0]["value"]
@@ -572,18 +578,25 @@ def register(app) -> None:
     rest_n = len(recipe_outputs) - 5            # invert, the layer rows and the refinements
 
     @app.callback(*recipe_outputs, Input("alc-recipe-apply", "n_clicks"), Input("alc-fin-reset", "n_clicks"),
-                  Input("alc-recipe", "value"), State({"type": "alc-fin", "key": ALL}, "id"),
+                  Input("alc-recipe", "value"), Input("alc-load", "data"), State({"type": "alc-fin", "key": ALL}, "id"),
                   prevent_initial_call=True)
-    def _apply_recipe(_apply, _reset, recipe, fin_ids):
+    def _apply_recipe(_apply, _reset, recipe, load, fin_ids):
         keep = [no_update] * rest_n
         same = [no_update] * len(fin_ids)
         if ctx.triggered_id == "alc-fin-reset":
             return [no_update, no_update, no_update, [FIN_DEFAULT[f["key"]] for f in fin_ids], "whole", *keep]
-        r = _recipes.get(recipe) if recipe else None
-        doc = r.doc if r else ""
-        if ctx.triggered_id == "alc-recipe" or r is None:
-            return [doc, no_update, no_update, same, no_update, *keep]
-        s = r.settings
+        if ctx.triggered_id == "alc-load":
+            # A look from the film loads whole: what it does not set goes back to its default.
+            s = (load or {}).get("settings") or {}
+            s = {**s, "finish": {**FIN_DEFAULT, **(s.get("finish") or {})}, "mask": s.get("mask") or {"layers": []},
+                 "lead": s.get("lead", "picture"), "zoom": s.get("zoom", 1.0)}
+            doc = no_update
+        else:
+            r = _recipes.get(recipe) if recipe else None
+            doc = r.doc if r else ""
+            if ctx.triggered_id == "alc-recipe" or r is None:
+                return [doc, no_update, no_update, same, no_update, *keep]
+            s = r.settings
         fin = s.get("finish")
         fins = [fin.get(f["key"], no_update) for f in fin_ids] if fin else same
         scope = fin.get("scope", "whole") if fin else no_update

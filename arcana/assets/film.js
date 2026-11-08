@@ -6,12 +6,15 @@
  * hand here, and each finished edit writes film-spec back, so the panel, the player and a kept film
  * all read the same film.
  *
- *   drag the ruler            scrub
- *   drag a picture or a look  move it in time
- *   drag a lane's key         move it in time and value
- *   double-click a lane       add a key on its curve
- *   click a key               select it (the panel edits it); Delete removes it
- *   space                     play a draft, as fast as frames are drawn
+ *   drop a picture from the collection   put it on the picture lane where it lands
+ *   drag the ruler or an empty lane      scrub
+ *   drag a picture or a look             move it in time
+ *   drag a lane's key                    move it in time and value
+ *   double-click a lane                  add a key on its curve
+ *   press a lane's \u25c6                  add a key at the playhead, or remove the one there
+ *   click a key                          select it (the panel edits it); Delete removes it
+ *   click a lane's curve                 select the key before that point, to set the curve's shape
+ *   space                                play a draft, as fast as frames are drawn
  *
  * Frames are asked for one at a time (filmGate): a change while one is being drawn is held, and the
  * newest goes out when that frame lands.
@@ -19,11 +22,11 @@
 (function () {
   "use strict";
 
-  var LABEL_W = 150, RULER = 22, PICS = 58, LOOKS = 26, LANE = 46, PAD = 8;
+  var LABEL_W = 170, RULER = 22, PICS = 58, LOOKS = 26, LANE = 46, PAD = 8, HINT = 20;
   var EASES = { linear: function (s) { return s; }, smooth: function (s) { return s * s * (3 - 2 * s); },
                 "in": function (s) { return s * s; }, out: function (s) { return 1 - (1 - s) * (1 - s); },
                 hold: function () { return 0; } };
-  var st = { spec: null, meta: null, t: 0, sel: null, drag: null, playing: false };
+  var st = { spec: null, meta: null, t: 0, sel: null, drag: null, playing: false, dropT: null };
 
   function setProps(id, props) {
     if (window.dash_clientside && window.dash_clientside.set_props) window.dash_clientside.set_props(id, props);
@@ -57,7 +60,7 @@
     var el = document.getElementById("film-timeline");
     if (!el || !st.spec) return;
     var g = geom(el), spec = st.spec, meta = st.meta || {}, ls = lanes();
-    var H = laneTop(ls.length) + 4;
+    var H = laneTop(ls.length) + HINT;
     var o = ['<svg width="' + g.W + '" height="' + H + '" class="film-svg">'];
     // ruler
     var step = [0.5, 1, 2, 5, 10, 15, 30, 60].find(function (s) { return (g.x1 - g.x0) / (g.L / s) >= 46; }) || 120;
@@ -73,8 +76,13 @@
     rows.forEach(function (r, i) {
       o.push('<rect class="film-band' + (i % 2 ? " odd" : "") + '" data-kind="band" data-lane="' + esc(r[0]) + '" x="0" y="' + r[1] + '" width="' + g.W + '" height="' + r[2] + '"/>');
       o.push('<text class="film-row-label" x="10" y="' + (r[1] + Math.min(r[2] / 2 + 4, 16)) + '">' + esc(r[3]) + "</text>");
-      if (r[0] !== "pictures" && r[0] !== "looks")
-        o.push('<text class="film-row-remove" data-kind="remove" data-lane="' + esc(r[0]) + '" x="' + (LABEL_W - 16) + '" y="' + (r[1] + 16) + '">×</text>');
+      if (r[0] !== "pictures" && r[0] !== "looks") {
+        var keys0 = sorted(spec.lanes[r[0]]), here = keys0.some(function (k) { return Math.abs(k.t - st.t) < 0.02; });
+        var stp = (((meta.lanes || {})[r[0]]) || {}).step || 0.01, dec = stp >= 1 ? 0 : stp >= 0.1 ? 1 : 2;
+        o.push('<text class="film-row-value" x="10" y="' + (r[1] + 32) + '">' + laneValue(keys0, st.t).toFixed(dec) + "</text>");
+        o.push('<text class="film-keyhere' + (here ? " on" : "") + '" data-kind="keyhere" data-lane="' + esc(r[0]) + '" x="' + (LABEL_W - 34) + '" y="' + (r[1] + 18) + '"><title>' + (here ? "Remove the key at the playhead" : "Add a key at the playhead") + "</title>\u25c6</text>");
+        o.push('<text class="film-row-remove" data-kind="remove" data-lane="' + esc(r[0]) + '" x="' + (LABEL_W - 16) + '" y="' + (r[1] + 18) + '"><title>Remove this lane</title>\u00d7</text>');
+      }
     });
     // pictures
     var pics = sorted(spec.pictures);
@@ -99,6 +107,7 @@
       var y = function (v) { return top + 6 + (1 - (v - lo) / (hi - lo)) * (LANE - 12); };
       var pts = [];
       for (var k = 0; k <= 160; k++) { var tt = g.L * k / 160; pts.push(g.x(tt).toFixed(1) + "," + y(laneValue(keys, tt)).toFixed(1)); }
+      o.push('<polyline class="film-curve-hit" data-kind="curve" data-lane="' + esc(p) + '" points="' + pts.join(" ") + '"/>');
       o.push('<polyline class="film-curve" points="' + pts.join(" ") + '"/>');
       keys.forEach(function (key, i) {
         var sel = st.sel && st.sel.lane === p && st.sel.i === i;
@@ -106,6 +115,12 @@
       });
       o.push('<text class="film-lane-range" x="' + (LABEL_W - 4) + '" y="' + (top + LANE - 6) + '" text-anchor="end">' + (+lo.toFixed(2)) + "–" + (+hi.toFixed(2)) + "</text>");
     });
+    // where a dragged picture would land
+    if (st.dropT !== null) {
+      var dx = g.x(st.dropT);
+      o.push('<line class="film-drop" x1="' + dx + '" y1="' + RULER + '" x2="' + dx + '" y2="' + (RULER + PICS) + '"/>');
+    }
+    o.push('<text class="film-hint" x="10" y="' + (H - 6) + '">Drop pictures on the timeline \u00b7 double-click a lane or press \u25c6 to add a key \u00b7 drag keys \u00b7 click a curve to set its shape \u00b7 Delete removes</text>');
     // playhead
     var px = g.x(st.t);
     o.push('<line class="film-playhead" x1="' + px + '" y1="0" x2="' + px + '" y2="' + H + '"/>');
@@ -135,6 +150,20 @@
     if (kind === "ruler") {
       st.drag = { kind: "ruler" };
       st.t = g.t(x); setProps("film-time", { data: st.t }); draw();
+    } else if (kind === "keyhere") {
+      var lk = target.getAttribute("data-lane"), sp = clone(st.spec), ks = keyList(sp, lk);
+      var at = ks.findIndex(function (k) { return Math.abs(k.t - st.t) < 0.02; });
+      if (at >= 0) { ks.splice(at, 1); commit(sp, null); return; }
+      var nk = { t: Math.round(st.t * 100) / 100, v: laneValue(ks, st.t), ease: "linear" };
+      ks.push(nk); ks = keyList(sp, lk);
+      commit(sp, { lane: lk, i: ks.indexOf(nk) });
+      return;
+    } else if (kind === "curve") {
+      var lc = target.getAttribute("data-lane"), kc = sorted(st.spec.lanes[lc]), tc = g.t(x), pick = -1;
+      for (var q = 0; q < kc.length; q++) if (kc[q].t <= tc) pick = q;
+      if (pick >= 0) { st.sel = { lane: lc, i: pick }; setProps("film-selected", { data: st.sel }); draw(); return; }
+      st.drag = { kind: "ruler" };
+      st.t = tc; setProps("film-time", { data: st.t }); draw();
     } else if (kind === "remove") {
       var spec = clone(st.spec); delete spec.lanes[target.getAttribute("data-lane")];
       commit(spec, null);
@@ -259,6 +288,51 @@
       if (r.target.id === "film-frame" && r.target.getAttribute("data-dash-is-loading") !== "true") gate.release();
     });
   }).observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["data-dash-is-loading"] });
+
+  // ── pictures dragged from the collection ──
+  function draggedPath(e) {
+    var types = (e.dataTransfer && e.dataTransfer.types) || [];
+    return Array.prototype.indexOf.call(types, "text/arcana-path") >= 0;
+  }
+  document.addEventListener("dragstart", function (e) {
+    var img = e.target.closest && e.target.closest("#film-cast img");
+    if (!img) return;
+    var path;
+    try { path = JSON.parse(img.id).index; } catch (err) { return; }
+    e.dataTransfer.setData("text/arcana-path", path);
+    e.dataTransfer.effectAllowed = "copy";
+  });
+  document.addEventListener("dragover", function (e) {
+    var el = e.target.closest && e.target.closest("#film-timeline");
+    if (!el || !draggedPath(e) || !st.spec) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    var g = geom(el), r = el.getBoundingClientRect();
+    st.dropT = Math.round(g.t(e.clientX - r.left) * 20) / 20;
+    draw();
+  });
+  document.addEventListener("dragleave", function (e) {
+    if (st.dropT !== null && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("#film-timeline"))) {
+      st.dropT = null; draw();
+    }
+  });
+  document.addEventListener("drop", function (e) {
+    var el = e.target.closest && e.target.closest("#film-timeline");
+    if (!el || !draggedPath(e) || !st.spec) return;
+    e.preventDefault();
+    var path = e.dataTransfer.getData("text/arcana-path"), t = st.dropT;
+    st.dropT = null;
+    if (!path || t === null) { draw(); return; }
+    var spec = clone(st.spec), pics = keyList(spec, "pictures");
+    while (pics.some(function (p) { return Math.abs(p.t - t) < 0.01; })) t = Math.round((t + 0.05) * 100) / 100;
+    var key = { t: t, ref: path, ease: "linear" };
+    pics.push(key);
+    pics = keyList(spec, "pictures");
+    if (spec.length && t >= spec.length) delete spec.length;   // past the end: the length follows the pictures
+    st.t = t;
+    setProps("film-time", { data: t });
+    commit(spec, { lane: "pictures", i: pics.indexOf(key) });
+  });
 
   window.filmTimeline = {
     draw: function (spec, meta, t, sel) {

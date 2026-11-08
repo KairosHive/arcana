@@ -39,6 +39,7 @@ try:
     from . import ui_alchemy as _ui_alchemy
     from . import ui_collection as _ui_collection
     from . import ui_film as _ui_film
+    from . import ui_archive as _ui_archive
     from . import ui_style as _ui
     from . import jobs
     from . import on1 as _on1
@@ -56,6 +57,7 @@ except ImportError:
     import ui_alchemy as _ui_alchemy
     import ui_collection as _ui_collection
     import ui_film as _ui_film
+    import ui_archive as _ui_archive
     import ui_style as _ui
     import jobs
     import on1 as _on1
@@ -1367,6 +1369,8 @@ app.layout = html.Div(
                                 {"label": "Generate Story", "value": "story"},
                                 {"label": "Moodboard", "value": "moodboard"},
                                 {"label": "Alchemy", "value": "alchemy"},
+                                # Everything kept, as one tree to organise (ui_archive.py).
+                                {"label": "Archive", "value": "archive"},
                                 # An agent's own command line, running here in the
                                 # Arcana workspace with Arcana's tools (ui_agent.py).
                                 {"label": "Agent", "value": "agent"},
@@ -2242,6 +2246,7 @@ html.Div(
            "overflowY": "auto", "overflowX": "hidden"},
 ),
         _ui_alchemy.layout(),
+        _ui_archive.layout(),
         ]),   # /main-row
 
 
@@ -2618,9 +2623,9 @@ def toggle_inputs(mode):
             hidden,
             results_list,
         )
-    elif mode == "alchemy":
-        # The Alchemy panel (ui_alchemy) fills the main row and shows its own
-        # view of the collection, so everything else here is hidden.
+    elif mode in ("alchemy", "archive"):
+        # The Alchemy panel (ui_alchemy) and the Archive (ui_archive) fill the
+        # main row with their own views, so everything else here is hidden.
         return (
             hidden, hidden, hidden, "Search",
             controls_hidden, controls_hidden, moodboard_section_hidden, scatter_hidden,
@@ -5031,6 +5036,7 @@ _ui_datasets.register(app)
 _ui_collection.register(app)
 _ui_alchemy.register(app)
 _ui_film.register(app)
+_ui_archive.register(app)
 _ui_agent.register(app)
 
 

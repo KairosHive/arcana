@@ -179,6 +179,14 @@ def test_every_example_runs(tmp, ds, actor, pixels_on):
             _fixture_board(tmp, "agent" if actor == "agent" else "person")
             if o.name == "board create":
                 os.remove(os.path.join(tmp, "boards", "monsoon.json"))
+            if o.name == "archive merge":
+                from arcana import boards
+                with open(os.path.join(boards.boards_dir(), "rains.json"), "w", encoding="utf-8") as fh:
+                    json.dump({"schema": 2, "name": "Rains", "slug": "rains", "author": "person",
+                               "items": [], "details": {}, "sections": []}, fh)
+            if o.name == "archive restore":
+                from arcana import catalogue
+                catalogue.trash("collection:monsoon")
             if o.name == "board page set":
                 page = os.path.join(tmp, "output", "boards", "monsoon.page.html")
                 os.makedirs(os.path.dirname(page), exist_ok=True)

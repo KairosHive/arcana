@@ -168,16 +168,55 @@ def test_start_stream_and_stop_through_the_routes(client, data):
         first = next(resp.response)
         first = first.decode() if isinstance(first, bytes) else first
         assert first.startswith("data: ") and "hello from the agent" in first
+        # The history comes marked as a replay, so the page does not answer
+        # the terminal queries in it again.
+        assert json.loads(first[len("data: "):].strip())["replay"] is True
         resp.close()
         client.post(f"/agent/{info['id']}/stop", json={}, headers=h)
-        deadline = time.time() + 10
-        while inst.running and time.time() < deadline:
-            time.sleep(0.1)
         assert not inst.running
+        # A stopped agent leaves the roster at once.
         listed = client.get("/agent/roster", headers=h).get_json()["instances"]
-        assert [i["running"] for i in listed if i["id"] == info["id"]] == [False]
+        assert info["id"] not in [i["id"] for i in listed]
     finally:
         agent_term.MANAGER.forget(info["id"])
+
+
+def _gone(iid, timeout=10):
+    deadline = time.time() + timeout
+    while agent_term.MANAGER.get(iid) is not None and time.time() < deadline:
+        time.sleep(0.1)
+    return agent_term.MANAGER.get(iid) is None
+
+
+def test_an_agent_that_exits_leaves_the_roster(data):
+    _agents(data, _py("Brief", "print('done')"))
+    inst = agent_term.MANAGER.start("Brief")
+    assert _gone(inst.id)
+    assert inst.exit_code == 0
+
+
+def test_agents_stop_when_no_page_has_looked_for_a_while(data):
+    _agents(data, _py("Wait", "input()"))
+    inst = agent_term.MANAGER.start("Wait")
+    try:
+        m = agent_term.MANAGER
+        assert m.reap(now=m.last_seen + agent_term.UNWATCHED_SECONDS - 1) == []
+        assert inst.running
+        # A page streaming it keeps it, however long ago the last check-in was.
+        _, q = inst.subscribe()
+        assert m.reap(now=m.last_seen + agent_term.UNWATCHED_SECONDS + 1) == []
+        inst.unsubscribe(q)
+        assert m.reap(now=m.last_seen + agent_term.UNWATCHED_SECONDS + 1) == [inst.id]
+        assert _gone(inst.id)
+    finally:
+        agent_term.MANAGER.forget(inst.id)
+
+
+def test_any_request_from_the_page_counts_as_looking(client, data):
+    h = {agent_term.HEADER: agent_term.TOKEN}
+    agent_term.MANAGER.last_seen = 0
+    client.get("/agent/roster", headers=h)
+    assert time.time() - agent_term.MANAGER.last_seen < 5
 
 
 # ─────────────────────────── the terminal's own `arcana` ───────────────────────────

@@ -8,9 +8,16 @@
 #
 # Each running agent is an Instance: the process, a reader thread, and the last
 # couple of megabytes of what it printed. The panel streams that over
-# Server-Sent Events and sends keystrokes back with small POSTs, so closing the
-# tab, or reloading the page, loses nothing: the agent keeps running and the
+# Server-Sent Events and sends keystrokes back with small POSTs, so switching
+# tabs or reloading the page loses nothing. The agent keeps running and the
 # next view replays its scrollback.
+#
+# Nothing runs unseen. An agent that exits leaves the roster at once (the page
+# that watched it keeps its last screen until closed). Every open Arcana page
+# checks in every 20 seconds, and when no page has checked in for
+# UNWATCHED_SECONDS, the agents are stopped. A reload takes seconds, so it
+# keeps them, while a closed window stops them a few minutes later. When the
+# app exits, its agents end with it.
 #
 # These routes type into a shell, so they are guarded twice. Every request
 # carries a token minted for this process and handed only to the app's own
@@ -40,6 +47,8 @@ except ImportError:                                   # pragma: no cover
 TOKEN = secrets.token_urlsafe(24)
 HEADER = "X-Arcana-Term"
 SCROLLBACK_CHARS = 2_000_000
+UNWATCHED_SECONDS = 180          # no Arcana page open this long, and the agents stop
+REAP_EVERY = 10
 CONFIG_NAME = "agents.json"
 
 # Offered when they are on PATH. A person adds others in agents.json in the
@@ -98,8 +107,9 @@ def _spawn(argv: list[str], cwd: str, env: dict, cols: int, rows: int):
 
 
 class Instance:
-    def __init__(self, agent: dict, cols: int = 120, rows: int = 32):
+    def __init__(self, agent: dict, cols: int = 120, rows: int = 32, on_exit=None):
         self.id = uuid.uuid4().hex[:10]
+        self.on_exit = on_exit
         self.name = agent["name"]
         self.started = time.time()
         self.cwd = _workspace.prepare()
@@ -149,6 +159,8 @@ class Instance:
             self.exit_code = int(code) if code is not None else -1
             for q in self.listeners:
                 q.put(("exit", self.exit_code))
+        if self.on_exit is not None:
+            self.on_exit(self)
 
     def subscribe(self) -> tuple[str, queue.Queue]:
         """The scrollback so far, and a queue of what comes next."""
@@ -175,11 +187,20 @@ class Instance:
             self.proc.setwinsize(rows, cols)
             self.size = (cols, rows)
 
-    def stop(self) -> None:
+    def stop(self, wait: float = 0.0) -> None:
+        """End the agent, and wait up to `wait` seconds for it to be gone."""
         try:
             self.proc.terminate(force=True)
         except Exception:
             pass
+        deadline = time.time() + wait
+        while self.running and time.time() < deadline:
+            time.sleep(0.05)
+
+    @property
+    def watched(self) -> bool:
+        with self.lock:
+            return bool(self.listeners)
 
     def info(self) -> dict:
         return {"id": self.id, "name": self.name, "running": self.running,
@@ -190,15 +211,57 @@ class Manager:
     def __init__(self):
         self._lock = threading.Lock()
         self.instances: dict[str, Instance] = {}
+        self.last_seen = time.time()
+        self._reaper: threading.Thread | None = None
+
+    def touch(self) -> None:
+        """An Arcana page is open: it checked in, streamed or typed."""
+        self.last_seen = time.time()
 
     def start(self, name: str, cols: int = 120, rows: int = 32) -> Instance:
         agent = next((a for a in offered() if a["name"] == name), None)
         if agent is None:
             raise ValueError(f"No agent called {name!r} on this machine.")
-        inst = Instance(agent, cols, rows)
+        self.touch()
+        inst = Instance(agent, cols, rows, on_exit=self._exited)
         with self._lock:
             self.instances[inst.id] = inst
+        if not inst.running:                 # it exited before it was listed
+            self._exited(inst)
+        self._ensure_reaper()
         return inst
+
+    def _exited(self, inst: Instance) -> None:
+        """An agent that has exited leaves the roster, so none linger."""
+        with self._lock:
+            self.instances.pop(inst.id, None)
+
+    def reap(self, now: float | None = None) -> list[str]:
+        """Stop the agents no page has looked at for UNWATCHED_SECONDS."""
+        now = time.time() if now is None else now
+        if now - self.last_seen < UNWATCHED_SECONDS:
+            return []
+        stopped = []
+        for inst in list(self.instances.values()):
+            if inst.running and not inst.watched:
+                inst.stop()
+                stopped.append(inst.id)
+        return stopped
+
+    def _ensure_reaper(self) -> None:
+        if self._reaper is not None and self._reaper.is_alive():
+            return
+
+        def loop():
+            while True:
+                time.sleep(REAP_EVERY)
+                try:
+                    self.reap()
+                except Exception:
+                    pass
+
+        self._reaper = threading.Thread(target=loop, name="agent-reaper", daemon=True)
+        self._reaper.start()
 
     def get(self, iid: str) -> Instance | None:
         return self.instances.get(iid)
@@ -243,6 +306,7 @@ def blueprint():
                                                 if request.endpoint == "arcana_agent._stream" else None)
         if given != TOKEN:
             return jsonify({"error": "This needs the app's own page."}), 403
+        MANAGER.touch()
         return None
 
     @bp.get("/agent/roster")
@@ -290,7 +354,9 @@ def blueprint():
         inst, err = _instance(iid)
         if err:
             return err
-        inst.stop()
+        # Wait for it to be gone, so the roster the page asks for next no
+        # longer lists it.
+        inst.stop(wait=3.0)
         return jsonify({"ok": True})
 
     @bp.post("/agent/<iid>/forget")
@@ -308,11 +374,14 @@ def blueprint():
             history, q = inst.subscribe()
             try:
                 if history:
-                    yield "data: " + json.dumps({"d": history}) + "\n\n"
+                    # Marked as a replay, so the page does not answer the
+                    # terminal queries in it a second time, as keystrokes.
+                    yield "data: " + json.dumps({"d": history, "replay": True}) + "\n\n"
                 while True:
                     try:
                         kind, value = q.get(timeout=15)
                     except queue.Empty:
+                        MANAGER.touch()          # an open stream is a page looking
                         yield ": keepalive\n\n"
                         continue
                     if kind == "d":

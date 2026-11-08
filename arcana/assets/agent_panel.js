@@ -7,6 +7,11 @@
 // outside Dash, so switching tabs or agents keeps its scrollback, and a page
 // reload replays it from the server.
 //
+// The page checks in every 20 seconds from any tab, which keeps its agents
+// running (agent_term.py stops them when no page has checked in for a few
+// minutes). An agent that exits leaves the server's roster at once. Its last
+// screen stays here until it is closed, and a reload clears it.
+//
 // xterm.js and its fit add-on are vendored in assets/vendor (MIT). Dash loads
 // every script in assets/, in an order this does not rely on: it waits for
 // window.Terminal before drawing anything.
@@ -47,6 +52,14 @@
   // ── the roster: what can start, and what is running ──
   function refresh() {
     return api("/agent/roster").then(function (r) {
+      // Agents that exited while this page watched them: the server has let
+      // them go, and their last screen stays here until closed.
+      var listed = r.instances.map(function (i) { return i.id; });
+      Object.keys(S.terms).forEach(function (id) {
+        if (listed.indexOf(id) < 0) {
+          r.instances.push({ id: id, name: S.terms[id].name, running: false });
+        }
+      });
       S.roster = r;
       var alive = r.instances.map(function (i) { return i.id; });
       if (S.current && alive.indexOf(S.current) < 0) S.current = null;
@@ -114,17 +127,18 @@
     });
   }
 
+  function discard(id) {
+    var t = S.terms[id];
+    if (t) { if (t.es) t.es.close(); t.term.dispose(); delete S.terms[id]; }
+    if (S.current === id) S.current = null;
+  }
+
   function close(i) {
     if (i.running) {
-      if (!confirm("Stop " + i.name + "? Its session ends; the workspace stays.")) return;
-      api("/agent/" + i.id + "/stop", {}).then(refresh);
+      if (!confirm("Stop " + i.name + "? Its session ends, and the workspace stays.")) return;
+      api("/agent/" + i.id + "/stop", {}).then(function () { discard(i.id); refresh(); });
     } else {
-      api("/agent/" + i.id + "/forget", {}).then(function () {
-        var t = S.terms[i.id];
-        if (t) { if (t.es) t.es.close(); t.term.dispose(); delete S.terms[i.id]; }
-        if (S.current === i.id) S.current = null;
-        refresh();
-      });
+      api("/agent/" + i.id + "/forget", {}).then(function () { discard(i.id); refresh(); });
     }
   }
 
@@ -142,8 +156,11 @@
     });
     var fitter = new window.FitAddon.FitAddon();
     term.loadAddon(fitter);
-    var pending = "", timer = null;
+    var pending = "", timer = null, replaying = false;
     term.onData(function (data) {
+      // A replayed history holds the agent's old terminal queries. xterm
+      // answers them, and those answers must not reach the agent as keys.
+      if (replaying) return;
       // Batch a burst of keys (a paste) into one request.
       pending += data;
       if (!timer) timer = setTimeout(function () {
@@ -151,12 +168,19 @@
         api("/agent/" + id + "/input", { data: out });
       }, 8);
     });
-    t = { term: term, fit: fitter, es: null, size: "", el: el("div", { "class": "agent-term" }) };
+    var known = S.roster.instances.filter(function (i) { return i.id === id; })[0];
+    t = { term: term, fit: fitter, es: null, size: "", name: known ? known.name : "Agent",
+          el: el("div", { "class": "agent-term" }) };
     term.open(t.el);
     var es = new EventSource("/agent/" + id + "/stream?token=" + encodeURIComponent(token()));
     es.onmessage = function (e) {
       var m = JSON.parse(e.data);
-      if (m.d) term.write(m.d);
+      if (m.d && m.replay) {
+        replaying = true;
+        term.write(m.d, function () { replaying = false; });
+      } else if (m.d) {
+        term.write(m.d);
+      }
       if (m.exit !== undefined) {
         term.write("\r\n\x1b[2m[the agent exited with code " + m.exit + "]\x1b[0m\r\n");
         es.close();
@@ -212,6 +236,13 @@
     }).observe(panel, { attributes: true, attributeFilter: ["style"] });
     new ResizeObserver(function () { fit(); }).observe(host);
     if (visible()) { wasVisible = true; refresh(); }
+    // Check in from whichever tab is showing, so the agents know a page is open.
+    function checkIn() {
+      if (visible()) refresh();
+      else api("/agent/roster").catch(function () {});
+    }
+    checkIn();
+    setInterval(checkIn, 20000);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

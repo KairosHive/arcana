@@ -36,6 +36,7 @@ from matplotlib import pyplot as plt
 
 try:
     from . import ui_datasets as _ui_datasets
+    from . import ui_alchemy as _ui_alchemy
     from . import ui_style as _ui
     from . import jobs
     from . import boards as _boards
@@ -43,6 +44,7 @@ try:
     from . import core as _core
 except ImportError:
     import ui_datasets as _ui_datasets
+    import ui_alchemy as _ui_alchemy
     import ui_style as _ui
     import jobs
     import boards as _boards
@@ -1327,6 +1329,7 @@ app.layout = html.Div(
                         {"label": "Prompt Search", "value": "prompt"},
                         {"label": "Generate Story", "value": "story"},
                         {"label": "Moodboard", "value": "moodboard"},
+                        {"label": "Alchemy", "value": "alchemy"},
                     ],
                     value="datasets",
                     # Dash 4 gives labels its own dark design-token colour, which is
@@ -1697,15 +1700,12 @@ app.layout = html.Div(
                         # stage unambiguous about which control produced what.
                         dcc.RadioItems(
                             id="moodboard-tool",
-                            options=[
-                                {"label": "Find similar", "value": "search"},
-                                {"label": "Colour transfer", "value": "transfer"},
-                                {"label": "Style transfer", "value": "style"},
-                            ],
+                            # Colour and style transfer moved to the Alchemy tab.
+                            options=[{"label": "Find similar", "value": "search"}],
                             value="search",
                             className="tool-switch",
                             labelStyle={"cursor": "pointer"},
-                            style={"marginBottom": "12px"},
+                            style={"display": "none"},
                         ),
                         # ─────────────────────────────────────────────────────────
                         # SIMILARITY SEARCH PANEL
@@ -2413,6 +2413,7 @@ html.Div(
     style={"flex": "0 0 40%", "minWidth": "0", "minHeight": "0",
            "overflowY": "auto", "overflowX": "hidden"},
 ),
+        _ui_alchemy.layout(),
         ]),   # /main-row
 
 
@@ -2807,6 +2808,16 @@ def toggle_inputs(mode, tool):
             hidden,
             results_list if tool == "search" else hidden,
             hidden if tool == "search" else transfer_stage,
+        )
+    elif mode == "alchemy":
+        # The Alchemy panel (ui_alchemy) fills the main row and shows its own
+        # view of the collection, so everything else here is hidden.
+        return (
+            hidden, hidden, hidden, "Search",
+            controls_hidden, controls_hidden, moodboard_section_hidden, scatter_hidden,
+            hidden, hidden, hidden, hidden, hidden,
+            main_row_visible, rail_hidden,
+            hidden, hidden, hidden, hidden, hidden, hidden,
         )
     else:  # datasets
         # The manager owns the whole width: there is no scatter to show, and
@@ -5789,6 +5800,7 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
 # The dataset manager registers its own callbacks; done here so the layout
 # it refers to already exists.
 _ui_datasets.register(app)
+_ui_alchemy.register(app)
 
 
 def main():

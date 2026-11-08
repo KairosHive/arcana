@@ -75,7 +75,7 @@ def test_p0_registers_the_read_ops_of_four_nouns():
             "dataset survey", "model list", "search text", "search facets", "search like",
             "search palette", "item show", "item sheet", "item palette",
             "item describe"} <= names
-    assert all(o.kind == "read" for o in ops.all_ops())
+    assert all(o.kind == "read" for o in ops.all_ops() if not o.name.startswith("alchemy "))
 
 
 def test_help_renders_and_names_every_field():
@@ -105,7 +105,10 @@ def test_every_example_runs_and_writes_nothing(tmp, ds, actor, pixels_on):
     synth.pixels(tmp, pixels_on)
     before = _files(tmp)
     ctx = ops.context(actor)
+    # Effects write by design (their examples are checked to parse at registration).
     for o in ops.all_ops():
+        if o.kind != "read":
+            continue
         for line in o.examples:
             batch = ops.exec_lines([_as_synth(line)], ctx=ctx)
             step = batch.steps[0]

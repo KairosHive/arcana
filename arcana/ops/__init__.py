@@ -17,4 +17,4 @@ from .registry import (                                     # noqa: F401
 from .grammar import help_text, parse_line, parse_tokens   # noqa: F401
 
 # Importing the op modules registers their ops, in the order `op list` shows.
-from . import system, dataset, search, item                # noqa: F401,E402
+from . import system, dataset, search, item, alchemy       # noqa: F401,E402

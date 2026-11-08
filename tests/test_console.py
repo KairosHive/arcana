@@ -134,6 +134,7 @@ def test_every_entry_point_turns_the_console_utf8():
     """
     expected = {
         "arcana.py": ["main"],
+        "cli.py": ["main"],
         "db.py": ["main", "extend_main", "marks_main"],
         "legacy.py": ["main"],
         "relocate.py": ["main"],

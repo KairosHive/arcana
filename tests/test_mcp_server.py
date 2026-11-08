@@ -10,105 +10,30 @@ talks to it through an MCP client, because the failure that matters most there
 Run with:  python -m pytest tests/test_mcp_server.py
 """
 
-import json
 import os
-import pickle
 import sys
 
-import numpy as np
-import pandas as pd
 import pytest
 
 pytest.importorskip("mcp")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from arcana import core, mcp_server as srv  # noqa: E402
 
-DIM = 64
-N_WATER, N_FOREST, N_MIXED, N_NOISE = 5, 5, 3, 30
-
-
-def _axis(i):
-    v = np.zeros(DIM, np.float32)
-    v[i] = 1.0
-    return v
-
-
-# The fixed "text encoder": each word is a direction, and every other phrase --
-# which includes the generic descriptions core.confidence() weighs a query
-# against -- is one shared "ordinary picture" direction.
-WORDS = {"water": _axis(0), "forest": _axis(1), "spaceship": _axis(63)}
-GENERIC = _axis(62)
-
-
-def _write_dataset(tmp):
-    """
-    A dataset of water, forest, water-and-forest, and ordinary pictures, laid
-    out as db.py does.
-
-    The ordinary pictures lean towards GENERIC, the way real photographs of
-    nothing in particular sit closest to "a photo" or "a landscape" in CLIP:
-    that is what lets a query for something absent come back weak. The mixed
-    pictures carry enough noise not to be near-copies of each other, so the
-    negatives test has three of them to watch.
-    """
-    from PIL import Image
-    from usearch.index import Index
-
-    rng = np.random.default_rng(7)
-    photos = os.path.join(tmp, "photos")
-    os.makedirs(photos)
-    db = os.path.join(tmp, "databases")
-    lat = os.path.join(tmp, "latents")
-    os.makedirs(db)
-    os.makedirs(lat)
-
-    vecs, labels, colours = [], [], []
-    for _ in range(N_WATER):
-        vecs.append(_axis(0) + 0.05 * rng.standard_normal(DIM)); labels.append("Water")
-    for _ in range(N_FOREST):
-        vecs.append(_axis(1) + 0.05 * rng.standard_normal(DIM)); labels.append("Forest")
-    for _ in range(N_MIXED):
-        vecs.append(_axis(0) + _axis(1) + 0.15 * rng.standard_normal(DIM)); labels.append("Mixed")
-    for _ in range(N_NOISE):
-        vecs.append(GENERIC + 0.3 * rng.standard_normal(DIM)); labels.append("Noise")
-
-    n = len(vecs)
-    index = Index(ndim=DIM, metric="cos")
-    idx2path = {}
-    for k, v in enumerate(vecs):
-        index.add(k, np.asarray(v, np.float32))
-        p = os.path.join(photos, f"img_{k:03d}.jpg")
-        shade = (40 + 5 * k) % 255
-        Image.new("RGB", (64, 48), (shade, 90, 200 - shade % 150)).save(p, "JPEG")
-        idx2path[k] = p
-    with open(os.path.join(db, "index_synth_image.pkl"), "wb") as f:
-        pickle.dump((index.save(), idx2path), f)
-
-    ratings = [5, 4, None, 3, 2] * (n // 5) + [None] * (n % 5)
-    pd.DataFrame({
-        "x": np.arange(n, dtype=np.float32), "y": np.zeros(n, np.float32),
-        "path": list(idx2path.values()), "label": labels,
-        "rating": ratings[:n], "colour": ["Red" if k % 2 else "" for k in range(n)],
-        "captured": pd.to_datetime(["2025-06-05"] * n),
-    }).to_pickle(os.path.join(lat, "latent_space_synth_image_2d.pkl"))
-    return idx2path
+from synth import N_FOREST, N_MIXED, N_WATER  # noqa: E402
+import synth  # noqa: E402
 
 
 @pytest.fixture
 def ds(tmp, monkeypatch):
-    monkeypatch.setenv("ARCANA_DATA_DIR", tmp)
-    monkeypatch.setattr(core, "encode_query",
-                        lambda q, index, modality="image": WORDS.get(q, GENERIC))
-    monkeypatch.setattr(core, "_DISTRACTOR_VECS", {})
-    return _write_dataset(tmp)
+    return synth.use(tmp, monkeypatch)
 
 
 def _pixels(tmp, on=True):
-    with open(os.path.join(tmp, "agent.json"), "w", encoding="utf-8") as fh:
-        json.dump({"pixels": on}, fh)
+    synth.pixels(tmp, on)
 
 
 def _texts(out):

@@ -60,3 +60,8 @@ pot>=0.9
 
 # --- ModFlows colour transfer ---
 einops>=0.8
+
+# --- Ops: argument and result models (arcana/ops) ---
+# Dash already depends on it, so this pins nothing new. It is listed because
+# the ops import it directly, and a dependency we use should be one we declare.
+pydantic>=2.6,<3

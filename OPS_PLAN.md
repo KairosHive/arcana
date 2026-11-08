@@ -1,6 +1,6 @@
 # Arcana ops: one vocabulary, many thin surfaces
 
-Not yet executed. Goal: every action Arcana can perform is a named op, declared
+P0 done, P1 next. Goal: every action Arcana can perform is a named op, declared
 once, and the web UI, the command line and an MCP agent all reach the same ops
 through thin surfaces generated from that one declaration. An agent can then
 prompt the latent space, build libraries, assemble moodboards from varied
@@ -169,7 +169,7 @@ model's fields.
 | enum / Literal | `--mode palette`, with the choices in `--help` and in completion |
 | positional | `positional(n)` fields, in order, with a trailing list taking the rest |
 | nested model or `list[model]` | JSON in one argument, `--facet '{"name": …}'`, repeatable |
-| the whole args model | `--json '{…}'` or `--args @request.json` |
+| the whole args model | `--args '{…}'` or `--args @request.json` |
 
 Flag names are the field names in kebab case. Field names stay the same across
 the text grammar, the JSON Schema and the Python model, so a refusal that names
@@ -225,7 +225,7 @@ Each op declares a result model. Three renderers read it.
 | renderer | used by | what it does |
 |---|---|---|
 | text | CLI, MCP | one compact block per result. Hit lines follow `sheets.py`'s existing form, `#7  japan:1423  p 0.92  ★★★★  [Forest]  DSC04481.jpg`. |
-| json | the web UI, tests, `--json` on the CLI | the model dumped, with image attachments as handles and URLs |
+| json | the web UI, tests, `arcana --json <op>` on the CLI (before the op, so it never collides with an op's own flags) | the model dumped, with image attachments as captions and paths |
 | attachments | all | a result may carry images (a contact sheet, a rendered board). The CLI writes them to `output/sheets/` and prints the path. MCP sends them as image content in pixels mode and as a line saying so in blind mode. The web UI gets a `/thumb` URL. |
 
 The pixels gate stays exactly where A8 put it, in `agent.json`, read on every
@@ -396,7 +396,7 @@ Names are noun then verb. Kind is read (R), write (W) or effect (E). A trailing
 
 | op | kind | does | today |
 |---|---|---|---|
-| `search text <ds> --phrase … [--not …] [--k] [--diversity] [--stars] [--colour] [--from] [--to] [--exclude …]` | R | one facet, calibrated p, strong/fair/weak | `do_search`, one `Facet` |
+| `search text <ds> --phrase … [--negative …] [--k] [--diversity] [--min-stars] [--tag …] [--date-from] [--date-to]` | R | one facet, calibrated p, strong/fair/weak. Diversity defaults to 0, so the hits are the Prompt Search tab's | `do_search`, one `Facet` |
 | `search facets <ds> --facet '{json}' …` | R | several facets at once, no picture repeated across them | `do_search` |
 | `search like <handles…> [--mode semantic\|palette\|style\|combined] [--k] [--exclude]` | R | by example | `do_more_like`, `db.search_by_*` |
 | `search palette <ds> --colour '#1f2a36:0.4' … [--k]` | R | pictures in a chosen palette | `do_find_by_palette` |
@@ -561,6 +561,29 @@ Each phase ends with something usable and keeps every existing test green.
 - **Done when** `arcana search text japan --phrase "rain on a dark street"`
   prints the same hits the Dash search tab shows, `arcana op list` lists the
   read ops, and every example runs in the tests.
+
+**Done 7 November 2026.** Sixteen read ops across system, dataset, model,
+search and item. `search text` returns the Prompt Search tab's cards in the
+same order for eight queries over `japan` (ViT-B/32) and `export-quick`
+(ViT-H/14), and `test_ops_registry.py` checks the same on the synthetic
+dataset. Every example runs as the CLI, as a blind agent and as a seeing agent,
+and writes nothing. The six MCP tools now call the ops, so their tests cover
+the ops too. 400 tests pass.
+
+What building it settled, beyond the text above:
+
+- `exec(lines)` is `ops.exec_lines`, since `exec` is a Python builtin.
+- The CLI's output switch is `arcana --json <op>`, before the op. Inside a
+  line the whole args model is `--args`, so `--json` means one thing.
+- Flag names for the filters are `--min-stars`, `--tag` (colour tags) and
+  `--date-from`/`--date-to`. `from` is a Python keyword, and `--colour` stays
+  for hex colours in `search palette`. Negatives are `--negative`.
+- `register()` refuses write ops until `state.Store` exists in P1, so nothing
+  can write outside a transaction in the meantime.
+- `pydantic` is declared in `requirements.txt`. Dash already brought it in.
+- A frame with nullable integer ratings holds `pd.NA`, which made the old
+  `x == x` test raise inside `facts()`. It uses `pd.notna` now, which fixed
+  search on `export-quick` for the MCP tools as well.
 
 ### P1. State, boards, server, MCP as one tool (about 3 days)
 

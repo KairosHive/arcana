@@ -47,7 +47,7 @@ dev = ["pytest>=7.0"]
 agent = ["mcp>=1.10"]
 
 [project.scripts]
-arcana = "arcana.arcana:main"
+arcana = "arcana.cli:main"
 arcana-build-latent = "arcana.db:main"
 arcana-extend = "arcana.db:extend_main"
 arcana-finish = "arcana.db:finish_main"

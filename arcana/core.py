@@ -1,6 +1,6 @@
 # core.py — search, filters and dataset loading, without the app
 #
-# These lived in arcana.py, which builds the whole Dash app when it is imported:
+# These lived in arcana.py, which builds the whole web app when it is imported:
 # the layout, every callback, the Flask routes. So nothing could search a
 # dataset without also constructing a web application -- not a test, not a
 # command-line tool, and not the MCP server an agent talks to, which runs as its
@@ -8,7 +8,7 @@
 #
 # So the pieces that only need numbers, files and a text encoder are here, and
 # arcana.py imports them back under the same names. This module must never
-# import dash; tests/test_core.py checks that.
+# import the web app or torch; tests/test_core.py checks that.
 #
 # What stays in arcana.py is anything that decides what the browser may see:
 # load_data() there wraps the one here and registers the dataset's files with the
@@ -137,7 +137,7 @@ def open_dataset(name: str, modality: str = "image", n_dim: int = 2, *,
 MARK_COLUMNS = ("rating", "colour", "captured")
 
 # The colour dropdown needs a value meaning "no tag at all", and "" cannot be
-# one: Dash treats an empty string as no selection and silently drops it.
+# one: a menu treats an empty string as no selection and silently drops it.
 NO_COLOUR = "(none)"
 
 # The star control is a floor -- "three and up" -- so it needs one value that is

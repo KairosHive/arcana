@@ -5,12 +5,12 @@ requires = ["setuptools"]
 [tool.setuptools.packages.find]
 include = ["arcana*"]
 
-# Without this the built wheel contains ONLY .py files: Dash would lose
-# assets/custom.css (the dark-theme overrides, so every input renders white on
-# white) and db.py would lose assets/labels_*.txt, which DEFAULT_LABELS points
-# at for cluster naming. Verified by inspecting `uv build --wheel` output.
+# Without this the built wheel contains ONLY .py files: db.py would lose
+# assets/labels_*.txt, which DEFAULT_LABELS points at for cluster naming, and
+# the page (arcana/web, built from frontend/ with `npm run build`) would not
+# ship at all.
 [tool.setuptools.package-data]
-arcana = ["assets/*"]
+arcana = ["assets/*", "web/*", "web/**/*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
@@ -26,7 +26,7 @@ authors = [{name = "Kairos Hive"}]
 # version is single-sourced from arcana/__init__.py; see [tool.setuptools.dynamic].
 dynamic = ["version", "dependencies"]
 readme = {file = "README.md", content-type = "text/markdown"}
-keywords = ["latent space", "CLIP", "image retrieval", "generative", "dash", "exploration"]
+keywords = ["latent space", "CLIP", "image retrieval", "generative", "svelte", "exploration"]
 # arcana.py and db.py use PEP 604 ("X | None") and PEP 585 ("dict[int, str]")
 # annotations at runtime without `from __future__ import annotations`, so they
 # raise TypeError on import below 3.10. The previous ">=3.8" was never true.

@@ -3,15 +3,9 @@
   "configurations": [
     {
       "name": "arcana",
-      "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "arcana.arcana"],
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "-m", "arcana.arcana"],
       "port": 8051
-    },
-    {
-      "name": "boards",
-      "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "arcana/output/boards"],
-      "port": 8765
     }
   ]
 }

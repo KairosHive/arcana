@@ -810,7 +810,7 @@ def _feature_executor(n_workers: int):
     build that module is the whole application. For the source install run as
     `python -m arcana.arcana`, or through the `arcana` script, it is the same
     application: arcana.py imports torch with its CUDA libraries and builds
-    the Dash app at import time. Twenty-two workers starting at once each
+    the web app at import time. Twenty-two workers starting at once each
     committed a few gigabytes for CUDA alone, the machine ran out of commit
     space ("The paging file is too small for this operation to complete",
     WinError 1455), the workers died, and every image failed with "A process

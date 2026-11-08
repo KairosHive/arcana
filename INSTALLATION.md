@@ -93,11 +93,17 @@ The development route, and what the project is built with.
 git clone https://github.com/KairosHive/arcana.git
 cd arcana
 uv sync
+cd frontend && npm install && npm run build && cd ..
 uv run python -m arcana.arcana
 ```
 
 `uv sync` reads `uv.lock` and reproduces the exact environment the project was
 tested against, including a CUDA build of PyTorch on machines that can use one.
+
+The page is a Svelte application (`frontend/`), built with Node 20 or later into
+`arcana/web`, which the Python server serves. Build it once, and again after
+changing anything under `frontend/src`. `frontend/README.md` describes the
+development setup with live reload.
 
 The development server runs on **port 8051**, deliberately not the 8050 the
 packaged app uses, so you can run both side by side and compare.
@@ -127,7 +133,9 @@ pip install .
 arcana
 ```
 
-That installs the package, its dependencies and the `arcana` command. On its
+Build the page first (`cd frontend && npm install && npm run build`), since
+the wheel ships `arcana/web` as it stands. That installs the package, its
+dependencies and the `arcana` command. On its
 own it starts the app, and with an op line it runs that op (`arcana op list`
 shows them all, `arcana <op> --help` any one). `arcana-mcp` serves the same ops
 to an agent. The older names (`arcana-build-latent`, `arcana-extend`,

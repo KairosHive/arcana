@@ -1,7 +1,7 @@
 # jobs.py — background work with progress a UI can poll
 #
 # Indexing a photo library takes minutes to hours, and downloading an encoder
-# takes gigabytes. Dash callbacks are request/response, so neither can run
+# takes gigabytes. A page request is request/response, so neither can run
 # inside one: the browser would simply hang with no indication of what is
 # happening or how long is left.
 #

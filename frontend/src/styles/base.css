@@ -1,0 +1,62 @@
+@import "./tokens.css";
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--arc-bg);
+  color: var(--arc-ink);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { height: 100%; }
+
+h1, h2, h3, h4, p { margin: 0; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--arc-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { display: block; }
+code, pre { font-family: var(--font-mono); font-size: var(--fs-sm); }
+
+::selection { background: color-mix(in srgb, var(--arc-accent) 45%, transparent); }
+
+/* Scrollbars, understated so the content stays the thing. */
+* { scrollbar-width: thin; scrollbar-color: var(--arc-line-strong) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--arc-line-strong); border-radius: var(--r-pill); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- shared text roles ---- */
+.caps {
+  font-size: var(--fs-xs);
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--arc-ink-faint);
+}
+.hint { font-size: var(--fs-sm); color: var(--arc-ink-dim); line-height: 1.5; max-width: 62ch; }
+.dim { color: var(--arc-ink-dim); }
+.faint { color: var(--arc-ink-faint); }
+.ok { color: var(--arc-ok); }
+.warn { color: var(--arc-warn); }
+.bad { color: var(--arc-bad); }
+.mono { font-family: var(--font-mono); }
+.nowrap { white-space: nowrap; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.row.nowrap { flex-wrap: nowrap; }
+.col { display: flex; flex-direction: column; gap: var(--sp-2); }
+.grow { flex: 1 1 auto; min-width: 0; }
+.spacer { flex: 1; }
+
+:focus-visible { outline: none; box-shadow: var(--focus); }
+
+@keyframes arc-spin { to { transform: rotate(360deg); } }
+@keyframes arc-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }

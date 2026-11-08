@@ -1,0 +1,82 @@
+/* Design tokens. The colours mirror arcana/ui_style.py, which stays the source
+   of truth for everything the Python side draws (tests/test_ui_style.py checks
+   the two agree). Sizes, radii, type and spacing are defined once here and
+   every component reads them, so a change of rhythm is one edit. */
+:root {
+  /* ---- palette ---- */
+  --arc-bg: #141311;
+  --arc-surface: #1c1a17;
+  --arc-surface-2: #26231f;
+  --arc-surface-3: #2b2824;
+  --arc-line: #38332d;
+  --arc-line-strong: #4a443c;
+  --arc-ink: #ede8df;
+  --arc-ink-dim: #a39c90;
+  --arc-ink-faint: #6f685e;
+  --arc-accent: #c8743f;
+  --arc-accent-ink: #2a1409;
+  --arc-target: #8c9a5b;
+  --arc-ok: #7a9a5e;
+  --arc-ok-ink: #06251a;
+  --arc-warn: #d6a74d;
+  --arc-bad: #b5423a;
+  --arc-muted: #8a8278;
+  --arc-audio: #7c8f8a;
+  --arc-role-off: #2b2824;
+
+  /* tab hues: one per mode, used only in the header */
+  --tab-datasets: #d6a74d;
+  --tab-search: #7f9cc0;
+  --tab-story: #8fae6e;
+  --tab-moodboard: #c8743f;
+  --tab-alchemy: #b07fc0;
+  --tab-archive: #c9b48a;
+  --tab-agent: #5fa8a0;
+
+  /* ---- type ---- */
+  --font-ui: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 19px;
+  --lh-tight: 1.2;
+  --lh-normal: 1.45;
+  --track-caps: 0.6px;
+
+  /* ---- spacing (4px rhythm) ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* ---- radii ---- */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-pill: 999px;
+
+  /* ---- control sizes ---- */
+  --ctl-h: 30px;
+  --ctl-h-sm: 24px;
+  --ctl-h-lg: 36px;
+  --ctl-pad-x: 10px;
+  --thumb: 104px;
+
+  /* ---- elevation and motion ---- */
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 10px 30px rgba(0, 0, 0, 0.55);
+  --ease: 0.15s ease;
+  --focus: 0 0 0 2px color-mix(in srgb, var(--arc-accent) 30%, transparent);
+
+  /* ---- layout ---- */
+  --rail-w: 380px;
+  --bench-w: 42%;
+  --header-h: 44px;
+}

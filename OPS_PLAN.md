@@ -1,6 +1,6 @@
 # Arcana ops: one vocabulary, many thin surfaces
 
-P0 to P4 done, P5 next. Goal: every action Arcana can perform is a named op, declared
+P0 to P5 done, 7 November 2026; installing the new build is the person's step. Goal: every action Arcana can perform is a named op, declared
 once, and the web UI, the command line and an MCP agent all reach the same ops
 through thin surfaces generated from that one declaration. An agent can then
 prompt the latent space, build libraries, assemble moodboards from varied
@@ -795,6 +795,37 @@ What building it settled, beyond the text above:
   installed over the current one.
 - **Done when** Claude Code registered against the installed `Arcana.exe --mcp`
   lists the datasets, and the GPU build reports its card through `orient`.
+
+**Done 7 November 2026, except the install.** `mcp` is a main dependency,
+the launcher takes `--mcp`, `--headless` and `--version`, the spec bundles the
+ops, the MCP SDK (without its own CLI, which needs typer) and the skills, and
+the Datasets tab has a *Working with an agent* panel with the command for this
+install. Both builds and both installers were rebuilt: 243 MB for CPU, 2.1 GB
+for GPU.
+
+Checked on the built executables, through a real MCP client over stdio:
+`exec` is the one tool, the moodboard prompt carries the bundled skill, a
+search runs, and the GPU build's `orient` reports "Using NVIDIA GeForce RTX
+4090 Laptop GPU (sm_89, fp16)" with the `gpu` capability on. The GPU build
+started headless, wrote `server.json`, served all 60 ops and refused a request
+without its token.
+
+Installing over the September install was refused by the permission check on
+this machine, so it is left to the person:
+`installer\out\Arcana-Setup-0.2.0-GPU.exe /VERYSILENT /CURRENTUSER`, or a
+double-click.
+
+What building it settled:
+
+- In `--mcp` mode the launcher sends only stderr to a log
+  (`arcana-mcp.log`). Its usual log redirect would have sent the protocol into
+  the log file.
+- Building the orient page printed the GPU probe's note to stdout before the
+  transport took fd 1, which would corrupt the protocol stream in the frozen
+  build, where PyTorch loads early. The MCP server now builds it with stdout
+  sent to stderr.
+- The launcher answers `--version` instead of starting the app, which is
+  what it used to do for any flag it did not know.
 
 About fifteen working days to the end of P4. P0 and P1 alone give one grammar
 across the terminal and the agent, and a Moodboard tab that shows what the

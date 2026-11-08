@@ -98,7 +98,15 @@ def run(commands: list[str]) -> list:
     return _content(res)
 
 
-mcp = MCPServer("arcana", instructions=TOOL_GUIDE + "\n" + orient_page())
+# Building the orient page can print (the GPU probe says which device it
+# found). The transport keeps fd 1 off the wire only once it serves, so until
+# then anything printed would land in the protocol stream. Send it to stderr.
+import contextlib as _contextlib  # noqa: E402
+import sys as _sys  # noqa: E402
+
+with _contextlib.redirect_stdout(_sys.stderr):
+    _ORIENT = orient_page()
+mcp = MCPServer("arcana", instructions=TOOL_GUIDE + "\n" + _ORIENT)
 
 
 @mcp.tool(name="exec", description=TOOL_GUIDE,

@@ -65,3 +65,8 @@ einops>=0.8
 # Dash already depends on it, so this pins nothing new. It is listed because
 # the ops import it directly, and a dependency we use should be one we declare.
 pydantic>=2.6,<3
+
+# --- The agent's server (arcana-mcp, Arcana.exe --mcp) ---
+# MIT, pure Python and small. Shipped in the installer since P5 of OPS_PLAN.md,
+# so the installed app is an agent's server too.
+mcp>=1.10

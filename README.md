@@ -153,8 +153,9 @@ boards an agent made and works on a copy of yours. Every batch it sends is one
 step that `undo` takes back. While the app is open, its calls run in the app,
 and its boards appear in the Moodboard tab within two seconds.
 
-Claude Code picks the server up from `.mcp.json` in this repository (it needs
-`uv sync --extra agent`). For the skills too, install the plugin:
+Claude Code picks the server up from `.mcp.json` in this repository. The
+installed app serves agents too: the Datasets tab's *Working with an agent*
+panel gives the command that connects it. For the skills, install the plugin:
 
 ```
 /plugin marketplace add <path to this repository>

@@ -2,7 +2,7 @@
   "mcpServers": {
     "arcana": {
       "command": "uv",
-      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}/..", "--extra", "agent", "arcana-mcp"]
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}/..", "arcana-mcp"]
     }
   }
 }

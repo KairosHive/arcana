@@ -42,8 +42,9 @@ classifiers = [
 # NVIDIA-only; the app runs without it and falls back automatically.
 gpu = ["xformers>=0.0.27"]
 dev = ["pytest>=7.0"]
-# The MCP server an agent talks to (arcana-mcp). Optional: the app itself never
-# imports it, and the installers do not ship it. See AGENT_PLAN.md.
+# The MCP SDK is a main dependency now (requirements.txt), since the installer
+# ships the agent's server. The extra stays so `uv run --extra agent` in older
+# configurations keeps working.
 agent = ["mcp>=1.10"]
 
 [project.scripts]

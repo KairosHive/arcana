@@ -13,7 +13,7 @@ brief runs twice in Claude Code, once with the `arcana` plugin installed
    example: *Build a moodboard for "monsoon melancholy" from japan. Save it as
    eval-monsoon-skills and render it as HTML.*
 3. Remove the plugin, keep the server (`claude mcp add arcana -- uv run
-   --directory <repo> --extra agent arcana-mcp`), and repeat with the
+   --directory <repo> arcana-mcp`), and repeat with the
    `-plain` ids in fresh sessions.
 4. Score the boards:
 

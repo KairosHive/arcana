@@ -104,6 +104,13 @@ hiddenimports = [
     # the colour-range panel and the Browse button with them.
     "arcana.models", "arcana.jobs", "arcana.envcheck", "arcana.folderpicker",
     "arcana.ui_datasets", "arcana.ui_style", "arcana.refselect",
+    # The ops layer (OPS_PLAN.md). Op modules register themselves on import
+    # from arcana.ops, and the transfer and generation modules are imported
+    # inside the op bodies.
+    "arcana.ops", "arcana.cli", "arcana.server", "arcana.state", "arcana.ledger",
+    "arcana.compose", "arcana.aliases", "arcana.generate", "arcana.transfer_methods",
+    "arcana.classic_transfer", "arcana.mcp_server", "arcana.sheets", "arcana.lut",
+    "arcana.style_transfer", "arcana.modflows_net", "arcana.boards", "arcana.core",
     # scientific bits reached only from inside functions
     "sklearn.decomposition", "sklearn.manifold", "sklearn.cluster", "sklearn.metrics",
     "scipy.special.cython_special",
@@ -124,6 +131,17 @@ hiddenimports = [
     "dash_daq",
 ]
 hiddenimports += collect_submodules("dash")
+hiddenimports += collect_submodules("arcana.ops")
+# `Arcana.exe --mcp` serves an agent over stdio with the MCP SDK.
+# mcp.cli is the SDK's own command line. It needs typer, which Arcana does not
+# install, and exits on import without it, which would stop the build.
+hiddenimports += collect_submodules("mcp", filter=lambda name: not name.startswith("mcp.cli"))
+hiddenimports += ["pydantic", "pydantic_core", "anyio"]
+
+# The agent skills, which the MCP server's moodboard prompt reads. In a
+# checkout they are the plugin's own files; in the build they sit in the
+# package, where arcana.mcp_server.skill_dirs() looks first.
+datas += [(os.path.join(ROOT, "plugin", "skills"), os.path.join("arcana", "skills"))]
 
 # ── what we deliberately leave out ───────────────────────────────────────────
 excludes = [

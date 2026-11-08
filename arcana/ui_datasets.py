@@ -444,8 +444,32 @@ def layout() -> html.Div:
                                 "minHeight": "17px", "marginTop": "4px"}),
                 html.Div(id="dm-models"),
             ]),
+            # -- working with an agent ----------------------------------------
+            html.Details(style={**CARD, "marginBottom": "4px"}, children=[
+                html.Summary("Working with an agent", style={
+                    **SECTION_TITLE, "cursor": "pointer", "marginBottom": "0",
+                    "userSelect": "none"}),
+                html.Div("An agent such as Claude Code can search these datasets, build "
+                         "moodboards and recolour pictures with the same ops you have here. "
+                         "It changes only boards it made, and sees thumbnails only if you "
+                         "allow it in the Moodboard tab. To connect Claude Code, run:",
+                         style={**SECTION_HINT, "marginTop": "10px"}),
+                html.Pre(agent_command(), style={
+                    "fontSize": "12px", "color": INK, "backgroundColor": SURFACE_2,
+                    "padding": "8px 10px", "borderRadius": "6px", "whiteSpace": "pre-wrap",
+                    "wordBreak": "break-all", "margin": "6px 0 0"}),
+            ]),
         ],
     )
+
+
+def agent_command() -> str:
+    """The command that registers this Arcana with Claude Code, for this install."""
+    import sys
+    if getattr(sys, "frozen", False):
+        return f'claude mcp add arcana -- "{sys.executable}" --mcp'
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return f'claude mcp add arcana -- uv run --directory "{repo}" arcana-mcp'
 
 
 # ──────────────────────────────────────────────────────────────────────────────

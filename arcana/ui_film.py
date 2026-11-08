@@ -216,6 +216,25 @@ def _settings():
                               options=[{"label": " loop back to the first picture", "value": "loop"},
                                        {"label": " even motion between pictures", "value": "even"}]),
             ], open_=False, note="length, shape, model"),
+            _section("Templates", [
+                html.Div("A template keeps this film's settings, looks and lanes without its pictures. "
+                         "Applied to another film, its keys stretch to that film's length.",
+                         style=_ui.hint(fontSize="11.5px", maxWidth="none")),
+                html.Div([
+                    _input("film-template-name", type_="text", placeholder="template name", width="auto"),
+                    html.Button("Save as template", id="film-template-save", n_clicks=0,
+                                style=_ui.button("secondary", padding="5px 10px", fontSize="12px", whiteSpace="nowrap")),
+                ], style={"display": "flex", "gap": "6px", "marginTop": "8px"}),
+                html.Div([
+                    dcc.Dropdown(id="film-template-pick", placeholder="Kept templates...",
+                                 style={**SMALL, "flex": "1", "minWidth": "0"}),
+                    html.Button("Apply", id="film-template-apply", n_clicks=0,
+                                style=_ui.button("secondary", padding="5px 10px", fontSize="12px")),
+                    html.Button("Delete", id="film-template-delete", n_clicks=0,
+                                style=_ui.button("ghost", padding="5px 10px", fontSize="12px")),
+                ], style={"display": "flex", "gap": "6px", "marginTop": "8px"}),
+                html.Div(id="film-template-status", style=_ui.hint(fontSize="11.5px", marginTop="6px")),
+            ], open_=False, note="save, apply"),
             _section("Keep and render", [
                 html.Div([
                     dcc.Dropdown(id="film-pick", placeholder="Kept films...", style={**SMALL, "flex": "1", "minWidth": "0"}),
@@ -668,6 +687,48 @@ def register(app) -> None:
         except _ops.Refusal as e:
             return e.reason
         return f"Kept as {res.film.name}."
+
+    # Templates: a film's settings, looks and lanes, kept apart from its pictures.
+    @app.callback(Output("film-template-pick", "options"), Input("film-template-status", "children"),
+                  Input("state-signature", "data"))
+    def _templates(_s, _sig):
+        try:
+            return [{"label": t.name, "value": t.name}
+                    for t in _ops.call("alchemy template list", actor="person").templates]
+        except _ops.Refusal:
+            return []
+
+    @app.callback(Output("film-spec", "data", allow_duplicate=True), Output("film-loaded", "data", allow_duplicate=True),
+                  Output("film-selected", "data", allow_duplicate=True), Output("film-template-status", "children"),
+                  Output("film-template-pick", "value"),
+                  Input("film-template-save", "n_clicks"), Input("film-template-apply", "n_clicks"),
+                  Input("film-template-delete", "n_clicks"), State("film-template-name", "value"),
+                  State("film-template-pick", "value"), State("film-spec", "data"), prevent_initial_call=True)
+    def _template(_s, _a, _d, name, pick, spec):
+        import time as _t
+
+        which = ctx.triggered_id
+        try:
+            if which == "film-template-save":
+                name = (name or "").strip() or (spec or {}).get("name") or ""
+                if not name:
+                    return no_update, no_update, no_update, "Name the template first.", no_update
+                res = _ops.call("alchemy template save", {"name": name, "spec": spec}, actor="person")
+                t = res.template
+                lanes = len(t.lanes)
+                said = (f"Kept the template {t.name}, {lanes} lane{'s' if lanes != 1 else ''} and "
+                        f"{t.looks} look{'s' if t.looks != 1 else ''} keyed over {t.length:.1f} s.")
+                return no_update, no_update, no_update, said, t.name
+            if not pick:
+                return no_update, no_update, no_update, "Choose a kept template first.", no_update
+            if which == "film-template-delete":
+                _ops.call("alchemy template delete", {"template": pick}, actor="person")
+                return no_update, no_update, no_update, f"Deleted the template {pick}.", None
+            res = _ops.call("alchemy template apply", {"template": pick, "spec": spec or {}}, actor="person")
+        except _ops.Refusal as e:
+            return no_update, no_update, no_update, e.reason, no_update
+        return (res.spec, _t.time(), None,
+                f"Applied {pick}. Keep this film to save it with the template's keys.", no_update)
 
     # The render, as a job whose progress fills the bar.
     @app.callback(Output("film-job", "data"), Output("film-poll", "disabled"),

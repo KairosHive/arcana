@@ -16,7 +16,7 @@
 # can already edit the boards in it, so the token adds no new trust. It shuts
 # out other software on the machine that finds the port.
 #
-# `arcana --headless` serves the same routes without the Dash layout, which is
+# `arcana --headless` serves the same routes without the page, which is
 # how an agent gets a long-lived server with the models kept warm.
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def blueprint():
 
 
 def register(flask_app) -> None:
-    """Serve the ops on an existing Flask app (the Dash app's server). Idempotent."""
+    """Serve the ops on an existing Flask app (the app's own server). Idempotent."""
     if "arcana_ops" not in flask_app.blueprints:
         flask_app.register_blueprint(blueprint())
 
@@ -223,7 +223,7 @@ def remote_exec(info: dict, lines: list[str], actor: str, sheets: bool | None = 
 # ─────────────────────────── headless ───────────────────────────
 
 def serve_headless(port: int = 0) -> None:
-    """The ops routes without the Dash layout, until interrupted."""
+    """The ops routes without the page, until interrupted."""
     from flask import Flask
     from werkzeug.serving import make_server
     _paths.use_utf8_console()

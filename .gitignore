@@ -81,3 +81,7 @@ installer/file_version_info.txt
 .claude/settings.local.json
 # The Agent tab's workspace (workspace.py), beside arcana/output in a checkout.
 arcana/workspace/
+
+# The Svelte page, built from frontend/ (npm run build). Rebuilt by the installer spec.
+arcana/web/
+frontend/node_modules/

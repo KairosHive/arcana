@@ -62,11 +62,16 @@ print(f"[spec] building Arcana {VERSION}")
 
 # ── data files ────────────────────────────────────────────────────────────────
 datas = [
-    # Dash serves assets/custom.css from the package directory; without it every
-    # input renders white-on-white. db.py reads assets/labels_*.txt for cluster
-    # naming. Neither is a .py file, so nothing collects them automatically.
+    # db.py reads assets/labels_*.txt for cluster naming, and the header shows
+    # assets/arcana-mark.png. Neither is a .py file, so nothing collects them
+    # automatically.
     (os.path.join(ROOT, "arcana", "assets"), os.path.join("arcana", "assets")),
+    # The page: a Svelte bundle built from frontend/ (`npm run build` there
+    # writes arcana/web). Build it before freezing, or the app serves a notice.
+    (os.path.join(ROOT, "arcana", "web"), os.path.join("arcana", "web")),
 ]
+if not os.path.isfile(os.path.join(ROOT, "arcana", "web", "index.html")):
+    raise SystemExit("[spec] arcana/web/index.html is missing: run `npm install && npm run build` in frontend/ first.")
 
 # ModFlows source is NOT bundled, deliberately.
 #
@@ -83,7 +88,7 @@ datas = [
 # The 229 MB checkpoint still does not ship: it is MIT, and downloaded once
 # into the user's writable data directory on first use, which is also the only
 # place it could survive a reinstall.
-for pkg in ("dash", "dash_daq", "plotly", "librosa", "usearch"):
+for pkg in ("librosa", "usearch"):
     try:
         datas += collect_data_files(pkg)
     except Exception as e:                                   # pragma: no cover
@@ -104,6 +109,10 @@ hiddenimports = [
     # the colour-range panel and the Browse button with them.
     "arcana.models", "arcana.jobs", "arcana.envcheck", "arcana.folderpicker",
     "arcana.ui_datasets", "arcana.ui_style", "arcana.refselect",
+    # The page's server: the JSON API, the media routes and the collection.
+    "arcana.api", "arcana.api.system", "arcana.api.datasets", "arcana.api.search",
+    "arcana.api.collection", "arcana.api.alchemy", "arcana.media",
+    "arcana.ui_collection", "arcana.ui_alchemy", "arcana.ui_film",
     # The ops layer (OPS_PLAN.md). Op modules register themselves on import
     # from arcana.ops, and the transfer and generation modules are imported
     # inside the op bodies.
@@ -112,7 +121,7 @@ hiddenimports = [
     "arcana.classic_transfer", "arcana.mcp_server", "arcana.sheets", "arcana.lut",
     "arcana.style_transfer", "arcana.modflows_net", "arcana.boards", "arcana.core",
     # The Agent tab: a terminal on an agent's command line, in the workspace.
-    "arcana.agent_term", "arcana.ui_agent", "arcana.workspace", "winpty",
+    "arcana.agent_term", "arcana.workspace", "winpty",
     # scientific bits reached only from inside functions
     "sklearn.decomposition", "sklearn.manifold", "sklearn.cluster", "sklearn.metrics",
     "scipy.special.cython_special",
@@ -129,10 +138,7 @@ hiddenimports = [
     "usearch.index",
     "transformers", "transformers.models.clip", "transformers.models.clap",
     "diffusers", "diffusers.pipelines.stable_diffusion",
-    # dash component libraries register themselves at import
-    "dash_daq",
 ]
-hiddenimports += collect_submodules("dash")
 hiddenimports += collect_submodules("arcana.ops")
 # `Arcana.exe --mcp` serves an agent over stdio with the MCP SDK.
 # mcp.cli is the SDK's own command line. It needs typer, which Arcana does not

@@ -1370,6 +1370,10 @@ app.layout = html.Div(
                                 {"label": "Agent", "value": "agent"},
                             ],
                             value="datasets",
+                            # A reload comes back to the tab it left, the Agent
+                            # tab and its running agent included.
+                            persistence=True,
+                            persistence_type="local",
                             # Dash 4 gives labels its own dark design-token colour, which is
                             # invisible on this dark ground. Set it explicitly so the app does
                             # not depend on any external or default stylesheet.

@@ -24,6 +24,9 @@ export type Layer = { choice: string; words: string; coverage: number; combine: 
 
 export const catalog = $state<{ data: Catalog | null; error: string }>({ data: null, error: '' })
 
+/** Which subtab is open, shared so the Archive can open a film in Video and the film can open a look in Image. */
+export const alchemyUi = $state({ sub: 'image' as 'image' | 'video' })
+
 export async function loadCatalog() {
   if (catalog.data) return catalog.data
   try {
@@ -144,6 +147,27 @@ export async function applyRecipe(name: string): Promise<string> {
     step.refine = { ...step.refine, ...r.mask.refine }
   }
   return r.doc || ''
+}
+
+/** A whole step (a film's look) into the controls: what it does not set goes back to its default. */
+export async function loadStep(settings: Record<string, any>) {
+  const r = await post('/api/alchemy/load', { settings })
+  if (r.method) chooseMethod(r.method, r.knobs || {})
+  step.lead = r.lead ?? 'picture'
+  step.zoom = r.zoom ?? 1.0
+  step.crop = r.crop ?? 0
+  step.finish = r.finish ? Object.fromEntries(Object.entries(r.finish).filter(([k, v]) => v !== catalog.data?.finish.find((f) => f.key === k)?.default)) as Record<string, number> : {}
+  step.scope = r.scope || 'whole'
+  if (r.mask) {
+    step.layers = r.mask.layers.map((l: any) => ({ choice: l.choice, words: l.words || '', coverage: l.coverage ?? coverageFor(l.choice), combine: l.combine || 'and' }))
+    step.invert = !!r.mask.invert
+    step.refine = { ...step.refine, ...r.mask.refine }
+  }
+  const mats: string[] = r.materials || []
+  ;(['1', '2', '3'] as const).forEach((k, i) => { step.roles[k] = mats[i] ?? null })
+  const w: number[] = r.weights || []
+  ;(['1', '2', '3'] as const).forEach((k, i) => { step.w[k] = w[i] ?? 1.0 })
+  save('alchemy.roles', step.roles)
 }
 
 export function coverageFor(choice: string): number {

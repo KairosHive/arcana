@@ -66,25 +66,33 @@ def recipes() -> list[dict]:
     return [r.public() for r in _recipes.every()]
 
 
-def recipe_controls(name: str) -> dict:
-    """A recipe as the page's control values: what Apply sets, and nothing else."""
-    r = _recipes.get(name)
-    s = r.settings
-    out: dict = {"doc": r.doc}
-    if s.get("method"):
-        out["method"] = s["method"]
-        out["family"] = _methods.get(s["method"]).family
+def settings_controls(s: dict, whole: bool = False) -> dict:
+    """
+    A step's settings as the page's control values. A recipe sets only what it
+    holds; a look from a film loads whole (`whole`), so what it does not set
+    goes back to its default.
+    """
+    out: dict = {}
+    m = s.get("method")
+    if m and m != "none":
+        out["method"] = m
+        out["family"] = _methods.get(m).family
         out["knobs"] = dict(s.get("knobs") or {})
-    for key in ("lead", "zoom"):
+    for key, default in (("lead", "picture"), ("zoom", 1.0), ("crop", 0)):
         if key in s:
             out[key] = s[key]
+        elif whole:
+            out[key] = default
     fin = s.get("finish")
-    if fin:
+    if fin or whole:
+        fin = fin or {}
         out["finish"] = {k: v for k, v in fin.items() if k != "scope"}
+        if whole:
+            out["finish"] = {**FIN_DEFAULT, **out["finish"]}
         out["scope"] = fin.get("scope", "whole")
     mask = s.get("mask")
-    if mask is not None:
-        spec = _mask.MaskSpec.of(mask)
+    if mask is not None or whole:
+        spec = _mask.MaskSpec.of(mask if mask is not None else {"layers": []})
         layers = []
         for i in range(LAYERS):
             line = spec.layers[i] if i < len(spec.layers) else "none"
@@ -95,12 +103,22 @@ def recipe_controls(name: str) -> dict:
             else:
                 layer = {"choice": CUSTOM, "words": line}
             layer["combine"] = spec.combine[i - 1] if (i > 0 and i - 1 < len(spec.combine)) else "and"
-            layer["coverage"] = (spec.coverage[i] if hasattr(spec, "coverage") and i < len(spec.coverage or [])
-                                 and spec.coverage[i] is not None else None)
+            layer["coverage"] = spec.coverage[i] if i < len(spec.coverage or []) else None
             layers.append(layer)
         out["mask"] = {"layers": layers, "invert": bool(spec.invert),
                        "refine": {key: getattr(spec, key) for key, *_ in REFINE}}
+    mats = [x for x in s.get("materials") or [] if x][:3]
+    if mats or whole:
+        out["materials"] = mats
+        w = list(s.get("weights") or [])
+        out["weights"] = [float(w[k]) if k < len(w) else 1.0 for k in range(3)]
     return out
+
+
+def recipe_controls(name: str) -> dict:
+    """A recipe as the page's control values: what Apply sets, and nothing else."""
+    r = _recipes.get(name)
+    return {"doc": r.doc, **settings_controls(r.settings)}
 
 
 # ─────────────────────────── controls -> op arguments ───────────────────────────

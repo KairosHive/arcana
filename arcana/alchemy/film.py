@@ -527,3 +527,73 @@ def save(spec: dict) -> dict:
 
 def listing() -> list[str]:
     return sorted(os.path.splitext(n)[0] for n in os.listdir(films_dir()) if n.endswith(".json"))
+
+
+# ─────────────────────────── templates ───────────────────────────
+#
+# A template is a film without its pictures: the film's settings, its looks and its lanes, kept with
+# the length they were keyed against. Applied to another film, every key stretches by that film's
+# length over the template's, so a trend keyed across 2 minutes spans a 40 second film the same way.
+# A film with fewer than two pictures has no length yet, and takes the keys at their kept times.
+
+TEMPLATE_SETTINGS = ("fps", "size", "aspect", "space", "loop", "even")
+
+
+def as_template(spec: dict, name: str) -> dict:
+    f = normalised(spec)
+    slug(name)
+    return {"name": name.strip(), "length": f["length"], **{k: f[k] for k in TEMPLATE_SETTINGS},
+            "looks": f["looks"], "lanes": f["lanes"]}
+
+
+def templated(spec: dict, template: dict) -> dict:
+    """The film with the template's settings, looks and lanes in place of its own, keys stretched to its
+    length. Its pictures, name and timing stay."""
+    out = {**(spec or {}), **{k: template[k] for k in TEMPLATE_SETTINGS if k in template}}
+    out.setdefault("pictures", [])
+    try:
+        length = normalised(out)["length"]
+    except ValueError:
+        length = None
+    kept = float(template.get("length") or 0)
+    k = length / kept if length and kept > 0 else 1.0
+
+    def at(t):
+        return round(float(t) * k, 3)
+
+    out["looks"] = [{**x, "t": at(x["t"])} for x in template.get("looks") or []]
+    out["lanes"] = {path: [{**x, "t": at(x["t"])} for x in keys] for path, keys in (template.get("lanes") or {}).items()}
+    for path in out["lanes"]:
+        check_path(path)
+    return out
+
+
+def templates_dir() -> str:
+    p = _paths()
+    return p.ensure_dir(os.path.join(p.data_dir(), "alchemy", "film-templates"))
+
+
+def template_path(name: str) -> str:
+    return os.path.join(templates_dir(), slug(name) + ".json")
+
+
+def template_listing() -> list[str]:
+    return sorted(os.path.splitext(n)[0] for n in os.listdir(templates_dir()) if n.endswith(".json"))
+
+
+def load_template(name: str) -> dict:
+    path = template_path(name)
+    if not os.path.isfile(path):
+        names = ", ".join(template_listing()) or "none yet"
+        raise ValueError(f"No film template called {name!r}. Templates: {names}.")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def save_template(template: dict) -> dict:
+    path = template_path(template["name"])
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(template, fh, indent=1)
+    os.replace(tmp, path)
+    return template

@@ -171,7 +171,7 @@ def _schema():
 
 
 # The feature modules register their routes on `bp` when imported.
-from . import system, datasets, search, collection, alchemy    # noqa: E402,F401
+from . import system, datasets, search, collection, alchemy, archive    # noqa: E402,F401
 
 
 def register(flask_app) -> None:

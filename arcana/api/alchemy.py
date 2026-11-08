@@ -167,6 +167,47 @@ def _look():
                     "message": f"Added this look to the film at {t:.2f} s. The Video subtab shows it on the look lane."})
 
 
+@bp.post("/film/look-summary")
+def _look_summary():
+    data = body()
+    return jsonify(_film.look_summary(_film.full(data.get("spec") or {}), float(data.get("t") or 0.0)))
+
+
+@bp.post("/film/look-replace")
+def _look_replace():
+    """The look at the playhead now holds the Image subtab's step."""
+    data = body()
+    try:
+        look = _film.look_from_controls(_controls(data))
+        spec = _film.replace_look(data.get("spec") or {}, float(data.get("t") or 0.0), look)
+    except (ValueError, _ops.Refusal) as e:
+        raise BadRequest(str(e))
+    return jsonify({"spec": spec, "message": "The look here now holds the Image subtab's step."})
+
+
+@bp.post("/film/look-remove")
+def _look_remove():
+    data = body()
+    try:
+        spec, t = _film.remove_look(data.get("spec") or {}, float(data.get("t") or 0.0))
+    except ValueError as e:
+        raise BadRequest(str(e))
+    return jsonify({"spec": spec, "message": f"Removed the look at {t:.2f} s."})
+
+
+@bp.post("/alchemy/load")
+def _load_step():
+    """A whole step's settings (a film's look) as control values, for Edit in Image."""
+    data = body()
+    settings = data.get("settings")
+    if not isinstance(settings, dict):
+        raise BadRequest("Send the look's settings.")
+    try:
+        return jsonify(_ia.settings_controls(settings, whole=True))
+    except (ValueError, KeyError) as e:
+        raise BadRequest(str(e))
+
+
 @bp.post("/film/frame")
 def _frame():
     data = body()

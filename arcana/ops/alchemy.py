@@ -839,6 +839,131 @@ def _alchemy_film_delete(a: AlchemyFilmDeleteArgs, ctx: Context) -> TextResult:
     return TextResult(body=f"Deleted the film {a.film}.\n")
 
 
+# ─────────────────────────── film templates ───────────────────────────
+
+class TemplateInfo(BaseModel):
+    name: str
+    length: float
+    looks: int
+    lanes: list[str]
+
+    def text(self) -> str:
+        lanes = ", ".join(self.lanes) or "none"
+        return f"{self.name}  keyed over {self.length:.1f} s, {self.looks} look(s), lanes: {lanes}"
+
+
+def _template_info(t: dict) -> TemplateInfo:
+    return TemplateInfo(name=t["name"], length=float(t.get("length") or 0), looks=len(t.get("looks") or []),
+                        lanes=list(t.get("lanes") or {}))
+
+
+class TemplateListResult(Result):
+    templates: list[TemplateInfo]
+
+    def text(self) -> str:
+        return ("\n".join(t.text() for t in self.templates) or "No film templates kept yet.") + "\n"
+
+
+class AlchemyFilmTemplateListArgs(Args):
+    pass
+
+
+@op("alchemy template list", "read", AlchemyFilmTemplateListArgs, TemplateListResult,
+    doc="""
+    The film templates kept so far.
+
+    A template holds a film's settings, looks and lanes, without its pictures,
+    ready to apply to another film.
+    """,
+    examples=("alchemy template list",))
+def _alchemy_film_template_list(a: AlchemyFilmTemplateListArgs, ctx: Context) -> TemplateListResult:
+    film = _film_mod()
+    out = []
+    for name in film.template_listing():
+        try:
+            out.append(_template_info(film.load_template(name)))
+        except (OSError, ValueError, KeyError):
+            continue
+    return TemplateListResult(templates=out)
+
+
+class AlchemyFilmTemplateSaveArgs(FilmSpecArgs):
+    name: str = Field(description="The template's name. A template of the same name is replaced.")
+
+
+class TemplateResult(Result):
+    template: TemplateInfo
+
+    def text(self) -> str:
+        return "Kept the template " + self.template.text() + "\n"
+
+
+@op("alchemy template save", "write", AlchemyFilmTemplateSaveArgs, TemplateResult,
+    doc="""
+    Keep a film's settings, looks and lanes as a template, without its
+    pictures. Applied to another film, the keys stretch to that film's
+    length. Undo takes it back.
+    """,
+    examples=("alchemy template save --name \"slow fade\" --spec " + EXAMPLE_SPEC,))
+def _alchemy_film_template_save(a: AlchemyFilmTemplateSaveArgs, ctx: Context) -> TemplateResult:
+    film = _film_mod()
+    t = film.as_template(_film_of(a.film, a.spec, ctx), a.name)
+    ctx.tx.touch(film.template_path(t["name"]))
+    return TemplateResult(template=_template_info(film.save_template(t)))
+
+
+class AlchemyFilmTemplateApplyArgs(FilmSpecArgs):
+    template: str = Field(description="The kept template to apply, by name.")
+
+
+class TemplateAppliedResult(Result):
+    template: str
+    spec: dict
+
+    def text(self) -> str:
+        lanes = ", ".join(self.spec.get("lanes") or {}) or "none"
+        return (f"The film with {self.template}: {len(self.spec.get('looks') or [])} look(s), lanes: {lanes}.\n"
+                "alchemy film save --spec takes the spec.\n")
+
+
+@op("alchemy template apply", "read", AlchemyFilmTemplateApplyArgs, TemplateAppliedResult,
+    doc="""
+    A film with a template's settings, looks and lanes in place of its own.
+    Its pictures stay. The keys stretch from the template's length to the
+    film's. It changes nothing kept, and alchemy film save keeps the result.
+    """,
+    examples=("alchemy template apply --template \"slow fade\" --spec " + EXAMPLE_SPEC,))
+def _alchemy_film_template_apply(a: AlchemyFilmTemplateApplyArgs, ctx: Context) -> TemplateAppliedResult:
+    from . import archive
+
+    film = _film_mod()
+    spec = a.spec if a.spec else film.load(a.film) if a.film else {}
+    for p in spec.get("pictures") or []:
+        archive.resolve_item(str(p.get("ref", "")), ctx.actor)
+    t = film.load_template(a.template)
+    return TemplateAppliedResult(template=t["name"], spec=film.templated(spec, t))
+
+
+class AlchemyFilmTemplateDeleteArgs(Args):
+    template: str = positional(0, description="The kept template to delete, by name.",
+                               json_schema_extra={"metavar": "TEMPLATE"})
+
+
+@op("alchemy template delete", "write", AlchemyFilmTemplateDeleteArgs, TextResult,
+    doc="""
+    Delete a kept film template. Films made with it keep their keys, and undo
+    brings the template back.
+    """,
+    examples=('alchemy template delete "slow fade"',), actors=("person", "cli"))
+def _alchemy_film_template_delete(a: AlchemyFilmTemplateDeleteArgs, ctx: Context) -> TextResult:
+    film = _film_mod()
+    t = film.load_template(a.template)
+    path = film.template_path(a.template)
+    ctx.tx.touch(path)
+    os.remove(path)
+    return TextResult(body=f"Deleted the film template {t['name']}.\n")
+
+
 class FrameResult(Result):
     film: str
     at: float

@@ -111,7 +111,8 @@ hiddenimports = [
     "arcana.ui_datasets", "arcana.ui_style", "arcana.refselect",
     # The page's server: the JSON API, the media routes and the collection.
     "arcana.api", "arcana.api.system", "arcana.api.datasets", "arcana.api.search",
-    "arcana.api.collection", "arcana.api.alchemy", "arcana.media",
+    "arcana.api.collection", "arcana.api.alchemy", "arcana.api.archive", "arcana.media",
+    "arcana.catalogue",
     "arcana.ui_collection", "arcana.ui_alchemy", "arcana.ui_film",
     # The ops layer (OPS_PLAN.md). Op modules register themselves on import
     # from arcana.ops, and the transfer and generation modules are imported

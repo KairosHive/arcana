@@ -2,17 +2,18 @@
 // collection, settings, the running job, and the two-second state poll that
 // keeps all of it in step with the terminal and agents.
 
-import { get, post, reason } from '../api/client'
+import { get, post, reason, ApiError } from '../api/client'
 import { load, save } from './persist'
 import { toast } from './toast.svelte'
 
-export type Mode = 'datasets' | 'prompt' | 'story' | 'moodboard' | 'alchemy' | 'agent'
+export type Mode = 'datasets' | 'prompt' | 'story' | 'moodboard' | 'alchemy' | 'archive' | 'agent'
 export const MODES: { value: Mode; label: string; hue: string }[] = [
   { value: 'datasets', label: 'Datasets', hue: 'var(--tab-datasets)' },
   { value: 'prompt', label: 'Prompt Search', hue: 'var(--tab-search)' },
   { value: 'story', label: 'Generate Story', hue: 'var(--tab-story)' },
   { value: 'moodboard', label: 'Moodboard', hue: 'var(--tab-moodboard)' },
   { value: 'alchemy', label: 'Alchemy', hue: 'var(--tab-alchemy)' },
+  { value: 'archive', label: 'Archive', hue: 'var(--tab-archive)' },
   { value: 'agent', label: 'Agent', hue: 'var(--tab-agent)' },
 ]
 
@@ -129,8 +130,11 @@ export async function pollState() {
       if (s.settings) app.settings = s.settings
       for (const fn of listeners) fn(s.signature)
     }
-  } catch {
-    /* the server may be restarting; the next tick tries again */
+  } catch (e) {
+    // A 403 means the server restarted and minted a new token: this page's
+    // token is stale, and a reload is the only way to get the new one.
+    if (e instanceof ApiError && e.status === 403) location.reload()
+    /* otherwise the server may be restarting; the next tick tries again */
   } finally {
     polling = false
   }

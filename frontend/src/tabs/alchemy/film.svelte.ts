@@ -11,7 +11,8 @@ export type FilmSpec = {
   name: string; fps: number; size: number; aspect: string; space: string; loop: boolean; even: boolean; length?: number
   pictures: Key[]; looks: Key[]; lanes: Record<string, Key[]>
 }
-export type LaneMeta = { label: string; lo: number; hi: number; step: number; group: string }
+export type LaneMeta = { label: string; lo: number; hi: number; step: number; group: string; doc?: string }
+export type LookSummary = { index: number | null; count: number; t?: number; method?: string; model?: string | null; mask?: string; materials?: string[]; finish?: string[]; settings?: Record<string, any> }
 export type FilmMeta = {
   length: number; lanes: Record<string, LaneMeta>; laneOptions: { label: string; value: string; group: string }[]
   pictures: { t: number; path: string; name: string }[]; looks: { t: number; label: string }[]
@@ -124,6 +125,39 @@ export async function addLook(controls: Record<string, any>): Promise<string> {
     toast(r.message, 'ok')
     return r.message
   } catch (e) { toast(reason(e), 'bad'); return reason(e) }
+}
+
+export async function replaceLook(controls: Record<string, any>): Promise<string> {
+  try {
+    const r = await post('/api/film/look-replace', { spec: film.spec, t: film.t, controls })
+    commit(r.spec)
+    return r.message
+  } catch (e) { return reason(e) }
+}
+
+export async function removeLook(): Promise<string> {
+  try {
+    const r = await post('/api/film/look-remove', { spec: film.spec, t: film.t })
+    commit(r.spec)
+    return r.message
+  } catch (e) { return reason(e) }
+}
+
+export async function lookSummary(): Promise<LookSummary> {
+  return post('/api/film/look-summary', { spec: film.spec, t: film.t })
+}
+
+/** A picture dropped on the timeline at a time of its own. */
+export function dropPicture(ref: string, t: number) {
+  const s = clone(film.spec)
+  const pics = keysOf(s, 'pictures')!
+  while (pics.some((p) => Math.abs(p.t - t) < 0.01)) t = Math.round((t + 0.05) * 100) / 100
+  const key: Key = { t, ref, ease: 'linear' }
+  pics.push(key)
+  const sortedKeys = keysOf(s, 'pictures')!
+  if (s.length && t >= s.length) delete s.length
+  film.t = t
+  commit(s, { lane: 'pictures', i: sortedKeys.indexOf(key) })
 }
 
 export function removeSelected() {

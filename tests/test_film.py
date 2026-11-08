@@ -226,3 +226,37 @@ def test_a_preview_draws_a_frame_and_a_make_records_the_video(ds, tmp):
     from arcana import ledger
     entry = ledger.get(m.id)
     assert entry["op"] == "alchemy film make" and entry["sources"] == ["synth:12", "synth:7", "synth:3"]
+
+
+# ─────────────────────────── templates ───────────────────────────
+
+def test_a_template_keeps_the_keys_and_settings_and_stretches_them_to_another_film(ds):
+    lanes = {"finish.saturation": [{"t": 0, "v": 0}, {"t": 6, "v": -100, "ease": "in"}]}
+    looks = [{"t": 3, "ease": "smooth", "settings": {"method": "none"}}]
+    saved = ops.call("alchemy template save", {"name": "Slow fade", "spec": _spec(lanes=lanes, looks=looks)},
+                     actor="cli").template
+    assert (saved.name, saved.length, saved.lanes) == ("Slow fade", 6.0, ["finish.saturation"])
+    assert "pictures" not in F.load_template("slow fade")
+
+    other = {"name": "other", "fps": 30, "size": 512, "even": True,
+             "pictures": [{"t": 0, "ref": "synth:1"}, {"t": 6, "ref": "synth:2"}, {"t": 12, "ref": "synth:3"}]}
+    got = ops.call("alchemy template apply", {"template": "Slow fade", "spec": other}, actor="agent").spec
+    assert [p["ref"] for p in got["pictures"]] == ["synth:1", "synth:2", "synth:3"]
+    assert (got["name"], got["fps"], got["size"], got["aspect"], got["even"]) == ("other", 6, 256, "4:3", False)
+    assert [(k["t"], k["v"], k["ease"]) for k in got["lanes"]["finish.saturation"]] == [(0, 0, "linear"), (18, -100, "in")]
+    assert [k["t"] for k in got["looks"]] == [9]
+
+    empty = ops.call("alchemy template apply", {"template": "Slow fade", "spec": {}}, actor="cli").spec
+    assert [k["t"] for k in empty["lanes"]["finish.saturation"]] == [0, 6]
+
+
+def test_templates_are_listed_deleted_and_undone(ds):
+    ops.call("alchemy template save", {"name": "Slow fade", "spec": _spec()}, actor="cli")
+    assert [t.name for t in ops.call("alchemy template list", {}, actor="cli").templates] == ["Slow fade"]
+    assert "agent" not in ops.get("alchemy template delete").actors
+    ops.call("alchemy template delete", {"template": "slow fade"}, actor="cli")
+    assert ops.call("alchemy template list", {}, actor="cli").templates == []
+    ops.call("undo", {}, actor="cli")
+    assert [t.name for t in ops.call("alchemy template list", {}, actor="cli").templates] == ["Slow fade"]
+    with pytest.raises(ops.Refusal, match="No film template"):
+        ops.call("alchemy template apply", {"template": "rain", "spec": {}}, actor="cli")

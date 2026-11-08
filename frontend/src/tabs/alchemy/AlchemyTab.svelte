@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { app } from '../../lib/stores/app.svelte'
-  import { catalog, loadCatalog, controls } from './alchemy.svelte'
+  import { catalog, loadCatalog, controls, alchemyUi } from './alchemy.svelte'
   import { film, addLook } from './film.svelte'
   import Cast from './Cast.svelte'
   import Stage from './Stage.svelte'
@@ -13,7 +13,6 @@
   import SplitPane from '../../lib/ui/SplitPane.svelte'
 
   /** Alchemy: Image (the step) and Video (the film). */
-  let sub = $state<'image' | 'video'>('image')
   let stage: Stage | undefined = $state()
   const visible = $derived(app.mode === 'alchemy')
 
@@ -27,12 +26,12 @@
 
 <div class="alc">
   <div class="subbar">
-    <Tabs bind:value={sub} tabs={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', badge: film.spec.pictures.length ? String(film.spec.pictures.length) : '' }]} />
+    <Tabs bind:value={alchemyUi.sub} tabs={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', badge: film.spec.pictures.length ? String(film.spec.pictures.length) : '' }]} />
   </div>
   {#if !catalog.data}
     <div class="center">{#if catalog.error}<Status text={catalog.error} tone="bad" />{:else}<Spinner size={18} label="Reading the methods…" />{/if}</div>
   {:else}
-    <div class="view" hidden={sub !== 'image'}>
+    <div class="view" hidden={alchemyUi.sub !== 'image'}>
       <SplitPane storeKey="alchemy-cast" initial={250} min={180} max={420}>
         {#snippet a()}<Cast />{/snippet}
         {#snippet b()}
@@ -43,8 +42,8 @@
         {/snippet}
       </SplitPane>
     </div>
-    <div class="view" hidden={sub !== 'video'}>
-      <FilmTab active={sub === 'video' && visible} />
+    <div class="view" hidden={alchemyUi.sub !== 'video'}>
+      <FilmTab active={alchemyUi.sub === 'video' && visible} />
     </div>
   {/if}
 </div>

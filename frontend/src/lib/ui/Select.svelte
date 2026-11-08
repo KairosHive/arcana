@@ -1,5 +1,5 @@
 <script lang="ts" generics="T extends string | number">
-  type Option<T> = { value: T; label: string; disabled?: boolean }
+  type Option<T> = { value: T; label: string; disabled?: boolean; group?: string }
   let {
     value = $bindable(), options = [], placeholder = '', disabled = false, size = 'md', width = '', onchange,
   }: {
@@ -7,6 +7,8 @@
     size?: 'sm' | 'md'; width?: string; onchange?: (v: T) => void
   } = $props()
   const numeric = $derived(options.length > 0 && typeof options[0].value === 'number')
+  const grouped = $derived(options.some((o) => o.group))
+  const groups = $derived.by(() => { const out: { name: string; items: Option<T>[] }[] = []; for (const o of options) { const g = o.group ?? ''; let e = out.find((x) => x.name === g); if (!e) { e = { name: g, items: [] }; out.push(e) } e.items.push(o) } return out })
   function pick(e: Event) {
     const raw = (e.target as HTMLSelectElement).value
     if (raw === '') { value = null; return }
@@ -19,9 +21,17 @@
 <span class="sel {size}" class:disabled style:width={width || null}>
   <select value={value === null || value === undefined ? '' : String(value)} {disabled} onchange={pick}>
     {#if placeholder}<option value="" disabled={value !== null && value !== undefined}>{placeholder}</option>{/if}
-    {#each options as o (o.value)}
-      <option value={String(o.value)} disabled={o.disabled}>{o.label}</option>
-    {/each}
+    {#if grouped}
+      {#each groups as g (g.name)}
+        <optgroup label={g.name}>
+          {#each g.items as o (o.value)}<option value={String(o.value)} disabled={o.disabled}>{o.label}</option>{/each}
+        </optgroup>
+      {/each}
+    {:else}
+      {#each options as o (o.value)}
+        <option value={String(o.value)} disabled={o.disabled}>{o.label}</option>
+      {/each}
+    {/if}
   </select>
   <span class="chev" aria-hidden="true">▾</span>
 </span>

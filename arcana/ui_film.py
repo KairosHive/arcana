@@ -48,8 +48,28 @@ def full(spec: dict | None) -> dict:
     return {**EMPTY_FILM, **(spec or {})}
 
 
+REFINE_DOC = {"feather": "how soft the mask's edge is, in pixels at 768",
+              "grow": "the mask's edge moved out (more) or in (less), in pixels at 768",
+              "follow": "how closely the mask's edge snaps to the picture's contours",
+              "ragged": "the mask's edge broken by grown noise",
+              "amount": "how strongly the step shows through the mask: 0 shows the morph alone"}
+NUMBER_DOC = {"x": "where the spot's centre sits across the frame, 0 left to 1 right",
+              "y": "where it sits down the frame, 0 top to 1 bottom",
+              "r": "the spot's radius, as a share of the frame",
+              "angle": "the direction, in degrees", "height": "the band's height, as a share of the frame",
+              "count": "how many stripes", "near": "the nearest depth the band takes, 0 to 1",
+              "far": "the farthest depth it takes", "size": "the size of the pattern, in pixels at 768",
+              "coverage": "how much of the picture the layer takes, 0 to 1"}
+GROUP_TITLE = {"method": "The look's method", "mask": "The look's mask", "pictures": "The materials",
+               "finish": "The finish", "other": "Other"}
+
+
 def lane_meta(spec: dict) -> tuple[list, dict]:
-    """The settings a lane can key, and each one's label and range: (options, {path: meta})."""
+    """
+    What a lane can animate, with each one's label, range and what it controls:
+    (options with their group title, {path: meta}). Mask lanes are offered only
+    when a look has a mask, and they name the layer they move.
+    """
     film = _film()
     meta: dict = {}
     methods = {k.get("settings", {}).get("method") for k in spec.get("looks") or []}
@@ -61,39 +81,99 @@ def lane_meta(spec: dict) -> tuple[list, dict]:
         for k in method.knobs:
             if k.kind in ("float", "int", "angle") and k.lo is not None:
                 meta[f"knobs.{k.key}"] = {"label": f"{method.label} · {k.label}", "lo": k.lo, "hi": k.hi,
-                                          "step": k.step or 0.01, "group": "method"}
-    for key, group, label, lo, hi, step, doc in _finish.SPEC:
-        meta[f"finish.{key}"] = {"label": f"finish · {label}", "lo": lo, "hi": hi, "step": step, "group": "finish"}
-    for key, (lo, hi, step) in REFINE_RANGE.items():
-        meta[f"mask.{key}"] = {"label": f"mask · {key}", "lo": lo, "hi": hi, "step": step, "group": "mask"}
+                                          "step": k.step or 0.01, "group": "method", "doc": k.doc}
     most_layers, most_materials = [], 0
     for k in spec.get("looks") or []:
-        s = k.get("settings") or {}
-        m = s.get("mask") or {}
-        layers = m.get("layers") if isinstance(m, dict) else ([m] if isinstance(m, str) else m) or []
+        st = k.get("settings") or {}
+        m = st.get("mask") or {}
+        layers = m.get("layers") if isinstance(m, dict) else ([m] if isinstance(m, str) else m)
         if len(layers or []) > len(most_layers):
             most_layers = list(layers)
-        most_materials = max(most_materials, len([x for x in s.get("materials") or [] if x]))
-    for i, line in enumerate(most_layers, 1):
-        meta[f"mask.{i}.coverage"] = {"label": f"mask {i} · coverage", "lo": 0.02, "hi": 1, "step": 0.01,
-                                      "group": "mask"}
-        got = film.layer_numbers(line)
-        if got:
-            for name in got[1]:
-                lo, hi, step = NUMBER_RANGE[name]
-                meta[f"mask.{i}.{name}"] = {"label": f"mask {i} · {got[0]} {name}", "lo": lo, "hi": hi,
-                                            "step": step, "group": "mask"}
+        most_materials = max(most_materials, len([x for x in st.get("materials") or [] if x]))
+    if most_layers:
+        for key, (lo, hi, step) in REFINE_RANGE.items():
+            meta[f"mask.{key}"] = {"label": f"mask · {key}", "lo": lo, "hi": hi, "step": step, "group": "mask",
+                                   "doc": REFINE_DOC[key]}
+        for i, line in enumerate(most_layers, 1):
+            meta[f"mask.{i}.coverage"] = {"label": f"mask layer {i} ({line}) · coverage", "lo": 0.02, "hi": 1,
+                                          "step": 0.01, "group": "mask", "doc": NUMBER_DOC["coverage"]}
+            got = film.layer_numbers(line)
+            if got:
+                for name in got[1]:
+                    lo, hi, step = NUMBER_RANGE[name]
+                    meta[f"mask.{i}.{name}"] = {"label": f"mask layer {i} ({line}) · {name}", "lo": lo, "hi": hi,
+                                                "step": step, "group": "mask", "doc": NUMBER_DOC[name]}
     for i in range(1, most_materials + 1):
-        meta[f"weights.{i}"] = {"label": f"share of [{i}]", "lo": 0, "hi": 1, "step": 0.05, "group": "pictures"}
-    meta["zoom"] = {"label": "material zoom", "lo": 0.5, "hi": 4, "step": 0.25, "group": "pictures"}
+        meta[f"weights.{i}"] = {"label": f"share of material [{i}]", "lo": 0, "hi": 1, "step": 0.05,
+                                "group": "pictures", "doc": f"how much of the mix material [{i}] takes"}
+    if most_materials:
+        meta["zoom"] = {"label": "material zoom", "lo": 0.5, "hi": 4, "step": 0.25, "group": "pictures",
+                        "doc": "how large the materials are drawn: 2 shows half of each, twice as large"}
+    for key, group, label, lo, hi, step, doc in _finish.SPEC:
+        meta[f"finish.{key}"] = {"label": f"finish · {label}", "lo": lo, "hi": hi, "step": step, "group": "finish",
+                                 "doc": doc}
     for path, keys in (spec.get("lanes") or {}).items():
         if path not in meta:
             vs = [float(k["v"]) for k in keys] or [0.0]
-            meta[path] = {"label": path, "lo": min(vs + [0.0]), "hi": max(vs + [1.0]), "step": 0.01,
-                          "group": "other"}
-    options = [{"label": v["label"], "value": p, "group": v["group"]} for p, v in meta.items()
-               if p not in (spec.get("lanes") or {})]
+            meta[path] = {"label": path, "lo": min(vs + [0.0]), "hi": max(vs + [1.0]), "step": 0.01, "group": "other",
+                          "doc": "a lane the looks no longer have: it moves nothing until a look has it again"}
+    taken = set(spec.get("lanes") or {})
+    options = []
+    for group, title in GROUP_TITLE.items():
+        options += [{"label": v["label"], "value": p, "group": title} for p, v in meta.items()
+                    if v["group"] == group and p not in taken]
     return options, meta
+
+
+def look_index(looks: list, t: float):
+    """The look in force at time t: the last one at or before it, or the first when t is before them all."""
+    if not looks:
+        return None
+    before = [k for k, look in enumerate(looks) if float(look["t"]) <= t + 1e-6]
+    return before[-1] if before else 0
+
+
+def look_summary(spec: dict, t: float) -> dict:
+    """The look at the playhead, in words: its method, mask, materials and changed finish."""
+    looks = sorted((spec or {}).get("looks") or [], key=lambda k: float(k["t"]))
+    i = look_index(looks, float(t or 0.0))
+    if i is None:
+        return {"index": None, "count": 0}
+    st = looks[i].get("settings") or {}
+    m = st.get("method") or "none"
+    name = "morph only" if m == "none" else (_methods.get(m).label if m in _methods.METHODS else m)
+    mask = st.get("mask") or {}
+    layers = [str(x) for x in (mask.get("layers") or [])] if isinstance(mask, dict) else []
+    combine = (mask.get("combine") or []) if isinstance(mask, dict) else []
+    line = layers[0] if layers else ""
+    for k, x in enumerate(layers[1:]):
+        line += f" {combine[k] if k < len(combine) else 'and'} {x}"
+    changed = [f"{k} {v:g}" for k, v in (st.get("finish") or {}).items()
+               if isinstance(v, (int, float)) and v != getattr(_finish.Finish(), k, v)]
+    return {"index": i, "count": len(looks), "t": float(looks[i]["t"]), "method": name,
+            "model": (st.get("knobs") or {}).get("model"), "mask": line,
+            "materials": [x for x in st.get("materials") or [] if x], "finish": changed, "settings": st}
+
+
+def replace_look(spec: dict, t: float, look: dict) -> dict:
+    """The look at the playhead now holds these settings."""
+    s = full(spec)
+    looks = sorted(s.get("looks") or [], key=lambda k: float(k["t"]))
+    i = look_index(looks, float(t or 0.0))
+    if i is None:
+        raise ValueError("There is no look here to replace. Add Image's step here instead.")
+    looks[i] = {**looks[i], "settings": look}
+    return {**s, "looks": looks}
+
+
+def remove_look(spec: dict, t: float) -> tuple[dict, float]:
+    s = full(spec)
+    looks = sorted(s.get("looks") or [], key=lambda k: float(k["t"]))
+    i = look_index(looks, float(t or 0.0))
+    if i is None:
+        raise ValueError("There is no look here to remove.")
+    gone = looks.pop(i)
+    return {**s, "looks": looks}, float(gone["t"])
 
 
 def value_at(spec: dict, path: str, t: float, lo: float):
@@ -170,7 +250,8 @@ def meta(spec: dict) -> dict:
     return {"length": length, "lanes": lanes, "laneOptions": options, "pictures": pictures, "looks": looks,
             "ok": f is not None, "status": "" if f or n_pics < 2 else why,
             "empty": "" if n_pics >= 2 else
-            "Click two or more pictures on the left to start a film. Each lands at the playhead.",
+            "Click two or more pictures on the left to start a film, each at the playhead, or drag them "
+            "onto the timeline where you want them.",
             "normalised": f}
 
 

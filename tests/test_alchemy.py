@@ -190,7 +190,9 @@ def test_the_ops_are_registered_with_their_kinds():
                      "alchemy recipe list": "read", "alchemy recipe show": "read",
                      "alchemy recipe save": "write", "alchemy film list": "read",
                      "alchemy film show": "read", "alchemy film save": "write", "alchemy film delete": "write",
-                     "alchemy film preview": "read", "alchemy film make": "effect"}
+                     "alchemy film preview": "read", "alchemy film make": "effect",
+                     "alchemy template list": "read", "alchemy template apply": "read",
+                     "alchemy template save": "write", "alchemy template delete": "write"}
 
 
 def test_settings_are_routed_and_strays_refused():

@@ -12,6 +12,7 @@
   import MoodboardTab from './tabs/moodboard/MoodboardTab.svelte'
   import AlchemyTab from './tabs/alchemy/AlchemyTab.svelte'
   import AgentTab from './tabs/agent/AgentTab.svelte'
+  import ArchiveTab from './tabs/archive/ArchiveTab.svelte'
 
   // A tab is mounted the first time it is opened and kept after that, hidden,
   // so its results, its map and its terminals survive a switch.
@@ -42,6 +43,7 @@
       {#if visited.story}<section class="tab" hidden={app.mode !== 'story'}><SearchTab mode="story" /></section>{/if}
       {#if visited.moodboard}<section class="tab" hidden={app.mode !== 'moodboard'}><MoodboardTab /></section>{/if}
       {#if visited.alchemy}<section class="tab" hidden={app.mode !== 'alchemy'}><AlchemyTab /></section>{/if}
+      {#if visited.archive}<section class="tab" hidden={app.mode !== 'archive'}><ArchiveTab /></section>{/if}
       {#if visited.agent}<section class="tab" hidden={app.mode !== 'agent'}><AgentTab /></section>{/if}
     {/if}
   </main>

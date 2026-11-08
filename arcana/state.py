@@ -123,14 +123,21 @@ class Transaction:
     applies A7.
     """
 
-    def __init__(self, store: "Store", actor: str, label: str):
+    def __init__(self, store: "Store", actor: str, label: str, locked: bool = True):
         self.store = store
         self.actor = actor
         self.label = label
         self.before: dict[str, str | None] = {}
         self.created: set[str] = set()       # boards this transaction made
+        # A write takes the store's lock when it begins. An effect (a colour
+        # transfer, a generation) takes it at its first touch, so the seconds
+        # it spends computing never block anyone else's write.
+        self.locked = locked
 
     def touch(self, path: str) -> None:
+        if not self.locked:
+            self.store._thread_lock.acquire()
+            self.locked = True
         path = os.path.abspath(path)
         if path not in self.before:
             self.before[path] = _read(path)
@@ -253,20 +260,29 @@ class Store:
     def current(self) -> Transaction | None:
         return getattr(self._local, "tx", None)
 
-    def begin(self, actor: str, label: str) -> Transaction:
+    def begin(self, actor: str, label: str, lazy: bool = False) -> Transaction:
+        """
+        Open a transaction on this thread. `lazy` defers the lock to the first
+        file touched, for effects that compute for a long time before writing.
+        """
         if self.current() is not None:
             raise RuntimeError("a transaction is already open on this thread")
-        self._thread_lock.acquire()
-        tx = Transaction(self, actor, label)
+        if not lazy:
+            self._thread_lock.acquire()
+        tx = Transaction(self, actor, label, locked=not lazy)
         self._local.tx = tx
         return tx
 
     def _end(self) -> None:
+        tx = self.current()
         self._local.tx = None
-        self._thread_lock.release()
+        if tx is not None and tx.locked:
+            self._thread_lock.release()
 
     def commit(self, tx: Transaction) -> int | None:
         """Record the transaction's changes as one undo step. Returns the new version."""
+        if self.current() is not tx:
+            raise RuntimeError("commit from the thread that began the transaction")
         try:
             changes = tx.changes()
             if not changes:

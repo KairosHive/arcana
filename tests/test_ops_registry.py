@@ -26,8 +26,19 @@ from pydantic import Field  # noqa: E402
 import synth  # noqa: E402
 
 
+# The slow examples use this machine's ModFlows checkpoint, found here before
+# a fixture points the data dir at a scratch folder that has none.
+REAL_CHECKPOINT = None
+if os.environ.get("ARCANA_SLOW_EXAMPLES"):
+    from arcana import color_transfer as _ct
+    REAL_CHECKPOINT = _ct.checkpoint_path()
+
+
 @pytest.fixture
 def ds(tmp, monkeypatch):
+    if REAL_CHECKPOINT is not None:
+        from arcana import color_transfer as _ct
+        monkeypatch.setattr(_ct, "checkpoint_path", lambda: REAL_CHECKPOINT)
     out = synth.use(tmp, monkeypatch, palette_features=True)
     from arcana import style_transfer
     monkeypatch.setattr(style_transfer, "describe", lambda *a, **k: "lake, mist")
@@ -80,7 +91,17 @@ VOCABULARY = {
     "board set", "board section add", "board section set", "board section remove",
     "board palette set", "board palette extract", "board export", "board delete",
     "item export",
+    # P2: colour, style, generation, jobs
+    "colour methods", "colour transfer", "colour lut", "colour harmonize", "style methods",
+    "style transfer", "style control-map", "generate", "model download",
+    "job list", "job show", "job wait", "job cancel",
 }
+
+# Examples that load a large model. They run when ARCANA_SLOW_EXAMPLES is set,
+# and their behaviour is tested with stubs in test_colour_ops.py either way.
+# `model download` fetches hundreds of megabytes, so its example never runs here.
+SLOW = {"generate", "colour lut"}
+NETWORK = {"model download"}
 
 
 def test_the_vocabulary_is_registered():
@@ -135,15 +156,22 @@ def _fixture_board(tmp, author):
 @pytest.mark.parametrize("actor,pixels_on", [("cli", False), ("agent", False), ("agent", True)])
 def test_every_example_runs(tmp, ds, actor, pixels_on):
     """Each example from scratch: reads change nothing, writes are allowed to."""
+    from arcana import jobs
     synth.pixels(tmp, pixels_on)
     ctx = ops.context(actor)
+    slow = bool(os.environ.get("ARCANA_SLOW_EXAMPLES"))
     for o in ops.all_ops():
-        if actor not in o.actors:
+        if actor not in o.actors or o.name in NETWORK or (o.name in SLOW and not slow):
             continue
         for line in o.examples:
             _fixture_board(tmp, "agent" if actor == "agent" else "person")
             if o.name == "board create":
                 os.remove(os.path.join(tmp, "boards", "monsoon.json"))
+            if o.name.startswith("job "):
+                # A job that waits a moment, so cancel finds it running.
+                jid = jobs.MANAGER.submit(lambda h: __import__("time").sleep(0.3) or {"text": "ok"},
+                                          kind="test", label="example")
+                line = line.replace("3f9c1e2a7b4d", jid)
             before = _files(tmp)
             batch = ops.exec_lines([_as_synth(line)], ctx=ctx)
             step = batch.steps[0]

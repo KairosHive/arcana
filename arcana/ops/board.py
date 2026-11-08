@@ -70,9 +70,9 @@ def load(slug: str) -> dict:
     return rec
 
 
-def put(ctx: Context, rec: dict, *, creating: bool = False) -> dict:
-    """Write a board inside the open transaction."""
-    path = ctx.tx.touch_board(rec["slug"], creating=creating)
+def put(ctx: Context, rec: dict, *, creating: bool = False, tx=None) -> dict:
+    """Write a board inside the open transaction (or `tx`, for a job recording its result)."""
+    path = (tx or ctx.tx).touch_board(rec["slug"], creating=creating)
     rec["schema"] = _boards.SCHEMA
     rec["updated"] = time.time()
     _state.write_json(path, rec)

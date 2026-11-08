@@ -171,6 +171,7 @@ class Context:
     pixels: bool = True
     sheets: bool = False
     tx: object = None             # the open state.Transaction, for write and effect ops
+    progress: object = None       # progress(fraction, message), when a job or the UI listens
     _flags: dict = field(default_factory=dict, repr=False)
 
     def has(self, flag: str) -> bool:
@@ -437,7 +438,7 @@ def call(name: str, args=None, actor: str = "cli", ctx: Context | None = None,
                                   f"changes anything.", grammar.help_text(found))
     own_tx = found.kind != "read" and found.journal and ctx.tx is None
     if own_tx:
-        ctx.tx = st.STORE.begin(ctx.actor, label or found.name)
+        ctx.tx = st.STORE.begin(ctx.actor, label or found.name, lazy=found.kind == "effect")
     try:
         try:
             result = found.run(parsed, ctx)
@@ -517,12 +518,14 @@ def exec_lines(lines, actor: str = "cli", ctx: Context | None = None) -> Batch:
             steps[i] = Step(line=line, op=e.op, refusal=e.as_dict())
             return Batch(steps=steps)
 
-    writes = any(p.op.kind != "read" and p.op.journal and not p.help for p in parsed)
+    changing = [p for p in parsed if p.op.kind != "read" and p.op.journal and not p.help]
     st = _store()
-    own_tx = writes and ctx.tx is None
+    own_tx = bool(changing) and ctx.tx is None
     if own_tx:
         label = "; ".join(wanted)
-        ctx.tx = st.STORE.begin(ctx.actor, label if len(label) <= 160 else label[:157] + "...")
+        only_effects = all(p.op.kind == "effect" for p in changing)
+        ctx.tx = st.STORE.begin(ctx.actor, label if len(label) <= 160 else label[:157] + "...",
+                                lazy=only_effects)
     steps: list[Step] = []
     refused = False
     try:

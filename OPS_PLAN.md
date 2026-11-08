@@ -1,6 +1,6 @@
 # Arcana ops: one vocabulary, many thin surfaces
 
-P0 and P1 done, P2 next. Goal: every action Arcana can perform is a named op, declared
+P0 to P2 done, P3 next. Goal: every action Arcana can perform is a named op, declared
 once, and the web UI, the command line and an MCP agent all reach the same ops
 through thin surfaces generated from that one declaration. An agent can then
 prompt the latent space, build libraries, assemble moodboards from varied
@@ -651,6 +651,55 @@ What building it settled, beyond the text above:
   runs one ControlNet depth transfer through `exec`, both results carry derived
   handles that `board add` accepts, the app badges them, and the originals'
   mtimes are unchanged.
+
+**Done 7 November 2026.** `transfer_methods.py` is the registry: LAB, MKL,
+IDT and ModFlows, cheapest first, with measured timings and one `transfer()`
+dispatch. MKL and IDT are new, in `classic_transfer.py`. `generate.py` holds
+sd-turbo, out of Inject Poetry. The ops are `colour methods`, `colour
+transfer`, `colour lut`, `colour harmonize`, `style methods`, `style
+transfer`, `style control-map`, `generate`, `model download` and the four job
+ops. The colour, style and Inject Poetry panels run through them, and the
+colour dropdown, its greyed controls and its note come from the registry.
+
+Measured at 1024 x 683 on an Intel Core Ultra 9 185H and an RTX 4090 Laptop
+GPU, warm, median of three:
+
+| method | CPU | GPU |
+|---|---|---|
+| LAB | 50 ms | 50 ms |
+| MKL | 70 ms | 70 ms |
+| IDT | 1.0 s | 1.0 s |
+| ModFlows, balanced | 3.4 s | 0.47 s |
+
+The acceptance check ran as an agent through MCP into the open app. It
+harmonized two outliers toward a palette taken from the board, ran a
+ControlNet depth transfer and added the result, and the app badged all three
+as derived. The originals' modification times were unchanged.
+
+What building it settled, beyond the text above:
+
+- Effects run without the state lock and take it only to record. A
+  transaction opened for an effect is lazy and locks at its first touch, so a
+  40-second CPU transfer never blocks a board save.
+- `--background` runs any long effect as a job. The job records its result in
+  its own transaction for the actor who started it, so it is undoable.
+- `colour transfer` takes `--reference` (the plan's `--from`; `from` is a
+  Python keyword) or `--palette`. `style transfer` takes `--source`.
+- `generate --for-board` adds the picture to the board, refuses a third
+  generated picture and refuses the hero role. `--folder` writes under
+  output/ only, which Inject Poetry uses for its stories folder.
+- `colour harmonize` uses the board's palette when given neither a picture
+  nor a palette, places each result beside its original, refuses the hero and
+  refuses to take derived pictures past a third of the board.
+- `model download modflows` replaces the app's own download job.
+- The item ops accept out: handles.
+- Dash 4 renders a `dash.no_update` "off" value in a callback's `running=`
+  list as a child. The transfer buttons' status lines did that, which crashed
+  React (error #31) and stopped the page answering clicks. They are gone from
+  `running=`, and the button text says "Working…" instead.
+- `test_parity.py` now also forbids `color_transfer`, `lab_transfer`,
+  `classic_transfer`, `transfer_methods`, `style_transfer`, `lut` and
+  `generate` in the app.
 
 ### P3. HTML boards, the skills, the plugin (about 3 days)
 

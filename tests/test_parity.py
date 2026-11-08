@@ -19,7 +19,9 @@ APP_MODULES = ("arcana.py", "ui_datasets.py")
 
 # Modules the app may not import or call. Each phase of OPS_PLAN.md that moves
 # a tab onto the ops adds its modules here.
-FORBIDDEN = {"boards"}
+FORBIDDEN = {"boards",                                              # P1
+             "color_transfer", "lab_transfer", "classic_transfer",   # P2
+             "transfer_methods", "style_transfer", "lut", "generate"}
 
 
 def _imports(tree):

@@ -71,40 +71,26 @@ except ImportError:
         search_by_palette = search_by_style = search_combined = None
         load_palette_features = load_style_features = None
 
-# --- color transfer (ModFlows) ---
-try:
-    from .color_transfer import transfer_colors, get_device_info
-    COLOR_TRANSFER_AVAILABLE = True
-except ImportError:
-    try:
-        from color_transfer import transfer_colors, get_device_info
-        COLOR_TRANSFER_AVAILABLE = True
-    except ImportError:
-        COLOR_TRANSFER_AVAILABLE = False
-        transfer_colors = get_device_info = None
+# --- colour and style transfer ---
+# Both run through the ops (`colour transfer`, `style transfer`), which own the
+# method registry, the output files and the ledger. The app asks the registry
+# for its methods once, for the dropdown and the controls each method uses.
+_COLOUR_METHODS = None
 
-# --- LAB color transfer (Reinhard) ---
-try:
-    from . import style_transfer as _style_transfer
-    STYLE_TRANSFER_AVAILABLE = True
-except ImportError:
-    try:
-        import style_transfer as _style_transfer
-        STYLE_TRANSFER_AVAILABLE = True
-    except ImportError:
-        _style_transfer = None
-        STYLE_TRANSFER_AVAILABLE = False
 
-try:
-    from .lab_transfer import lab_color_transfer_pil
-    LAB_TRANSFER_AVAILABLE = True
-except ImportError:
-    try:
-        from lab_transfer import lab_color_transfer_pil
-        LAB_TRANSFER_AVAILABLE = True
-    except ImportError:
-        LAB_TRANSFER_AVAILABLE = False
-        lab_color_transfer_pil = None
+def _colour_methods():
+    global _COLOUR_METHODS
+    if _COLOUR_METHODS is None:
+        _COLOUR_METHODS = _ops.call("colour methods", actor="person")
+    return _COLOUR_METHODS
+
+
+def _colour_method(method_id):
+    return next((m for m in _colour_methods().methods if m.id == method_id), None)
+
+
+def _colour_method_options():
+    return [{"label": m.label, "value": m.id} for m in _colour_methods().methods]
 
 
 
@@ -1946,13 +1932,10 @@ app.layout = html.Div(
                                             html.Span("Method:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
                                             dcc.Dropdown(
                                                 id="color-transfer-method",
-                                                options=[
-                                                    {"label": "ModFlows (Neural)", "value": "modflows"},
-                                                    {"label": "LAB (Reinhard)", "value": "lab"},
-                                                ],
+                                                options=_colour_method_options(),
                                                 value="modflows",
                                                 clearable=False,
-                                                style={"width": "140px", "color": "#000", "fontSize": "12px"},
+                                                style={"width": "170px", "color": "#000", "fontSize": "12px"},
                                             ),
                                         ], style={"display": "flex", "alignItems": "center"}),
                                         # Strength slider
@@ -3964,15 +3947,14 @@ def update_feature_availability(dataset_value):
 )
 def toggle_method_params(method):
     """
-    Grey out the ModFlows-only controls when LAB is selected.
+    Grey out the quality control for methods that have none.
 
-    LAB (Reinhard) matches per-channel mean and standard deviation in LAB space
-    in one shot: there is no working resolution, no integration steps and no
-    full-res pass to configure. Strength is its only parameter.
+    The registry says which controls each method reads: LAB, MKL and IDT are
+    closed-form or iterative on a fixed working size, so strength is all they
+    take. Only ModFlows has a quality preset.
     """
-    if method == "lab":
-        # LAB is a closed-form statistical transfer: it has no flow to run, so
-        # a quality choice would be a control that changes nothing.
+    m = _colour_method(method)
+    if m is None or "quality" not in m.params:
         return {"display": "flex", "alignItems": "center", "opacity": "0.4",
                 "pointerEvents": "none"}
     return {"display": "flex", "alignItems": "center"}
@@ -3984,11 +3966,6 @@ def toggle_method_params(method):
 
 def _ct_model_card(job_snapshot=None):
     """One line describing whether the neural method can run, plus a way to fix it."""
-    try:
-        from . import color_transfer as _ct
-    except ImportError:
-        import color_transfer as _ct
-
     if job_snapshot and not job_snapshot.get("status") in (None, "done", "failed",
                                                            "cancelled"):
         pct = int(round((job_snapshot.get("fraction") or 0) * 100))
@@ -4008,7 +3985,9 @@ def _ct_model_card(job_snapshot=None):
                         style={"fontSize": "11.5px", "color": _ui.BAD})
 
     try:
-        st = _ct.status()
+        modflows = _ops.call("colour methods", actor="person")
+        modflows = next(m for m in modflows.methods if m.id == "modflows")
+        st = {"ready": modflows.available, "download_mb": 229}
     except Exception:
         return ""
 
@@ -4039,10 +4018,8 @@ def start_modflows_download(n):
     if not n:
         raise dash.exceptions.PreventUpdate
     try:
-        from . import color_transfer as _ct
         from .jobs import MANAGER
     except ImportError:
-        import color_transfer as _ct
         from jobs import MANAGER
 
     # One job at a time, shared with indexing and encoder downloads: they all
@@ -4051,16 +4028,18 @@ def start_modflows_download(n):
         return dash.no_update, dash.no_update, html.Div(
             "Something else is running — wait for it to finish.",
             style={"fontSize": "11.5px", "color": _ui.WARN})
-
-    def job(handle):
-        _ct.download_checkpoint(
-            progress=lambda frac, msg: handle.update(fraction=frac, message=msg))
-        handle.update(fraction=1.0, message="Colour model ready")
-        return {"ok": True}
-
-    jid = MANAGER.submit(job, kind="download", label="Colour model")
-    return jid, False, _ct_model_card({"status": "running", "fraction": 0.0,
-                                       "message": "Starting download..."})
+    try:
+        started = _ops.call("model download", {"model": "modflows", "background": True},
+                            actor="person")
+    except _ops.Refusal as e:
+        return dash.no_update, dash.no_update, html.Div(
+            e.reason, style={"fontSize": "11.5px", "color": _ui.BAD})
+    global _COLOUR_METHODS
+    _COLOUR_METHODS = None            # ModFlows' availability changes when this finishes
+    if not hasattr(started, "job"):
+        return dash.no_update, True, _ct_model_card(None)
+    return started.job, False, _ct_model_card({"status": "running", "fraction": 0.0,
+                                                "message": "Starting download..."})
 
 
 @app.callback(
@@ -4164,23 +4143,21 @@ def preview_reference_filter(ref_path, lightness, saturation):
      Input("color-transfer-method", "value")],
 )
 def describe_transfer_quality(quality, method):
-    """Say what the chosen preset costs, and that the output is full size."""
-    if method == "lab":
-        return "LAB is instant and needs no model."
-    try:
-        from . import color_transfer as _ct
-        from . import gpu as _g
-    except ImportError:
-        import color_transfer as _ct
-        import gpu as _g
-    p = _ct.QUALITY_PRESETS.get(quality or _ct.DEFAULT_QUALITY)
+    """Say what the chosen method or preset costs, and that the output is full size."""
+    m = _colour_method(method)
+    if m is None:
+        return ""
+    if "quality" not in m.params:
+        return f"{m.label} takes {m.timing} at 1024 px and needs no model."
+    presets = {q.id: q for q in _colour_methods().qualities}
+    p = presets.get(quality or "balanced")
     if not p:
         return ""
     # Measured on a 6000x4000 photograph; the GPU numbers barely move between
     # presets because building and applying the LUT is CPU work.
     secs = {"quick": (5, 5), "balanced": (11, 4), "best": (38, 5)}[quality or "balanced"]
-    took = secs[1] if _g.available() else secs[0]
-    return f"{p['note']} — about {took}s here, output at full resolution."
+    took = secs[1] if _gpu.available() else secs[0]
+    return f"{p.note} — about {took}s here, output at full resolution."
 
 
 @app.callback(
@@ -4234,12 +4211,12 @@ def _style_note(method):
      State("cn-strength", "value")],
     # A transfer blocks for seconds. Without this the button sat unchanged the
     # whole time and the only way to tell anything had happened was the result
-    # appearing. Dash flips these for the life of the callback.
+    # appearing. Dash flips these for the life of the callback. The status line
+    # is left out: Dash 4 renders a dash.no_update "off" value as a child, which
+    # crashed React (error #31) and stopped the page answering clicks.
     running=[
         (Output("style-transfer-btn", "disabled"), True, False),
         (Output("style-transfer-btn", "children"), "Working…", "Apply style"),
-        (Output("style-transfer-status", "children"),
-         html.Div("Working…", style={"color": _ui.ACCENT}), dash.no_update),
     ],
     prevent_initial_call=True,
 )
@@ -4255,49 +4232,17 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
     """
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
-    if not STYLE_TRANSFER_AVAILABLE:
-        return html.Div("Style transfer unavailable (check installation)",
-                        style={"color": _ui.BAD}), dash.no_update
-    if not ref_path:
-        return html.Div("No source [R] selected", style={"color": _ui.WARN}), dash.no_update
-    if not target_path:
-        return html.Div("No target [T] selected", style={"color": _ui.WARN}), dash.no_update
-
-    ref_resolved = resolve_path(ref_path)
-    target_resolved = resolve_path(target_path)
-    if not os.path.exists(ref_resolved):
-        return html.Div("Source file not found", style={"color": _ui.BAD}), dash.no_update
-    if not os.path.exists(target_resolved):
-        return html.Div("Target file not found", style={"color": _ui.BAD}), dash.no_update
-
-    import time
-    started = time.time()
-    strength_val = float(strength or 0.6)
+    args = {"target": resolve_path(target_path), "source": resolve_path(ref_path),
+            "method": method or "texture", "strength": float(strength or 0.6),
+            "control": cn_map or "depth", "control_strength": float(cn_strength or 0.9)}
     try:
-        source = Image.open(ref_resolved).convert("RGB")
-        target = Image.open(target_resolved).convert("RGB")
-        control_png = None
-        if method == "controlnet":
-            result, cmap = _style_transfer.controlnet_transfer(
-                source, target,
-                control=cn_map or "depth",
-                scale=strength_val,
-                control_scale=float(cn_strength or 0.9),
-            )
-            # Show the map. "The result looks wrong" and "the depth is wrong"
-            # are different problems, and only the second is one the user can
-            # do anything about.
-            mbuf = BytesIO()
-            mprev = cmap.copy()
-            mprev.thumbnail((360, 360), Image.LANCZOS)
-            mprev.save(mbuf, format="JPEG", quality=85)
-            control_png = base64.b64encode(mbuf.getvalue()).decode()
-        else:
-            result = _style_transfer.transfer(
-                method, source, target,
-                strength=strength_val,
-                scale=strength_val,  # IP-Adapter reads this as its adapter scale
-            )
+        res = _ops.call("style transfer", args, actor="person")
+    except _ops.Refusal as e:
+        hint = ""
+        if method in ("img2img", "ip_adapter", "controlnet") and "diffusers" not in e.reason:
+            hint = (" — the diffusion methods download their weights on first "
+                    "use, which takes a few minutes.")
+        return html.Div(f"{method}: {e.reason}{hint}", style={"color": _ui.BAD}), dash.no_update
     except Exception as e:
         # Print the traceback. Returning only str(e) into the UI is how a
         # dtype mismatch reached a user as one unattributable line with no
@@ -4305,50 +4250,35 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
         import traceback
         print(f"[style-transfer] {method} failed:", flush=True)
         traceback.print_exc()
-        hint = ""
-        if method in ("img2img", "ip_adapter"):
-            hint = (" — the diffusion methods download their weights on first "
-                    "use, which takes a few minutes.")
-        return html.Div(f"{method}: {e}{hint}",
-                        style={"color": _ui.BAD}), dash.no_update
+        return html.Div(f"{method}: {e}", style={"color": _ui.BAD}), dash.no_update
 
-    out_dir = _safe_output_dir("transfers")
-    os.makedirs(out_dir, exist_ok=True)
-    out_name = _paths.fit_filename(
-        out_dir,
-        os.path.splitext(os.path.basename(target_resolved))[0],
-        os.path.splitext(os.path.basename(ref_resolved))[0],
-        method, ".jpg")
-    # fit_filename returns a NAME, not a path.
-    out_path = os.path.join(out_dir, out_name)
-    result.save(out_path, quality=95)
-
+    out_path, out_name = res.path, res.file
     buf = BytesIO()
-    preview = result.copy()
+    preview = Image.open(out_path).convert("RGB")
     preview.thumbnail((1600, 1600), Image.LANCZOS)
     preview.save(buf, format="JPEG", quality=90)
     b64 = base64.b64encode(buf.getvalue()).decode()
+    control_png = None
+    if res.map_path:
+        # Show the map. "The result looks wrong" and "the depth is wrong" are
+        # different problems, and only the second is one the user can fix.
+        mbuf = BytesIO()
+        mprev = Image.open(res.map_path).convert("RGB")
+        mprev.thumbnail((360, 360), Image.LANCZOS)
+        mprev.save(mbuf, format="JPEG", quality=85)
+        control_png = base64.b64encode(mbuf.getvalue()).decode()
 
-    label = {"texture": "Texture", "img2img": "img2img",
-             "ip_adapter": "IP-Adapter",
-             "controlnet": f"ControlNet · {cn_map or 'depth'}"}[method]
-    # Texture is OpenCV arithmetic and never touches the GPU, so reporting one
-    # because the machine has one would be untrue about what just ran.
-    device = "CPU" if method == "texture" else ("GPU" if _gpu.available() else "CPU")
-    elapsed = time.time() - started
-    status = html.Div(f"{label} · {device} · {elapsed:.1f}s · saved to {out_path}",
+    status = html.Div(f"{res.label} · {res.device} · {res.elapsed:.1f}s · saved to {out_path}",
                       style={"color": _ui.OK})
     # The stage, laid out like the colour-transfer one: a header bar naming
     # what ran, the picture, then its supporting material, then the action.
-    # The map and the button used to be inline blocks after a centred image,
-    # so the button floated beside the map at whatever height the map ended.
     stage = [
         html.Div(
             [
-                html.Span(f"STYLE · {label}", style={
+                html.Span(f"STYLE · {res.label}", style={
                     "fontWeight": "700", "fontSize": "12px",
                     "letterSpacing": "1px", "color": _ui.INK}),
-                html.Span(f"{result.size[0]}×{result.size[1]} · {device} · {elapsed:.1f}s",
+                html.Span(f"{res.width}×{res.height} · {res.device} · {res.elapsed:.1f}s",
                           style={"color": _ui.INK_DIM, "fontSize": "11px"}),
             ],
             style={"display": "flex", "alignItems": "baseline", "gap": "10px",
@@ -4372,7 +4302,7 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
                             "borderRadius": "4px", "border": f"1px solid {_ui.LINE}"}),
         ], style={"marginTop": "14px"}))
     stage += [
-        html.Div(f"Saved to {os.path.join('output', 'transfers')}",
+        html.Div(f"Saved to {os.path.join('output', 'transfers')} as {res.handle}",
                  style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
         html.Div(out_name, style={"color": _ui.INK_FAINT, "fontSize": "10px",
                                   "wordBreak": "break-all"}),
@@ -4405,8 +4335,6 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
     running=[
         (Output("color-transfer-btn", "disabled"), True, False),
         (Output("color-transfer-btn", "children"), "Working…", "Transfer colors"),
-        (Output("color-transfer-status", "children"),
-         html.Div("Working…", style={"color": _ui.ACCENT}), dash.no_update),
     ],
     prevent_initial_call=True,
 )
@@ -4422,151 +4350,16 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
     if not target_path:
         return html.Div("⚠️ No Target [T] image selected", style={"color": _ui.WARN}), ""
     
-    # Check method availability
-    if method == "modflows" and not COLOR_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ ModFlows not available (check installation)", style={"color": _ui.BAD}), ""
-    if method == "lab" and not LAB_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ LAB transfer not available", style={"color": _ui.BAD}), ""
-    
+    l_min, l_max = (ct_lightness or [0, 100])
+    s_min, s_max = (ct_saturation or [0, 100])
+    args = {"target": resolve_path(target_path), "reference": resolve_path(ref_path),
+            "method": method or None, "strength": float(strength) if strength else 1.0,
+            "quality": quality or "balanced",
+            "l_min": l_min, "l_max": l_max, "s_min": s_min, "s_max": s_max}
     try:
-        import time
-        start_time = time.time()
-        
-        # Resolve paths
-        ref_resolved = resolve_path(ref_path)
-        target_resolved = resolve_path(target_path)
-        
-        if not os.path.exists(ref_resolved):
-            return html.Div(f"⚠️ Reference file not found", style={"color": _ui.BAD}), ""
-        if not os.path.exists(target_resolved):
-            return html.Div(f"⚠️ Target file not found", style={"color": _ui.BAD}), ""
-        
-        # Parse options
-        strength_val = float(strength) if strength else 1.0
-        
-        # Load images
-        content_img = Image.open(target_resolved).convert("RGB")
-        style_img = Image.open(ref_resolved).convert("RGB")
-
-        # Narrow the reference to the colours the user actually chose. Both
-        # methods below read a colour *distribution* from style_img and nothing
-        # else, so swapping in a proxy built from the surviving pixels steers
-        # them without either method needing to know this feature exists.
-        l_min, l_max = (ct_lightness or [0, 100])
-        s_min, s_max = (ct_saturation or [0, 100])
-        try:
-            from . import refselect
-        except ImportError:
-            import refselect
-        style_img, kept_frac = refselect.filter_reference(
-            style_img, l_min, l_max, s_min, s_max)
-        # An impossible range returns the original untouched rather than a blank
-        # reference; say so instead of silently ignoring the sliders.
-        filter_note = ""
-        if kept_frac == 0.0:
-            filter_note = " — colour range matched nothing, used the whole reference"
-        elif kept_frac < 1.0:
-            filter_note = f" — from {kept_frac * 100:.1f}% of the reference"
-        
-        # Perform transfer based on method
-        if method == "lab":
-            result_img = lab_color_transfer_pil(content_img, style_img, strength=strength_val)
-            method_label = "LAB (Reinhard)"
-            device_str = "CPU"
-        else:
-            # ModFlows. The flow runs at the preset's size; the colour
-            # mapping it finds is then applied to the original picture at full
-            # resolution, so the output is never smaller than the input.
-            try:
-                from . import color_transfer as _ct
-            except ImportError:
-                import color_transfer as _ct
-            preset = _ct.QUALITY_PRESETS.get(quality or _ct.DEFAULT_QUALITY,
-                                             _ct.QUALITY_PRESETS[_ct.DEFAULT_QUALITY])
-            low = transfer_colors(
-                content=content_img,
-                style=style_img,
-                strength=strength_val,
-                steps=preset["steps"],
-                max_size=preset["max_size"],
-            )
-            result_img = _ct.transfer_at_full_resolution(
-                target_resolved, low, preset["lut"])
-            method_label = f"ModFlows, {preset['label'].lower()}"
-            device_info = get_device_info() if get_device_info else {"device": "unknown"}
-            device_str = device_info.get("device", "unknown")
-        
-        elapsed = time.time() - start_time
-        
-        # Save to output/color_transfer/
-        output_dir = _paths.ensure_dir(os.path.join(OUTPUT_DIR, "color_transfer"))
-
-        target_name = os.path.splitext(os.path.basename(target_resolved))[0]
-        ref_name = os.path.splitext(os.path.basename(ref_resolved))[0]
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-        method_suffix = "lab" if method == "lab" else "mf"
-        output_filename = _paths.fit_filename(
-            output_dir, target_name, ref_name, f"{method_suffix}_{timestamp}", ".png"
-        )
-        output_path = os.path.join(output_dir, output_filename)
-        # The filename has to be truncated to fit the filesystem, which loses
-        # which images this actually came from. Keep the full provenance inside
-        # the PNG so a result is always traceable back to its inputs.
-        from PIL import PngImagePlugin
-        meta = PngImagePlugin.PngInfo()
-        meta.add_text("arcana:target", str(target_resolved))
-        meta.add_text("arcana:reference", str(ref_resolved))
-        meta.add_text("arcana:method", method_label)
-        meta.add_text("arcana:strength", str(strength_val))
-        meta.add_text("arcana:device", str(device_str))
-        result_img.save(output_path, "PNG", pnginfo=meta)
-        
-        # Show the result, not just a filename. Embedded as a downscaled JPEG
-        # data URI rather than a /preview URL: the output directory is not a
-        # media root, and one preview does not justify making it servable.
-        preview = result_img.copy()
-        preview.thumbnail((640, 640), Image.LANCZOS)
-        buf = BytesIO()
-        preview.convert("RGB").save(buf, "JPEG", quality=88)
-        preview_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-        receipt = html.Div(f"✓ Done in {elapsed:.1f}s — see the panel on the right",
-                           style={"color": _ui.OK, "fontSize": "11.5px"})
-        stage = html.Div([
-            html.Div(
-                [
-                    html.Span(f"TRANSFER · {method_label}{filter_note}", style={
-                        "fontWeight": "700", "fontSize": "12px",
-                        "letterSpacing": "1px", "color": _ui.INK}),
-                    html.Span(
-                        f"{result_img.size[0]}×{result_img.size[1]} · {device_str} · {elapsed:.2f}s",
-                        style={"color": _ui.INK_DIM, "fontSize": "11px"}),
-                ],
-                style={"display": "flex", "alignItems": "baseline", "gap": "10px",
-                       "flexWrap": "wrap", "margin": "0 -12px 12px",
-                       "padding": "9px 12px",
-                       "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
-            ),
-            html.Img(
-                src=preview_uri,
-                title=output_filename,
-                style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
-                       "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
-            ),
-            html.Div(f"Saved to {os.path.join('output', 'color_transfer')}",
-                     style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
-            html.Div(output_filename,
-                     style={"color": _ui.INK_FAINT, "fontSize": "10px",
-                            "wordBreak": "break-all"}),
-            html.Button("+ Collection",
-                        id={"type": "add-to-moodboard", "index": output_path},
-                        n_clicks=0,
-                        title="Add this result to the collection",
-                        style=_ui.button("success", marginTop="10px", fontSize="11.5px",
-                                         padding="5px 11px")),
-        ])
-        return receipt, stage
-
+        res = _ops.call("colour transfer", args, actor="person")
+    except _ops.Refusal as e:
+        return html.Div(f"⚠️ {e.reason}", style={"color": _ui.WARN, "wordBreak": "break-word"}), ""
     except Exception as e:
         # Print the traceback. Returning only str(e) is how a dtype mismatch
         # reached a user as one unattributable line, with nothing in the log to
@@ -4576,6 +4369,57 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
         traceback.print_exc()
         return (html.Div(f"✗ Error: {str(e)}",
                          style={"color": _ui.BAD, "wordBreak": "break-word"}), "")
+
+    filter_note = ""
+    if res.kept == 0.0:
+        filter_note = " — colour range matched nothing, used the whole reference"
+    elif res.kept < 1.0:
+        filter_note = f" — from {res.kept * 100:.1f}% of the reference"
+
+    # Show the result, not just a filename. Embedded as a downscaled JPEG data
+    # URI rather than a /preview URL: the output directory is not a media root,
+    # and one preview does not justify making it servable.
+    preview = Image.open(res.path).convert("RGB")
+    preview.thumbnail((640, 640), Image.LANCZOS)
+    buf = BytesIO()
+    preview.save(buf, "JPEG", quality=88)
+    preview_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    receipt = html.Div(f"✓ Done in {res.elapsed:.1f}s — see the panel on the right",
+                       style={"color": _ui.OK, "fontSize": "11.5px"})
+    stage = html.Div([
+        html.Div(
+            [
+                html.Span(f"TRANSFER · {res.label}{filter_note}", style={
+                    "fontWeight": "700", "fontSize": "12px",
+                    "letterSpacing": "1px", "color": _ui.INK}),
+                html.Span(f"{res.width}×{res.height} · {res.device} · {res.elapsed:.2f}s",
+                          style={"color": _ui.INK_DIM, "fontSize": "11px"}),
+            ],
+            style={"display": "flex", "alignItems": "baseline", "gap": "10px",
+                   "flexWrap": "wrap", "margin": "0 -12px 12px",
+                   "padding": "9px 12px",
+                   "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
+        ),
+        html.Img(
+            src=preview_uri,
+            title=res.file,
+            style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
+                   "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
+        ),
+        html.Div(f"Saved to {os.path.join('output', 'color_transfer')} as {res.handle}",
+                 style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
+        html.Div(res.file,
+                 style={"color": _ui.INK_FAINT, "fontSize": "10px",
+                        "wordBreak": "break-all"}),
+        html.Button("+ Collection",
+                    id={"type": "add-to-moodboard", "index": res.path},
+                    n_clicks=0,
+                    title="Add this result to the collection",
+                    style=_ui.button("success", marginTop="10px", fontSize="11.5px",
+                                     padding="5px 11px")),
+    ])
+    return receipt, stage
 
 
 def _poetry_job(story_cache, folder, strength_val):
@@ -4588,112 +4432,49 @@ def _poetry_job(story_cache, folder, strength_val):
     scene, because on the CPU a single scene is over half a minute.
     """
     def run(handle):
-        import torch
-        from PIL import Image as _Image
-
         subfolder = folder or "story"
         output_dir = _safe_output_dir("stories", subfolder, "poetry_injected")
-        os.makedirs(output_dir, exist_ok=True)
 
-        device = _gpu.device()
         # hardware_note(), not describe(): on the packaged build this is where
         # a user first meets the 37.5 s-per-scene CPU path, and it should say
         # plainly that the card in their machine is not being used.
         handle.update(fraction=0.0, message="Loading the image model",
                       detail=_gpu.hardware_note())
 
-        from diffusers import StableDiffusionImg2ImgPipeline
-        # fp16 is a CUDA thing: on CPU most fp16 kernels are unimplemented, so
-        # asking for the fp16 variant made story mode raise on every machine
-        # without an NVIDIA GPU rather than merely being slow.
-        if device == "cuda":
-            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                "stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16"
-            ).to(device)
-        else:
-            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                "stabilityai/sd-turbo", torch_dtype=torch.float32
-            ).to(device)
-
-        # xformers is CUDA-only and optional; it raises when unavailable.
-        try:
-            pipe.enable_xformers_memory_efficient_attention()
-        except Exception as e:
-            print(f"[INFO] xformers attention unavailable, continuing without it: {e}")
-        pipe.enable_vae_slicing()
-        pipe.safety_checker = None
-        pipe.watermark = None
-
         strength = 0.72 if strength_val is None else max(0.0, min(1.0, float(strength_val)))
         num_steps = 4
-        guidance_scale = 1.0
-        negative_prompt = "text, letters, watermark, logo, blurry, low quality"
-
         scenes = story_cache["story"]
         n = len(scenes)
         out_items = []
+        ctx = _ops.context("person")
 
         for idx, item in enumerate(scenes):
             handle.raise_if_cancelled()
-            img_path = resolve_path(item["path"])
             prompt = item["text"]
-            handle.update(done=idx, total=n,
-                          message=f"Scene {idx + 1} of {n}",
+            handle.update(done=idx, total=n, message=f"Scene {idx + 1} of {n}",
                           detail=prompt[:70])
-
-            init_img = _Image.open(img_path).convert("RGB")
-            max_width = 1024
-            w, h = init_img.size
-            if w > max_width:
-                scale = max_width / float(w)
-                new_w = (max_width // 8) * 8
-                new_h = (int(h * scale) // 8) * 8
-            else:
-                new_w, new_h = (w // 8) * 8, (h // 8) * 8
-            init_img = init_img.resize((new_w, new_h), _Image.LANCZOS)
 
             # Within-scene reporting. Without it the bar would sit still for the
             # ~37 s a single CPU scene takes, which is the whole complaint.
-            def _step_cb(pipe_ref, step, timestep, cbk, _idx=idx, _p=prompt):
-                frac = (_idx + (step + 1) / float(num_steps)) / float(n)
-                handle.update(fraction=frac,
+            def _step(frac, msg, _idx=idx, _p=prompt):
+                handle.update(fraction=(_idx + (frac or 0)) / float(n),
                               message=f"Scene {_idx + 1} of {n}",
-                              detail=f"step {step + 1}/{num_steps} · {_p[:50]}")
-                return cbk
-
-            gen = torch.manual_seed(2222 + idx)
-            out_img = pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                image=init_img,
-                strength=strength,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance_scale,
-                generator=gen,
-                callback_on_step_end=_step_cb,
-            ).images[0]
-
-            gen_name = _short_poetry_name(img_path, prompt, idx, ext="png")
-            poetry_img_path = os.path.join(output_dir, gen_name)
-            out_img.save(_win_longpath(poetry_img_path))
-            poetry_img_path = os.path.abspath(poetry_img_path)
+                              detail=f"{msg} · {_p[:50]}")
+            ctx.progress = _step
+            res = _ops.call("generate", {
+                "prompt": prompt, "init": resolve_path(item["path"]), "strength": strength,
+                "steps": num_steps, "seed": 2222 + idx,
+                "folder": f"stories/{subfolder}/poetry_injected"}, ctx=ctx)
 
             buffered = BytesIO()
-            out_img.save(buffered, format="JPEG")
-            poetry_img_str = base64.b64encode(buffered.getvalue()).decode()
-
+            Image.open(res.path).convert("RGB").save(buffered, format="JPEG")
             out_items.append({
                 "text": prompt,
                 "path": item["path"],
                 "original_img_str": item.get("img_str", ""),
-                "poetry_img_str": poetry_img_str,
-                "poetry_img_path": poetry_img_path,
+                "poetry_img_str": base64.b64encode(buffered.getvalue()).decode(),
+                "poetry_img_path": res.path,
             })
-
-        pipe.to("cpu")
-        del pipe
-        if device == "cuda":
-            torch.cuda.empty_cache()
 
         handle.update(fraction=1.0, done=n, total=n, message="Done", detail="")
         return {"items": out_items, "output_dir": output_dir}

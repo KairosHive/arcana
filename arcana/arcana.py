@@ -776,7 +776,7 @@ def mark_results_on(fig, hits, is_3d: bool):
         # order decides what is on top.
         fig.add_trace(go.Scattergl(
             x=hits["x"].to_list(), y=hits["y"].to_list(), mode="markers",
-            marker=dict(symbol="x", size=20, color="#33C3F0",
+            marker=dict(symbol="x", size=20, color=_ui.ACCENT,
                         line=dict(width=2, color="#ffffff")),
             name="Search Results", hoverinfo="skip", showlegend=True, opacity=1.0))
     return fig
@@ -1503,13 +1503,13 @@ def _blank_fig(message="Choose a dataset above to begin."):
     fig.update_layout(
         plot_bgcolor="#121212",
         paper_bgcolor="#121212",
-        font=dict(color="#9a9aa2"),
+        font=dict(color=_ui.INK_DIM),
         margin=dict(l=0, r=0, t=0, b=0),
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
         annotations=[dict(
             text=message, showarrow=False, xref="paper", yref="paper",
-            x=0.5, y=0.5, font=dict(size=13, color="#6c6c74"),
+            x=0.5, y=0.5, font=dict(size=13, color=_ui.INK_FAINT),
         )],
     )
     return fig
@@ -1569,7 +1569,7 @@ app.layout = html.Div(
                     # not depend on any external or default stylesheet.
                     labelStyle={"display": "inline-block", "marginRight": "25px",
                                 "fontWeight": "bold", "color": "#fff", "cursor": "pointer"},
-                    inputStyle={"marginRight": "6px", "accentColor": "#00bcd4"},
+                    inputStyle={"marginRight": "6px", "accentColor": _ui.ACCENT},
                 ),
                 html.Label("Dataset:", style={"marginLeft": "40px", "marginRight": "6px"}),
                 dcc.Dropdown(
@@ -1591,7 +1591,7 @@ app.layout = html.Div(
         html.Div(
             [
                 html.Div(id="relocate-message",
-                         style={"fontSize": "13px", "color": "#e0a44a", "marginBottom": "8px"}),
+                         style={"fontSize": "13px", "color": _ui.WARN, "marginBottom": "8px"}),
                 html.Div(
                     [
                         dcc.Input(
@@ -1950,7 +1950,7 @@ app.layout = html.Div(
                                 # Header Row with Upload Zone
                                 html.Div(
                                     [
-                                        html.Div("🔍 Similarity Search", style={"fontSize": "14px", "fontWeight": "600", "color": "#00bcd4"}),
+                                        html.Div("🔍 Similarity Search", style={"fontSize": "14px", "fontWeight": "600", "color": _ui.ACCENT}),
                                         # The drop zone that used to live here is gone.
                                         # It wrote to the same store as the gallery's,
                                         # so one drop became the search query AND the
@@ -1958,7 +1958,7 @@ app.layout = html.Div(
                                         # single intake for the page, in the collection
                                         # rail, and roles are assigned from the pictures.
                                         html.Span("uses the [R] picture in the collection",
-                                                  style={"fontSize": "11px", "color": "#7a8a9a"}),
+                                                  style={"fontSize": "11px", "color": _ui.INK_DIM}),
                                     ],
                                     style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "12px"},
                                 ),
@@ -2134,7 +2134,7 @@ app.layout = html.Div(
                         ),
                             ],
                             id="similarity-card",
-                            style={"padding": "14px", "backgroundColor": "#0a1a1a", "borderRadius": "8px", "border": "1px solid #2a4a4a"},
+                            style={"padding": "14px", "backgroundColor": _ui.SURFACE, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
                         ),
                         
                         # ─────────────────────────────────────────────────────────
@@ -2142,7 +2142,7 @@ app.layout = html.Div(
                         # ─────────────────────────────────────────────────────────
                         html.Div(
                             [
-                                html.Div("🎨 Color Transfer", style={"fontSize": "14px", "fontWeight": "600", "color": "#e040fb", "marginBottom": "10px"}),
+                                html.Div("🎨 Color Transfer", style={"fontSize": "14px", "fontWeight": "600", "color": _ui.ROLE_TARGET, "marginBottom": "10px"}),
                                 html.Div("Apply Reference palette to Target image", style={"fontSize": "11px", "color": "#888", "marginBottom": "12px"}),
                                 html.Div(
                                     [
@@ -2227,7 +2227,7 @@ app.layout = html.Div(
                                             html.Summary(
                                                 "Which colours of the reference",
                                                 style={"fontSize": "11.5px",
-                                                       "color": "#00bcd4",
+                                                       "color": _ui.ACCENT,
                                                        "cursor": "pointer",
                                                        "marginBottom": "8px",
                                                        "userSelect": "none"},
@@ -2282,7 +2282,7 @@ app.layout = html.Div(
                                 html.Div(id="color-transfer-status", style={"marginTop": "10px", "fontSize": "12px"}),
                             ],
                             id="transfer-card",
-                            style={"marginTop": "16px", "padding": "14px", "backgroundColor": "#1a1a2a", "borderRadius": "8px", "border": "1px solid #4a3a5a"},
+                            style={"marginTop": "16px", "padding": "14px", "backgroundColor": _ui.SURFACE, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
                         ),
 
                         # ─────────────────────────────────────────────────────────
@@ -2320,7 +2320,7 @@ app.layout = html.Div(
                                     ),
                                 ], style={"marginBottom": "10px"}),
                                 html.Div(id="style-method-note",
-                                         style={"fontSize": "11px", "color": "#8a8a92",
+                                         style={"fontSize": "11px", "color": _ui.INK_DIM,
                                                 "lineHeight": "1.5", "marginBottom": "10px",
                                                 "minHeight": "32px"}),
                                 # Only ControlNet reads these two. Hidden
@@ -2387,7 +2387,7 @@ app.layout = html.Div(
                 # Reference image display (sticky in left column)
                 html.Div(
                     id="moodboard-ref-display",
-                    style={"display": "none", "marginTop": "12px", "padding": "12px", "backgroundColor": "#1a1a1a", "borderRadius": "10px", "border": "1px solid #00bcd4", "position": "sticky", "top": "10px"},
+                    style={"display": "none", "marginTop": "12px", "padding": "12px", "backgroundColor": "#1a1a1a", "borderRadius": "10px", "border": f"1px solid {_ui.ACCENT}", "position": "sticky", "top": "10px"},
                 ),
             ],
             id="left-column",
@@ -2417,7 +2417,7 @@ html.Div(
                                     min=0.0,
                                     max=1.0,
                                     size=60,
-                                    color="#00bcd4",
+                                    color=_ui.ACCENT,
                                     label="Strength",
                                 ),
                             ],
@@ -2441,14 +2441,14 @@ html.Div(
                                    "gap": "6px", "minWidth": "220px"},
                             children=[
                                 html.Div(id="poetry-progress-msg",
-                                         style={"fontSize": "11px", "color": "#bdbdbd"}),
+                                         style={"fontSize": "11px", "color": _ui.INK_DIM}),
                                 html.Div(
                                     style={"height": "6px", "borderRadius": "3px",
                                            "backgroundColor": "#333", "overflow": "hidden"},
                                     children=html.Div(
                                         id="poetry-progress-bar",
                                         style={"height": "100%", "width": "0%",
-                                               "backgroundColor": "#00bcd4",
+                                               "backgroundColor": _ui.ACCENT,
                                                "transition": "width 0.3s"}),
                                 ),
                             ],
@@ -2461,7 +2461,7 @@ html.Div(
                             [
                                 html.Div("Group twins",
                                         style={"fontSize": "12px", "textAlign": "center", "marginBottom": "4px"}),
-                                daq.BooleanSwitch(id="group-similar", on=True, color="#00bcd4"),
+                                daq.BooleanSwitch(id="group-similar", on=True, color=_ui.ACCENT),
                             ],
                             style={
                                 "display": "flex",
@@ -2503,7 +2503,7 @@ html.Div(
                         html.Div(
                             [
                                 html.Span("Spectrogram", style={"marginRight": "8px", "whiteSpace": "nowrap"}),
-                                daq.BooleanSwitch(id="spec-toggle", on=False, color="#00bcd4"),
+                                daq.BooleanSwitch(id="spec-toggle", on=False, color=_ui.ACCENT),
                             ],
                             id="audio-spec-inline",
                             style={
@@ -2958,12 +2958,12 @@ def toggle_inputs(mode, tool):
 
     # Which tool is mounted in the bench, and therefore what the stage shows.
     hidden = {"display": "none"}
-    sim_card = {"padding": "14px", "backgroundColor": "#0a1a1a",
-                "borderRadius": "8px", "border": "1px solid #2a4a4a"}
-    xfer_card = {"padding": "14px", "backgroundColor": "#1a1a2a",
-                 "borderRadius": "8px", "border": "1px solid #4a3a5a"}
-    style_card = {"padding": "14px", "backgroundColor": "#1a1508",
-                  "borderRadius": "8px", "border": "1px solid #5a4a2a"}
+    sim_card = {"padding": "14px", "backgroundColor": _ui.SURFACE,
+                "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}
+    xfer_card = {"padding": "14px", "backgroundColor": _ui.SURFACE,
+                 "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}
+    style_card = {"padding": "14px", "backgroundColor": _ui.SURFACE,
+                  "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}
     # The stage. Prompt search and story write #image-display; the moodboard
     # writes #mb-image-display; the transfer tools write #transfer-preview.
     # Each keeps its contents while hidden, so coming back to a tab or a tool
@@ -3192,7 +3192,7 @@ def show_moodboard_added_notification(clicks):
             return html.Div(
                 "Image added to moodboard",
                 style={
-                    "color": "#4CAF50", "fontSize": "12px", "padding": "4px 8px",
+                    "color": _ui.OK, "fontSize": "12px", "padding": "4px 8px",
                     "backgroundColor": "rgba(76, 175, 80, 0.15)", "borderRadius": "4px",
                     "display": "inline-block",
                 },
@@ -3251,9 +3251,9 @@ def update_moodboard_ref_display(ref_image, target_image, n_colors, mode):
     content = [
         html.Div(
             [
-                make_image_card(ref_image, "🎨 REFERENCE", "#00bcd4", is_ref=True),
+                make_image_card(ref_image, "🎨 REFERENCE", _ui.ACCENT, is_ref=True),
                 html.Div(style={"width": "12px"}),  # Spacer
-                make_image_card(target_image, "🎯 TARGET", "#e040fb", is_ref=False),
+                make_image_card(target_image, "🎯 TARGET", _ui.ROLE_TARGET, is_ref=False),
             ],
             style={"display": "flex", "gap": "0", "alignItems": "flex-start"},
         ),
@@ -3263,9 +3263,9 @@ def update_moodboard_ref_display(ref_image, target_image, n_colors, mode):
         "display": "block", 
         "marginTop": "12px", 
         "padding": "12px", 
-        "backgroundColor": "#0a1520", 
+        "backgroundColor": _ui.SURFACE, 
         "borderRadius": "10px", 
-        "border": "1px solid #2a3a4a",
+        "border": f"1px solid {_ui.LINE}",
         "position": "sticky",
         "top": "10px",
     }
@@ -3307,15 +3307,15 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
         # Border style based on role
         if is_ref and is_target:
             border = "3px solid"
-            border_image = "linear-gradient(135deg, #00bcd4, #e040fb) 1"
+            border_image = f"linear-gradient(135deg, {_ui.ACCENT}, {_ui.ROLE_TARGET}) 1"
         elif is_ref:
-            border = "3px solid #00bcd4"
+            border = f"3px solid {_ui.ACCENT}"
             border_image = None
         elif is_target:
-            border = "3px solid #e040fb"
+            border = f"3px solid {_ui.ROLE_TARGET}"
             border_image = None
         else:
-            border = "2px solid #3a4a5a"
+            border = f"2px solid {_ui.LINE}"
             border_image = None
         
         img_style = {
@@ -3344,8 +3344,8 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
                         "position": "absolute", "top": "4px", "left": "4px",
                         "width": "22px", "height": "22px", "borderRadius": "4px",
                         "backgroundColor": _ui.ROLE_REF if is_ref else _ui.ROLE_OFF,
-                        "color": "#fff" if is_ref else "#7a8a9a", 
-                        "border": "1px solid #00bcd4" if is_ref else "1px solid #4a5a6a",
+                        "color": "#fff" if is_ref else _ui.INK_DIM, 
+                        "border": f"1px solid {_ui.ACCENT}" if is_ref else f"1px solid {_ui.LINE}",
                         "fontSize": "11px", "fontWeight": "bold", "cursor": "pointer",
                         "padding": "0", "lineHeight": "20px", "textAlign": "center",
                     },
@@ -3359,8 +3359,8 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
                         "position": "absolute", "top": "4px", "right": "4px",
                         "width": "22px", "height": "22px", "borderRadius": "4px",
                         "backgroundColor": _ui.ROLE_TARGET if is_target else _ui.ROLE_OFF,
-                        "color": "#fff" if is_target else "#7a8a9a",
-                        "border": "1px solid #e040fb" if is_target else "1px solid #4a5a6a",
+                        "color": "#fff" if is_target else _ui.INK_DIM,
+                        "border": f"1px solid {_ui.ROLE_TARGET}" if is_target else f"1px solid {_ui.LINE}",
                         "fontSize": "11px", "fontWeight": "bold", "cursor": "pointer",
                         "padding": "0", "lineHeight": "20px", "textAlign": "center",
                     },
@@ -3373,7 +3373,7 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
                     style={
                         "position": "absolute", "bottom": "4px", "right": "4px",
                         "width": "18px", "height": "18px", "borderRadius": "50%",
-                        "backgroundColor": "#ff4444", "color": "white", "border": "none",
+                        "backgroundColor": _ui.BAD, "color": "white", "border": "none",
                         "fontSize": "12px", "lineHeight": "1", "cursor": "pointer",
                         "padding": "0", "fontWeight": "bold", "opacity": "0.7",
                     },
@@ -3590,7 +3590,7 @@ def save_moodboard_images(n_clicks, moodboard, folder_name):
         return dash.no_update
     
     if not folder_name or not folder_name.strip():
-        return html.Span("Please enter a folder name", style={"color": "#ffcc00"})
+        return html.Span("Please enter a folder name", style={"color": _ui.WARN})
     
     folder_name = folder_name.strip()
     # Create output path
@@ -3608,7 +3608,7 @@ def save_moodboard_images(n_clicks, moodboard, folder_name):
             except Exception as e:
                 print(f"Failed to save {path}: {e}")
     
-    return html.Span(f"Saved {saved} images to {output_dir}", style={"color": "#4CAF50"})
+    return html.Span(f"Saved {saved} images to {output_dir}", style={"color": _ui.OK})
 
 
 @app.callback(
@@ -3649,7 +3649,7 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
         return dash.no_update
     
     if not folder_name or not folder_name.strip():
-        return html.Span("Please enter a folder name", style={"color": "#ffcc00"})
+        return html.Span("Please enter a folder name", style={"color": _ui.WARN})
     
     folder_name = folder_name.strip()
     output_dir = _safe_output_dir("selections", folder_name)
@@ -3686,9 +3686,9 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
                     print(f"Failed to save {path}: {e}")
     
     if saved > 0:
-        return html.Span(f"Saved {saved} images to {output_dir}", style={"color": "#4CAF50"})
+        return html.Span(f"Saved {saved} images to {output_dir}", style={"color": _ui.OK})
     else:
-        return html.Span("No images selected", style={"color": "#ffcc00"})
+        return html.Span("No images selected", style={"color": _ui.WARN})
 
 
 @app.callback(
@@ -3757,11 +3757,11 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
     
     if not PALETTE_STYLE_AVAILABLE:
         return [html.Div("Palette/style features not available. Run build with --features palette,style", 
-                        style={"color": "#ff6666", "padding": "10px"})], [], {}, []
+                        style={"color": _ui.BAD, "padding": "10px"})], [], {}, []
     
     if not use_palette and not use_style:
         return [html.Div("Please enable at least one feature (Color Palette or Style/Texture)", 
-                        style={"color": "#ffcc00", "padding": "10px"})], [], {}, []
+                        style={"color": _ui.WARN, "padding": "10px"})], [], {}, []
     
     # Parse dataset
     try:
@@ -3775,16 +3775,16 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
                 if db_name not in _palette_cache:
                     _palette_cache[db_name] = _load_palette_cache(db_name)
     except:
-        return [html.Div("Invalid dataset", style={"color": "#ff6666"})], [], {}, []
+        return [html.Div("Invalid dataset", style={"color": _ui.BAD})], [], {}, []
     
     if modality != "image":
-        return [html.Div("Similarity search only available for images", style={"color": "#ff6666"})], [], {}, []
+        return [html.Div("Similarity search only available for images", style={"color": _ui.BAD})], [], {}, []
     
     # Load index
     try:
         index, idx2path = load_index(db_name, modality=modality)
     except Exception as e:
-        return [html.Div(f"Failed to load index: {e}", style={"color": "#ff6666"})], [], {}, []
+        return [html.Div(f"Failed to load index: {e}", style={"color": _ui.BAD})], [], {}, []
     
     num_results = num_results or 50
     n_colors = n_colors or 16
@@ -3837,12 +3837,12 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
         
     except FileNotFoundError as e:
         return [html.Div(f"Features not found: {e}. Run build with --features palette,style", 
-                        style={"color": "#ff6666", "padding": "10px"})], [], {}, []
+                        style={"color": _ui.BAD, "padding": "10px"})], [], {}, []
     except Exception as e:
-        return [html.Div(f"Search error: {e}", style={"color": "#ff6666", "padding": "10px"})], [], {}, []
+        return [html.Div(f"Search error: {e}", style={"color": _ui.BAD, "padding": "10px"})], [], {}, []
     
     if not results:
-        return [html.Div("No results found", style={"color": "#ffcc00", "padding": "10px"})], [], {}, []
+        return [html.Div("No results found", style={"color": _ui.WARN, "padding": "10px"})], [], {}, []
     
     show_palettes = show_swatches and "show" in show_swatches
     
@@ -3929,8 +3929,8 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
                                 title="Make this the reference and search again",
                                 style={"marginLeft": "6px", "fontSize": "11px",
                                        "padding": "3px 8px",
-                                       "backgroundColor": "#00bcd4", "border": "none",
-                                       "borderRadius": "3px", "color": "#04222a",
+                                       "backgroundColor": _ui.ACCENT, "border": "none",
+                                       "borderRadius": "3px", "color": _ui.ACCENT_INK,
                                        "fontWeight": "600", "cursor": "pointer"}),
                 ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"})
             )
@@ -4376,7 +4376,7 @@ def _style_note(method):
         (Output("style-transfer-btn", "disabled"), True, False),
         (Output("style-transfer-btn", "children"), "Working…", "Apply style"),
         (Output("style-transfer-status", "children"),
-         html.Div("Working…", style={"color": "#00bcd4"}), dash.no_update),
+         html.Div("Working…", style={"color": _ui.ACCENT}), dash.no_update),
     ],
     prevent_initial_call=True,
 )
@@ -4394,18 +4394,18 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
         raise dash.exceptions.PreventUpdate
     if not STYLE_TRANSFER_AVAILABLE:
         return html.Div("Style transfer unavailable (check installation)",
-                        style={"color": "#e74c3c"}), dash.no_update
+                        style={"color": _ui.BAD}), dash.no_update
     if not ref_path:
-        return html.Div("No source [R] selected", style={"color": "#f39c12"}), dash.no_update
+        return html.Div("No source [R] selected", style={"color": _ui.WARN}), dash.no_update
     if not target_path:
-        return html.Div("No target [T] selected", style={"color": "#f39c12"}), dash.no_update
+        return html.Div("No target [T] selected", style={"color": _ui.WARN}), dash.no_update
 
     ref_resolved = resolve_path(ref_path)
     target_resolved = resolve_path(target_path)
     if not os.path.exists(ref_resolved):
-        return html.Div("Source file not found", style={"color": "#e74c3c"}), dash.no_update
+        return html.Div("Source file not found", style={"color": _ui.BAD}), dash.no_update
     if not os.path.exists(target_resolved):
-        return html.Div("Target file not found", style={"color": "#e74c3c"}), dash.no_update
+        return html.Div("Target file not found", style={"color": _ui.BAD}), dash.no_update
 
     import time
     started = time.time()
@@ -4447,7 +4447,7 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
             hint = (" — the diffusion methods download their weights on first "
                     "use, which takes a few minutes.")
         return html.Div(f"{method}: {e}{hint}",
-                        style={"color": "#e74c3c"}), dash.no_update
+                        style={"color": _ui.BAD}), dash.no_update
 
     out_dir = _safe_output_dir("transfers")
     os.makedirs(out_dir, exist_ok=True)
@@ -4472,36 +4472,55 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
     # Texture is OpenCV arithmetic and never touches the GPU, so reporting one
     # because the machine has one would be untrue about what just ran.
     device = "CPU" if method == "texture" else ("GPU" if _gpu.available() else "CPU")
-    status = html.Div(
-        f"{label} · {device} · {time.time() - started:.1f}s · "
-        f"{result.size[0]}x{result.size[1]} · saved to {out_path}",
-        style={"color": "#4CAF50"})
-    panel = [
+    elapsed = time.time() - started
+    status = html.Div(f"{label} · {device} · {elapsed:.1f}s · saved to {out_path}",
+                      style={"color": _ui.OK})
+    # The stage, laid out like the colour-transfer one: a header bar naming
+    # what ran, the picture, then its supporting material, then the action.
+    # The map and the button used to be inline blocks after a centred image,
+    # so the button floated beside the map at whatever height the map ended.
+    stage = [
+        html.Div(
+            [
+                html.Span(f"STYLE · {label}", style={
+                    "fontWeight": "700", "fontSize": "12px",
+                    "letterSpacing": "1px", "color": _ui.INK}),
+                html.Span(f"{result.size[0]}×{result.size[1]} · {device} · {elapsed:.1f}s",
+                          style={"color": _ui.INK_DIM, "fontSize": "11px"}),
+            ],
+            style={"display": "flex", "alignItems": "baseline", "gap": "10px",
+                   "flexWrap": "wrap", "margin": "0 -12px 12px",
+                   "padding": "9px 12px",
+                   "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
+        ),
         html.Img(
             src=f"data:image/jpeg;base64,{b64}",
-            style={"maxWidth": "100%", "maxHeight": "72vh", "borderRadius": "6px",
-                   "display": "block", "margin": "0 auto"}),
+            title=out_name,
+            style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
+                   "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}),
     ]
     if control_png:
-        panel.append(html.Div([
-            html.Div(f"{cn_map or 'depth'} map of [T]",
-                     style={"fontSize": "10.5px", "color": "#8a8a92",
-                            "letterSpacing": "0.4px", "marginBottom": "4px"}),
+        stage.append(html.Div([
+            html.Div(f"{cn_map or 'depth'} map of [T], what ControlNet followed",
+                     style={"fontSize": "10.5px", "color": _ui.INK_DIM,
+                            "letterSpacing": "0.4px", "marginBottom": "6px"}),
             html.Img(src=f"data:image/jpeg;base64,{control_png}",
-                     style={"maxWidth": "260px", "borderRadius": "4px",
-                            "border": "1px solid #333"}),
-        ], style={"marginTop": "12px", "display": "inline-block"}))
-
-    return status, html.Div(panel + [
+                     style={"display": "block", "maxWidth": "260px",
+                            "borderRadius": "4px", "border": f"1px solid {_ui.LINE}"}),
+        ], style={"marginTop": "14px"}))
+    stage += [
+        html.Div(f"Saved to {os.path.join('output', 'transfers')}",
+                 style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
+        html.Div(out_name, style={"color": _ui.INK_FAINT, "fontSize": "10px",
+                                  "wordBreak": "break-all"}),
         html.Button("+ Collection",
                     id={"type": "add-to-moodboard", "index": out_path},
                     n_clicks=0,
                     title="Add this result to the collection",
-                    style={"marginTop": "10px", "fontSize": "11.5px",
-                           "padding": "5px 11px", "borderRadius": "4px",
-                           "backgroundColor": "#2a7a5a", "color": "#eafff5",
-                           "border": "none", "cursor": "pointer"}),
-    ], style={"textAlign": "center"})
+                    style=_ui.button("success", marginTop="10px", fontSize="11.5px",
+                                     padding="5px 11px")),
+    ]
+    return status, html.Div(stage)
 
 
 @app.callback(
@@ -4524,7 +4543,7 @@ def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
         (Output("color-transfer-btn", "disabled"), True, False),
         (Output("color-transfer-btn", "children"), "Working…", "Transfer colors"),
         (Output("color-transfer-status", "children"),
-         html.Div("Working…", style={"color": "#00bcd4"}), dash.no_update),
+         html.Div("Working…", style={"color": _ui.ACCENT}), dash.no_update),
     ],
     prevent_initial_call=True,
 )
@@ -4536,15 +4555,15 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
     
     # Validate inputs
     if not ref_path:
-        return html.Div("⚠️ No Reference [R] image selected", style={"color": "#f39c12"}), ""
+        return html.Div("⚠️ No Reference [R] image selected", style={"color": _ui.WARN}), ""
     if not target_path:
-        return html.Div("⚠️ No Target [T] image selected", style={"color": "#f39c12"}), ""
+        return html.Div("⚠️ No Target [T] image selected", style={"color": _ui.WARN}), ""
     
     # Check method availability
     if method == "modflows" and not COLOR_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ ModFlows not available (check installation)", style={"color": "#e74c3c"}), ""
+        return html.Div("⚠️ ModFlows not available (check installation)", style={"color": _ui.BAD}), ""
     if method == "lab" and not LAB_TRANSFER_AVAILABLE:
-        return html.Div("⚠️ LAB transfer not available", style={"color": "#e74c3c"}), ""
+        return html.Div("⚠️ LAB transfer not available", style={"color": _ui.BAD}), ""
     
     try:
         import time
@@ -4555,9 +4574,9 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
         target_resolved = resolve_path(target_path)
         
         if not os.path.exists(ref_resolved):
-            return html.Div(f"⚠️ Reference file not found", style={"color": "#e74c3c"}), ""
+            return html.Div(f"⚠️ Reference file not found", style={"color": _ui.BAD}), ""
         if not os.path.exists(target_resolved):
-            return html.Div(f"⚠️ Target file not found", style={"color": "#e74c3c"}), ""
+            return html.Div(f"⚠️ Target file not found", style={"color": _ui.BAD}), ""
         
         # Parse options
         strength_val = float(strength) if strength else 1.0
@@ -4680,10 +4699,8 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
                         id={"type": "add-to-moodboard", "index": output_path},
                         n_clicks=0,
                         title="Add this result to the collection",
-                        style={"marginTop": "10px", "fontSize": "11.5px",
-                               "padding": "5px 11px", "borderRadius": "4px",
-                               "backgroundColor": "#2a7a5a", "color": "#eafff5",
-                               "border": "none", "cursor": "pointer"}),
+                        style=_ui.button("success", marginTop="10px", fontSize="11.5px",
+                                         padding="5px 11px")),
         ])
         return receipt, stage
 
@@ -4695,7 +4712,7 @@ def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
         print(f"[colour-transfer] {method} failed:", flush=True)
         traceback.print_exc()
         return (html.Div(f"✗ Error: {str(e)}",
-                         style={"color": "#e74c3c", "wordBreak": "break-word"}), "")
+                         style={"color": _ui.BAD, "wordBreak": "break-word"}), "")
 
 
 def _poetry_job(story_cache, folder, strength_val):
@@ -4827,7 +4844,7 @@ _POETRY_BOX = {"display": "none", "flexDirection": "column",
 
 def _poetry_bar(pct):
     return {"height": "100%", "width": f"{pct}%",
-            "backgroundColor": "#00bcd4", "transition": "width 0.3s"}
+            "backgroundColor": _ui.ACCENT, "transition": "width 0.3s"}
 
 
 @app.callback(
@@ -4911,7 +4928,7 @@ def poll_poetry(_n, job_ref):
         display.append(
             html.Div(
                 [
-                    html.H5(it["text"], style={"marginBottom": "4px", "color": "#ffc107"}),
+                    html.H5(it["text"], style={"marginBottom": "4px", "color": _ui.WARN}),
                     html.Img(src=f"data:image/jpeg;base64,{it['poetry_img_str']}",
                              style={"width": "100%", "marginBottom": "10px"}),
                     html.Div([
@@ -5292,7 +5309,7 @@ def update_images(
             images.append(
                 html.Div(
                     [
-                        html.H5(img["text"], style={"marginBottom": "4px", "color": "#ffc107"}),
+                        html.H5(img["text"], style={"marginBottom": "4px", "color": _ui.WARN}),
                         media,
                         html.Div(
                             html.Button(
@@ -5792,10 +5809,10 @@ def do_relocate(_check, _apply, new_root, dataset_value):
     if not dataset_value:
         return "Select a dataset first."
     if not new_root or not str(new_root).strip():
-        return html.Span("Enter the folder the files live in now.", style={"color": "#e0a44a"})
+        return html.Span("Enter the folder the files live in now.", style={"color": _ui.WARN})
     new_root = os.path.expanduser(str(new_root).strip().strip('"'))
     if not os.path.isdir(new_root):
-        return html.Span(f"Not a folder: {new_root}", style={"color": "#e74c3c"})
+        return html.Span(f"Not a folder: {new_root}", style={"color": _ui.BAD})
 
     apply_it = ctx.triggered_id == "relocate-apply-btn"
     try:
@@ -5806,29 +5823,29 @@ def do_relocate(_check, _apply, new_root, dataset_value):
         from relocate import relocate_legacy
         from legacy import discover
     except Exception as e:
-        return html.Span(f"Could not parse the dataset: {e}", style={"color": "#e74c3c"})
+        return html.Span(f"Could not parse the dataset: {e}", style={"color": _ui.BAD})
 
     matches = [d for d in discover() if d.name == name and d.modality == modality]
     if not matches:
-        return html.Span(f"No dataset named {name}.", style={"color": "#e74c3c"})
+        return html.Span(f"No dataset named {name}.", style={"color": _ui.BAD})
 
     try:
         r = relocate_legacy(matches[0], new_root, dry_run=not apply_it)
     except Exception as e:
         return html.Span(f"Relocation failed: {type(e).__name__}: {e}",
-                         style={"color": "#e74c3c"})
+                         style={"color": _ui.BAD})
 
     if r["found"] == 0:
         return html.Span(
             f"Found none of the {r['total']:,} files under {new_root}. "
             f"Point at the folder that directly contains them (or their subfolders).",
-            style={"color": "#e74c3c"})
+            style={"color": _ui.BAD})
 
     if not apply_it:
         extra = f" — {r['missing']} would still be missing." if r["missing"] else ""
         return html.Span(
             f"Would match {r['found']:,} of {r['total']:,} files here{extra} "
-            f"Press Relocate to apply.", style={"color": "#4caf50"})
+            f"Press Relocate to apply.", style={"color": _ui.OK})
 
     # Applied: stale absolute paths are cached all over the place.
     make_thumbnail_bytes.cache_clear()
@@ -5842,7 +5859,7 @@ def do_relocate(_check, _apply, new_root, dataset_value):
     return html.Span(
         f"✓ Relocated {r['found']:,} of {r['total']:,} files.{tail} "
         f"Re-select the dataset to reload it. Backups were written next to the "
-        f"originals as .bak.", style={"color": "#4caf50"})
+        f"originals as .bak.", style={"color": _ui.OK})
 
 
 # A new list of results starts at the top. Staying at the previous offset drops

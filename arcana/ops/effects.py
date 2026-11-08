@@ -52,8 +52,11 @@ def run_effect(ctx: Context, label: str, compute, record, background: bool = Fal
 
     def job(handle):
         def progress(fraction=None, message=None):
-            handle.raise_if_cancelled()
             handle.update(fraction=fraction, message=message)
+        # Work that can stop cleanly (indexing) polls this between items. It is
+        # a flag rather than an exception from progress(), so nothing stops
+        # halfway through writing a file.
+        progress.cancelled = lambda: handle.cancelled
         payload = compute(progress)
         tx = _state.STORE.begin(actor, label)
         try:

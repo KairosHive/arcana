@@ -146,7 +146,7 @@ def register(flask_app) -> None:
 def announce(port: int, *, headless: bool = False) -> str:
     """Write server.json for this process, and remove it again at exit."""
     info = {"port": int(port), "pid": os.getpid(), "token": _TOKEN, "started": time.time(),
-            "headless": headless}
+            "headless": headless, "vocabulary": vocabulary()}
     path = discovery_path()
     _paths.ensure_dir(os.path.dirname(path))
     tmp = path + ".tmp"
@@ -183,11 +183,26 @@ def find(timeout: float = 0.5) -> dict | None:
         return None
     if not isinstance(info, dict) or info.get("pid") == os.getpid():
         return None
+    # An app started before an upgrade speaks an older vocabulary. Forwarding
+    # to it would refuse ops this client knows, so run them here instead.
+    if info.get("vocabulary") != vocabulary():
+        import sys
+        print("[arcana] The open app runs a different version of Arcana, so this runs here. "
+              "Restart the app to share its models again.", file=sys.stderr)
+        return None
     try:
         _request(info, "GET", "/ops/state", timeout=timeout)
     except Exception:
         return None
     return info
+
+
+def vocabulary() -> str:
+    """A short fingerprint of the op vocabulary: names and their argument fields."""
+    import hashlib
+    from . import ops
+    spec = sorted((o.name, tuple(sorted(o.args.model_fields))) for o in ops.all_ops())
+    return hashlib.sha1(repr(spec).encode("utf-8")).hexdigest()[:12]
 
 
 def _request(info: dict, method: str, route: str, body: dict | None = None, timeout: float = 600):

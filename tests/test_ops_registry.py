@@ -98,6 +98,9 @@ VOCABULARY = {
     "job list", "job show", "job wait", "job cancel",
     # P3: boards as pages
     "board render", "board open",
+    # P4: the dataset lifecycle
+    "dataset create", "dataset extend", "dataset finish", "dataset marks", "dataset relocate",
+    "dataset migrate", "dataset delete",
 }
 
 # Examples that load a large model. They run when ARCANA_SLOW_EXAMPLES is set,
@@ -105,6 +108,10 @@ VOCABULARY = {
 # `model download` fetches hundreds of megabytes, so its example never runs here.
 SLOW = {"generate", "colour lut"}
 NETWORK = {"model download"}
+# Examples that index or rewrite a real folder. test_lifecycle.py runs these
+# ops against the synthetic dataset with the encoding stubbed.
+INDEXING = {"dataset create", "dataset extend", "dataset finish", "dataset relocate",
+            "dataset migrate"}
 
 
 def test_the_vocabulary_is_registered():
@@ -164,7 +171,7 @@ def test_every_example_runs(tmp, ds, actor, pixels_on):
     ctx = ops.context(actor)
     slow = bool(os.environ.get("ARCANA_SLOW_EXAMPLES"))
     for o in ops.all_ops():
-        if actor not in o.actors or o.name in NETWORK or (o.name in SLOW and not slow):
+        if actor not in o.actors or o.name in NETWORK | INDEXING or (o.name in SLOW and not slow):
             continue
         for line in o.examples:
             _fixture_board(tmp, "agent" if actor == "agent" else "person")

@@ -1,6 +1,6 @@
 # Arcana ops: one vocabulary, many thin surfaces
 
-P0 to P3 done, P4 next. Goal: every action Arcana can perform is a named op, declared
+P0 to P4 done, P5 next. Goal: every action Arcana can perform is a named op, declared
 once, and the web UI, the command line and an MCP agent all reach the same ops
 through thin surfaces generated from that one declaration. An agent can then
 prompt the latent space, build libraries, assemble moodboards from varied
@@ -752,6 +752,41 @@ What building it settled, beyond the text above:
 - `test_parity.py` extended to `ui_datasets.py` and `db` writes.
 - **Done when** every row of the README's command-line block has an op
   spelling, and the Datasets tab performs no write outside `ops.call`.
+
+**Done 7 November 2026.** `ops/lifecycle.py` holds `dataset create`,
+`extend`, `finish`, `marks`, `relocate`, `migrate` and `delete`, with `model
+download` from P2. The long ones run as jobs by default and stop cleanly on
+`job cancel`. The Datasets tab and the app's relocate panel call them, and
+`test_parity.py` now fails on any writing function of `db`, `relocate` or
+`legacy` in the app. `aliases.py` turns each old console script into one op
+line, says the new spelling, and runs it, and a flag with no op equivalent
+runs the old script unchanged. The README's command-line block and
+INSTALLATION.md speak `arcana <op>`, and a test parses every line of that
+block.
+
+Checked live: `arcana dataset create` indexed twelve pictures with ViT-B/32
+and palette features in 13 s, and the dataset was searchable at once. In the
+open app, the Datasets tab's marks button ran `dataset marks` as a job, and
+its delete showed the dry-run preview and removed the dataset through
+`dataset delete`.
+
+What building it settled, beyond the text above:
+
+- `dataset finish` is `db.rework_dataset`, which `finish_dataset` already
+  aliased: it lays a dataset out again from its index, whether a run was cut
+  short or the clusters need redoing.
+- `legacy.py` and `relocate.py` fix their data folders as default arguments
+  at import. The ops pass the current folders explicitly, so a test, or any
+  code that changes the data dir, acts on the right one.
+- `server.json` carries a fingerprint of the op vocabulary. A client forwards
+  only to an app that speaks the same vocabulary, and runs the op itself,
+  with a note, when the open app is an older version.
+- `colour lut --out` writes a .cube anywhere for the person and the terminal,
+  which is what `arcana-lut` did. Agents write inside the data folder only.
+- An integer choice (`--dims 2|3`) arrives from a line as text, so the grammar
+  converts it before Pydantic compares it with the choices.
+- `folder_vocabulary` moved from the Datasets tab to `db.py`, so the ops reach
+  it without loading the app.
 
 ### P5. Installer (about 1 day)
 

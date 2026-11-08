@@ -111,7 +111,8 @@ def test_with_the_app_open_the_tool_forwards_to_it(tmp, ds, monkeypatch):
     http = make_server("127.0.0.1", 0, app, threaded=True)
     threading.Thread(target=http.serve_forever, daemon=True).start()
     try:
-        info = {"port": http.server_port, "pid": -1, "token": server._TOKEN}
+        info = {"port": http.server_port, "pid": -1, "token": server._TOKEN,
+                "vocabulary": server.vocabulary()}
         with open(server.discovery_path(), "w", encoding="utf-8") as fh:
             json.dump(info, fh)
         seen = []
@@ -133,7 +134,7 @@ def test_with_the_app_open_the_tool_forwards_to_it(tmp, ds, monkeypatch):
 def test_a_dead_server_record_is_ignored(tmp, ds, monkeypatch):
     monkeypatch.delenv("ARCANA_NO_SERVER")
     with open(server.discovery_path(), "w", encoding="utf-8") as fh:
-        json.dump({"port": 1, "pid": 999999, "token": "x"}, fh)
+        json.dump({"port": 1, "pid": 999999, "token": "x", "vocabulary": server.vocabulary()}, fh)
     assert server.find(timeout=0.2) is None
     assert "Created" in texts(srv.run(['board create "Local" --id local']))
 

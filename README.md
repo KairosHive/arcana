@@ -57,7 +57,7 @@ of it is a filter you can click.
 
 ## Adding to a dataset
 
-An archive grows every week. `arcana-extend`, or **Add new** beside a dataset,
+An archive grows every week. `arcana dataset extend`, or **Add new** beside a dataset,
 encodes only the files that were not there last time — the rest is reused, so it
 costs the price of the new pictures rather than of the whole collection. The map
 is then laid out again over everything, which does mean clusters can move and be
@@ -144,32 +144,58 @@ instead and nothing leaves at all.
 
 ## Working with an agent
 
-`arcana-mcp` offers your datasets to an AI agent over MCP, read-only: survey a
-dataset, search it for several ideas at once with phrases to avoid, find more
-like a picture, match a palette, look closely at a few. The agent brings the
-judgment, such as turning a theme into angles for a moodboard; Arcana brings the
-archive. Claude Code opened in this repository picks it up from `.mcp.json`;
-it needs the optional dependency, `uv sync --extra agent`. The plan for where
-this goes next is [AGENT_PLAN.md](AGENT_PLAN.md).
+Arcana offers your archive to an AI agent over MCP, as one tool that takes the
+same op lines you type after `arcana`. An agent can survey a dataset, search it
+for several ideas at once, build a moodboard with sections, notes and a
+palette, recolour or restyle pictures, generate the odd missing picture, and
+lay the board out as an HTML page. It acts as `agent`, so it changes only
+boards an agent made and works on a copy of yours. Every batch it sends is one
+step that `undo` takes back. While the app is open, its calls run in the app,
+and its boards appear in the Moodboard tab within two seconds.
+
+Claude Code picks the server up from `.mcp.json` in this repository (it needs
+`uv sync --extra agent`). For the skills too, install the plugin:
+
+```
+/plugin marketplace add <path to this repository>
+/plugin install arcana@arcana
+```
+
+It brings three skills: `moodboard` (the workflow), `board-design` (judging a
+board) and `harmonize` (when and how to recolour). The design is in
+[OPS_PLAN.md](OPS_PLAN.md).
 
 ## Command line
 
-The GUI covers everything, but each piece is also a command:
+One command, `arcana`. Without arguments it starts the app. With an op line it
+runs the op, the same one the app and an agent use.
 
 ```bash
-arcana                                   # the app
-arcana-build-latent --path ./photos --name holiday
-arcana-extend --path ./photos --name holiday    # last weekend's shoot
-arcana-finish --name holiday --k 12      # re-cluster, rename or re-lay-out, no re-encoding
-arcana-marks --name holiday              # re-read ON1 stars and colour tags
-arcana-relocate --name holiday           # after moving your files
-arcana-migrate                           # older datasets to the portable format
-arcana-mcp                               # the agent's tools, over MCP on stdio
+arcana                                              # the app
+arcana op list                                      # every op
+arcana search text --help                           # any op's help
+arcana dataset create holiday --folder ./photos     # index a folder
+arcana dataset extend holiday                       # last weekend's shoot
+arcana dataset finish holiday --k 12                # re-cluster or re-lay-out, no re-encoding
+arcana dataset marks holiday                        # re-read ON1 stars and colour tags
+arcana dataset relocate holiday --root D:/photos    # after moving your files
+arcana dataset migrate                              # older datasets to the portable format
+arcana search text holiday --phrase "rain on a dark street"
+arcana board render monsoon                         # a board as one HTML page
+arcana colour lut DSC0042.jpg --reference DSC0177.jpg --out grade.cube
+arcana undo                                         # take back your last step
+arcana-mcp                                          # the agent's server, over MCP on stdio
 ```
 
-`arcana-build-latent --help` lists the indexing options — cluster count, label
-vocabulary, which features to extract. `arcana-extend --dry_run` says what it
-would add without adding it.
+`arcana --batch lines.txt` runs a file of op lines as one step. `--json`
+before the op prints the result as JSON, and `--sheets` writes contact sheets
+for searches to `output/sheets`. `arcana completion powershell` (or bash, zsh)
+prints a completion script. While the app is open the command runs in it,
+sharing its models.
+
+The older commands (`arcana-build-latent`, `arcana-extend`, `arcana-finish`,
+`arcana-marks`, `arcana-relocate`, `arcana-migrate`, `arcana-lut`) still work
+for this release. Each prints the op line it now stands for.
 
 ## Requires
 

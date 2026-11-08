@@ -288,6 +288,10 @@ class ColourLutArgs(Args):
                            json_schema_extra={"metavar": "ITEM"})
     n: int = Field(33, ge=9, le=65, description="Lattice size. 33 is the usual grading size.")
     strength: float = Field(1.0, ge=0.0, le=1.0, description="How far the LUT moves the colours.")
+    steps: int = Field(8, ge=2, le=64, description="Flow steps. More is smoother and slower.")
+    out: str | None = Field(None, description="Where to write the .cube file. Defaults to "
+                                              "output/luts. For the person and the terminal.",
+                            json_schema_extra={"metavar": "PATH"})
 
 
 @op("colour lut", "effect", ColourLutArgs, LutResult,
@@ -305,13 +309,20 @@ def _colour_lut(a: ColourLutArgs, ctx: Context) -> LutResult:
     ok, why = _tm.available("modflows")
     if not ok:
         raise ValueError(why)
+    if a.out and ctx.actor == "agent":
+        raise ValueError("An agent writes inside Arcana's data folder only. Leave out --out "
+                         "and the LUT goes to output/luts.")
     t = archive.resolve_item(a.target, ctx.actor)
     r = archive.resolve_item(a.reference, ctx.actor)
-    table = _lut.bake_modflows(t.path, r.path, n=a.n, strength=a.strength)
-    out_dir = _paths.ensure_dir(os.path.join(_paths.subdir("output"), "luts"))
-    name = _paths.fit_filename(out_dir, os.path.splitext(os.path.basename(t.path))[0],
-                               os.path.splitext(os.path.basename(r.path))[0], f"{a.n}", ".cube")
-    path = str(_lut.write_cube(os.path.join(out_dir, name), table, a.n,
+    table = _lut.bake_modflows(t.path, r.path, n=a.n, steps=a.steps, strength=a.strength)
+    if a.out:
+        dest = os.path.abspath(a.out)
+    else:
+        out_dir = _paths.ensure_dir(os.path.join(_paths.subdir("output"), "luts"))
+        dest = os.path.join(out_dir, _paths.fit_filename(
+            out_dir, os.path.splitext(os.path.basename(t.path))[0],
+            os.path.splitext(os.path.basename(r.path))[0], f"{a.n}", ".cube"))
+    path = str(_lut.write_cube(dest, table, a.n,
                                title=f"arcana {t.handle or a.target} to {r.handle or a.reference}"))
     return LutResult(path=path, size=a.n, target=t.handle or a.target, reference=r.handle or a.reference)
 

@@ -5461,20 +5461,15 @@ def do_relocate(_check, _apply, new_root, dataset_value):
     apply_it = ctx.triggered_id == "relocate-apply-btn"
     try:
         name, _dim, modality = _parse_dataset_value(dataset_value)
-        from .relocate import relocate_legacy
-        from .legacy import discover
-    except ImportError:
-        from relocate import relocate_legacy
-        from legacy import discover
     except Exception as e:
         return html.Span(f"Could not parse the dataset: {e}", style={"color": _ui.BAD})
 
-    matches = [d for d in discover() if d.name == name and d.modality == modality]
-    if not matches:
-        return html.Span(f"No dataset named {name}.", style={"color": _ui.BAD})
-
     try:
-        r = relocate_legacy(matches[0], new_root, dry_run=not apply_it)
+        r = _ops.call("dataset relocate", {
+            "dataset": name if modality == "image" else f"{name}@{modality}",
+            "root": new_root, "dry_run": not apply_it}, actor="person").model_dump()
+    except _ops.Refusal as e:
+        return html.Span(e.reason, style={"color": _ui.BAD})
     except Exception as e:
         return html.Span(f"Relocation failed: {type(e).__name__}: {e}",
                          style={"color": _ui.BAD})

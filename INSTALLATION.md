@@ -108,9 +108,13 @@ pip install .
 arcana
 ```
 
-That installs the package, its dependencies and seven commands: `arcana`,
-`arcana-build-latent`, `arcana-extend`, `arcana-finish`, `arcana-marks`,
-`arcana-relocate` and `arcana-migrate`.
+That installs the package, its dependencies and the `arcana` command. On its
+own it starts the app, and with an op line it runs that op (`arcana op list`
+shows them all, `arcana <op> --help` any one). `arcana-mcp` serves the same ops
+to an agent. The older names (`arcana-build-latent`, `arcana-extend`,
+`arcana-finish`, `arcana-marks`, `arcana-relocate`, `arcana-migrate`,
+`arcana-lut`) still work for this release, and each prints the op line it
+stands for.
 
 Use `pip install -e .` instead if you want your edits to take effect without
 reinstalling.
@@ -267,5 +271,6 @@ which is always CPU-only.
 **A dataset says "unfinished"** — indexing wrote the index but never the 2-D
 map, usually an interrupted run. Index that folder again.
 
-**A dataset says "files missing"** — the pictures moved. `arcana-relocate
---name <dataset>` finds them again by content, without re-indexing.
+**A dataset says "files missing"** — the pictures moved. `arcana dataset
+relocate <dataset> --root <folder>` finds them again by content, without
+re-indexing.

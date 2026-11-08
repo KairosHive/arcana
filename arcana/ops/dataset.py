@@ -342,7 +342,17 @@ def _model_download(a: ModelDownloadArgs, ctx: Context):
                 pass
 
         def compute(progress):
-            return _models.download_model(a.model, _Handle(progress))
+            path = _models.download_model(a.model, _Handle(progress))
+            # Every encoder names clusters from its own label matrix, so build
+            # it now rather than at the end of the first indexing run.
+            try:
+                from .. import db as _db
+            except ImportError:                       # pragma: no cover
+                import db as _db
+            if progress:
+                progress(0.95, "Preparing labels")
+            _db.warm_label_cache(a.model, _models.get(a.model).modality)
+            return path
 
     return run_effect(ctx, f"model download {a.model}", compute,
                       lambda tx, path: DownloadResult(model=a.model, path=str(path)),

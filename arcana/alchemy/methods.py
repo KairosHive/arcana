@@ -186,7 +186,7 @@ OPS = tuple(tk.OPERATIONS)
 
 TOKENS = [
     Method("tokens.mix", "tokens", "mix", "the materials laid into the picture's tokens, by arithmetic",
-           (K("picture", "float", 0.0, 0, 1, 0.01, "picture underneath", "how much of the picture's own tokens "
+           (K("picture", "float", 0.5, 0, 1, 0.01, "picture underneath", "how much of the picture's own tokens "
               "stay. 0 lets the materials lead, 1 keeps the picture"),
             MODEL,
             K("carry", "choice", "tokens", label="carries", options=tuple(tk.CARRIES), doc="what each material brings"),
@@ -208,7 +208,7 @@ TOKENS = [
               when=(("where", "==", "nearest"),)))
            + LOOK_KNOBS, tk.mix),
     Method("tokens.mosh", "tokens", "mosh", "tokens moved out of their places and drawn back: datamoshing",
-           (K("hold", "float", 0.0, 0, 1, 0.01, "picture underneath", "how much of the picture's own tokens "
+           (K("hold", "float", 0.5, 0, 1, 0.01, "picture underneath", "how much of the picture's own tokens "
               "stay. 0 lets the moved tokens lead, 1 keeps the picture"),
             MODEL,
             K("way", "choice", "rebuild", label="way", options=tuple(tk.MOSHES), doc="how the tokens are moved"),

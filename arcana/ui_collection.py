@@ -118,11 +118,11 @@ def layout() -> html.Div:
     older version of the app kept in this browser."""
     return html.Div(
         [
-            html.Label("Collection:", style={"marginLeft": "28px", "marginRight": "6px"}),
+            html.Span("Collection", style=_ui.field_label(marginBottom="0", marginRight="10px",
+                                                         color=_ui.INK_DIM)),
             dcc.Dropdown(id="collection-picker", options=[], value=None, clearable=False,
                          placeholder="Choose a collection...",
-                         style={"width": "220px", "display": "inline-block", "verticalAlign": "middle",
-                                "color": "#000"}),
+                         style={"width": "260px", "color": "#000"}),
             dcc.Input(id="collection-new", type="text", debounce=True, placeholder="+ new collection",
                       style=_ui.input_box(width="150px", padding="6px 9px", fontSize="12px", marginLeft="8px")),
             html.Button(id="collection-import", n_clicks=0, style={"display": "none"}),

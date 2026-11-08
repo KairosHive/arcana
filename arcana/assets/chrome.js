@@ -56,19 +56,6 @@
     apply(!document.body.classList.contains(FOLDED));
   });
 
-  // The header row has no id of its own in the layout, so tag the first flex
-  // row that holds the mode switcher. Re-tagged on a schedule because Dash may
-  // rebuild it.
-  function tag() {
-    var ms = document.getElementById("mode-select");
-    if (!ms) return;
-    var row = ms.parentElement;
-    if (row && row.id !== "arc-header-row") {
-      row.id = "arc-header-row";
-    }
-  }
-
-  tag();
+  // The header (#arc-header-row, both bands) carries its id in the layout.
   apply(saved());
-  setInterval(tag, 900);
 })();

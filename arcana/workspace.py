@@ -31,7 +31,7 @@ except ImportError:                                   # pragma: no cover
     import paths as _paths
 
 WORKSPACE_NAME = "workspace"
-SKILLS = ("moodboard", "board-design", "harmonize")
+SKILLS = ("moodboard", "board-design", "harmonize", "metaphysical-moodboard")
 
 GUIDE = """\
 # Arcana workspace
@@ -65,9 +65,11 @@ The `arcana` command works in this terminal too, as the same agent.
 
 ## Skills
 
-`.claude/skills/` holds three skills: `moodboard` (building a board from a
-brief), `board-design` (judging and improving one) and `harmonize` (when and
-how to recolour). Use them.
+`.claude/skills/` holds four skills. `moodboard` builds a board from a
+brief, `board-design` judges and improves one, `harmonize` says when and how
+to recolour, and `metaphysical-moodboard` builds a board with texts from
+poets and traditions, laid out as a designed page that prints to PDF. Use
+them.
 
 The person may leave notes for you in `CLAUDE.local.md`.
 """
@@ -129,10 +131,14 @@ def prepare() -> str:
 
     for name in SKILLS:
         for src in _skill_sources():
-            f = os.path.join(src, name, "SKILL.md")
-            if os.path.isfile(f):
+            folder = os.path.join(src, name)
+            if os.path.isfile(os.path.join(folder, "SKILL.md")):
                 dest = os.path.join(ws, ".claude", "skills", name)
                 os.makedirs(dest, exist_ok=True)
-                shutil.copyfile(f, os.path.join(dest, "SKILL.md"))
+                # A skill may carry helpers beside SKILL.md, such as a script.
+                for entry in os.listdir(folder):
+                    f = os.path.join(folder, entry)
+                    if os.path.isfile(f):
+                        shutil.copyfile(f, os.path.join(dest, entry))
                 break
     return ws

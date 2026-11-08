@@ -23,7 +23,7 @@
   var RAIL = "--arc-rail-w";
   var THUMB = "--arc-thumb";
   var BENCH = "--arc-bench-w";
-  var STORE = "arcana.columns.v1";
+  var STORE = "arcana.columns.v2";
   var MIN_RAIL = 140, MAX_RAIL = 560;
   var MIN_BENCH = 220, MAX_BENCH_FRACTION = 0.6;
 

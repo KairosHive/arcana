@@ -1,0 +1,15 @@
+{
+  "about": "Five fixed moodboard briefs for measuring the skills. Each runs twice, with the arcana plugin's skills and without them, and the two boards are scored by evals/score.py and ranked by a person. See evals/README.md.",
+  "briefs": [
+    {"id": "monsoon", "dataset": "japan", "brief": "monsoon melancholy",
+     "angles": ["rain or wet surfaces", "shelter or waiting", "grey or muted light", "reflections", "a counterpoint of warmth"]},
+    {"id": "threshold", "dataset": "japan", "brief": "thresholds: gates, doors and the moment of passing through",
+     "angles": ["gates or torii", "doors or doorways", "a path leading in", "light falling through an opening", "a counterpoint of an enclosed space"]},
+    {"id": "quiet-hours", "dataset": "japan", "brief": "the city in its quiet hours, just before people arrive",
+     "angles": ["empty streets", "early or late light", "signs and shopfronts at rest", "a single figure", "a counterpoint of a crowd"]},
+    {"id": "erosion", "dataset": "abstract", "brief": "erosion: how surfaces record time",
+     "angles": ["cracked or weathered surfaces", "layers or strata", "rust or decay colour", "soft worn edges", "a counterpoint of something new"]},
+    {"id": "signal", "dataset": "abstract", "brief": "signal and noise",
+     "angles": ["regular pattern", "noise or grain", "a single clear form", "interference or overlap", "a counterpoint of emptiness"]}
+  ]
+}

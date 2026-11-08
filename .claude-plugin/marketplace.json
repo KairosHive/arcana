@@ -1,0 +1,13 @@
+{
+  "name": "arcana",
+  "owner": {
+    "name": "Kairos Hive"
+  },
+  "plugins": [
+    {
+      "name": "arcana",
+      "source": "./plugin",
+      "description": "Arcana's MCP server and the moodboard, board-design and harmonize skills."
+    }
+  ]
+}

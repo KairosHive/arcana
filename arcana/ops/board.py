@@ -981,3 +981,95 @@ def _board_delete(a: BoardDeleteArgs, ctx: Context) -> BoardWriteResult:
     summary = row(rec)
     return BoardWriteResult(board=summary, deleted=True,
                             message=f"Deleted `{a.board}`, \"{rec.get('name', a.board)}\".")
+
+
+# ─────────────────────────── render and open ───────────────────────────
+
+class RenderResult(Result):
+    board: str
+    path: str
+    format: str
+    layout: str
+    count: int
+    warnings: list[str] = Field(default_factory=list)
+
+    def text(self) -> str:
+        out = f"Rendered `{self.board}` ({self.count} pictures, {self.layout}) to {self.path}\n"
+        if self.warnings:
+            out += "Look at: " + " ".join(self.warnings) + "\n"
+        return out
+
+
+class BoardRenderArgs(Args):
+    board: str = slug_arg()
+    format: Literal["html", "png"] = Field("html", description="html for people, png for "
+                                                               "looking at the layout yourself.")
+    layout: Literal["editorial", "masonry", "grid"] | None = Field(
+        None, description="editorial (one hero, sections by role), masonry or grid. Defaults "
+                          "to the board's own, else editorial.")
+    width: int = Field(1568, ge=800, le=3000, description="png only: the width in pixels.")
+
+
+def render_board(slug: str, fmt: str = "html", layout: str | None = None,
+                 width: int = 1568) -> tuple[str, "BoardShowResult", bytes | None, str]:
+    """Write a board to output/boards. Returns (path, the board, png bytes or None, layout)."""
+    try:
+        from .. import compose as _compose
+    except ImportError:                               # pragma: no cover
+        import compose as _compose
+    rec = load(slug)
+    shown = view(rec)
+    layout = layout or ((rec.get("layout") or {}).get("kind") if isinstance(rec.get("layout"), dict)
+                        else None) or "editorial"
+    if layout not in _compose.LAYOUTS:
+        layout = "editorial"
+    out_dir = _paths.ensure_dir(os.path.join(_paths.subdir("output"), "boards"))
+    if fmt == "html":
+        path = os.path.join(out_dir, f"{slug}.html")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(_compose.to_html(shown, layout))
+        return path, shown, None, layout
+    img = _compose.to_png(shown, width)
+    data = _compose.png_bytes(img)
+    path = os.path.join(out_dir, f"{slug}.png")
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return path, shown, data, layout
+
+
+@op("board render", "effect", BoardRenderArgs, RenderResult,
+    doc="""
+    Lay a board out as one self-contained HTML page, or as one picture. The
+    page carries the concept, the palette strip, each section with its reason,
+    every picture with its role and note, and a mark on anything derived or
+    generated. It opens anywhere, since the pictures are embedded. The png is
+    for looking at your own layout and critiquing it. Written to
+    output/boards.
+    """,
+    examples=("board render monsoon", "board render monsoon --format png --width 1200"))
+def _board_render(a: BoardRenderArgs, ctx: Context) -> RenderResult:
+    path, shown, data, layout = render_board(a.board, a.format, a.layout, a.width)
+    res = RenderResult(board=a.board, path=path, format=a.format, layout=layout,
+                       count=shown.metrics.count, warnings=shown.metrics.warnings)
+    if data is not None and ctx.pixels:
+        from .registry import Attachment
+        res.attachments.append(Attachment(caption=f"board {a.board}", mime="image/png", data=data))
+    return res
+
+
+class BoardOpenArgs(Args):
+    board: str = slug_arg()
+    layout: Literal["editorial", "masonry", "grid"] | None = Field(
+        None, description="The layout to render it in first.")
+
+
+@op("board open", "effect", BoardOpenArgs, RenderResult,
+    doc="Render a board as HTML and open it in the browser.",
+    examples=("board open monsoon",), actors=("person", "cli"))
+def _board_open(a: BoardOpenArgs, ctx: Context) -> RenderResult:
+    import webbrowser
+    path, shown, _, layout = render_board(a.board, "html", a.layout)
+    if not os.environ.get("ARCANA_NO_BROWSER"):
+        webbrowser.open("file:///" + path.replace("\\", "/"))
+    return RenderResult(board=a.board, path=path, format="html", layout=layout,
+                        count=shown.metrics.count, warnings=shown.metrics.warnings)

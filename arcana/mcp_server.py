@@ -123,14 +123,29 @@ def _ops_resource() -> str:
     return ops.call("op list", ctx=ops.context(ACTOR)).text()
 
 
-def skill_text(name: str) -> str | None:
-    """A skill's body from arcana/skills, without its front matter."""
+def skill_dirs() -> list[str]:
+    """
+    Where the skills live. In a checkout they are the plugin's own files, in
+    plugin/skills. The installer copies them into the package as arcana/skills,
+    since an installed app has no plugin folder beside it.
+    """
     import os
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", name, "SKILL.md")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
-    except OSError:
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [os.path.join(here, "skills"), os.path.join(os.path.dirname(here), "plugin", "skills")]
+
+
+def skill_text(name: str) -> str | None:
+    """A skill's body, without its front matter, or None where it is not shipped."""
+    import os
+    text = None
+    for d in skill_dirs():
+        try:
+            with open(os.path.join(d, name, "SKILL.md"), encoding="utf-8") as fh:
+                text = fh.read()
+            break
+        except OSError:
+            continue
+    if text is None:
         return None
     if text.startswith("---"):
         end = text.find("\n---", 3)

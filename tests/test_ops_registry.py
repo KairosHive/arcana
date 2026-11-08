@@ -39,6 +39,7 @@ def ds(tmp, monkeypatch):
     if REAL_CHECKPOINT is not None:
         from arcana import color_transfer as _ct
         monkeypatch.setattr(_ct, "checkpoint_path", lambda: REAL_CHECKPOINT)
+    monkeypatch.setenv("ARCANA_NO_BROWSER", "1")
     out = synth.use(tmp, monkeypatch, palette_features=True)
     from arcana import style_transfer
     monkeypatch.setattr(style_transfer, "describe", lambda *a, **k: "lake, mist")
@@ -95,6 +96,8 @@ VOCABULARY = {
     "colour methods", "colour transfer", "colour lut", "colour harmonize", "style methods",
     "style transfer", "style control-map", "generate", "model download",
     "job list", "job show", "job wait", "job cancel",
+    # P3: boards as pages
+    "board render", "board open",
 }
 
 # Examples that load a large model. They run when ARCANA_SLOW_EXAMPLES is set,

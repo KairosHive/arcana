@@ -1,6 +1,6 @@
 # Arcana ops: one vocabulary, many thin surfaces
 
-P0 to P2 done, P3 next. Goal: every action Arcana can perform is a named op, declared
+P0 to P3 done, P4 next. Goal: every action Arcana can perform is a named op, declared
 once, and the web UI, the command line and an MCP agent all reach the same ops
 through thin surfaces generated from that one declaration. An agent can then
 prompt the latent space, build libraries, assemble moodboards from varied
@@ -710,6 +710,38 @@ What building it settled, beyond the text above:
   returns an HTML board with at least four sections, a palette strip, a reason
   per section and no near-duplicate pair, and it is a board the person would
   keep.
+
+**Done 7 November 2026.** `compose.py` renders a board to one HTML file in
+three layouts and to a PNG. `board render` and `board open` are the ops. The
+three skills live in `plugin/skills`, with the plugin manifest, its MCP config
+and a marketplace file at the repo root (`/plugin marketplace add <repo>`,
+then `/plugin install arcana@arcana`). The `moodboard` prompt carries the
+moodboard skill. `evals/` holds the five briefs, a scorer and the protocol.
+
+The acceptance board was built through the `exec` tool from `export-quick`,
+since `japan`'s files have moved and a board of missing files cannot be
+judged. "Gatherings at the edge of light" has four sections each with its
+reason, one hero, a palette taken from its pictures, no near-duplicates, and
+renders as an 842 KB page. One revision followed a look at its PNG: a
+daylight baby portrait came off, and the crowd section now says plainly that
+the archive has no crowd at night. The five-brief comparison with and without
+the skills is the person's to run (`evals/README.md`), since the ranking that
+decides it is theirs.
+
+What building it settled, beyond the text above:
+
+- The skills live in the plugin (`plugin/skills`), since a Claude Code plugin
+  finds skills there. The MCP server reads them from there in a checkout and
+  from `arcana/skills` in the installed build, where P5 copies them.
+- Thumbnails are embedded at 1400 px for the hero and 640 px for the rest, so
+  the page holds up on a large screen. The lightbox opens the original by
+  file:// path when it exists and the embedded copy otherwise.
+- The editorial layout uses flex rows, each role starting from a share of the
+  row (support 30%, texture 22%, detail 14%) and growing to fill it. A
+  12-column grid left a hole whenever the roles in a row summed to 11.
+- Palette names sit in a legend under the strip, since a narrow swatch has no
+  room for its own label.
+- Every op line in a skill is parsed and validated by `tests/test_skills.py`.
 
 ### P4. Dataset lifecycle and the single command (about 2 days)
 

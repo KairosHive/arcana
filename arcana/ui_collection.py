@@ -12,14 +12,22 @@
 # from elsewhere (a terminal, an agent, the app on another port) arrives with
 # the state signature the app already polls every two seconds.
 #
-# layout() gives the header controls and the stores; register(app) the
-# callbacks. add(), remove() and clear() are what other modules call.
+# The viewer steps through the active collection one picture at a time, large,
+# with its role, section and note. A picture anywhere with the id
+# {"type": "collection-open", "index": <path>, "from": <where>} opens it there,
+# `from` keeping the ids of two tabs' tiles apart; the arrow keys step and
+# Escape closes (assets/collection.js).
+#
+# layout() gives the header controls, the stores and the viewer; register(app)
+# the callbacks. add(), remove() and clear() are what other modules call.
 
 from __future__ import annotations
 
+import os
 import time
+import urllib.parse
 
-from dash import Input, Output, State, ctx, dcc, html, no_update
+from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
 
 try:
     from . import ops as _ops
@@ -125,14 +133,48 @@ def layout() -> html.Div:
             # What an older version of the app kept in this browser, under its old key. Read once,
             # to offer the import; emptied when imported.
             dcc.Store(id="moodboard-store", storage_type="local"),
+            dcc.Store(id="collection-view", storage_type="memory"),
+            _viewer(),
         ],
         style={"display": "flex", "alignItems": "center"},
+    )
+
+
+ARROW = {"border": "none", "background": "rgba(20, 19, 17, 0.55)", "color": _ui.INK, "fontSize": "28px",
+         "width": "52px", "height": "52px", "borderRadius": "50%", "cursor": "pointer", "flex": "0 0 auto"}
+
+
+def _viewer() -> html.Div:
+    """The collection, one picture at a time over the page."""
+    return html.Div(
+        [
+            html.Div([
+                html.Span(id="collection-view-where", style={"fontSize": "13px", "color": _ui.INK}),
+                html.Div(style={"flex": "1"}),
+                html.Button("×", id="collection-view-close", n_clicks=0, title="Close (Esc)",
+                            style={**ARROW, "width": "40px", "height": "40px", "fontSize": "24px"}),
+            ], style={"display": "flex", "alignItems": "center", "padding": "14px 20px"}),
+            html.Div([
+                html.Button("‹", id="collection-view-prev", n_clicks=0, title="Previous (←)", style=ARROW),
+                html.Img(id="collection-view-img", alt="",
+                         style={"maxWidth": "calc(100vw - 180px)", "maxHeight": "calc(100vh - 190px)",
+                                "objectFit": "contain", "borderRadius": "6px", "display": "block"}),
+                html.Button("›", id="collection-view-next", n_clicks=0, title="Next (→)", style=ARROW),
+            ], style={"flex": "1", "minHeight": "0", "display": "flex", "alignItems": "center",
+                      "justifyContent": "center", "gap": "24px"}),
+            html.Div(id="collection-view-caption",
+                     style=_ui.hint(fontSize="13px", color=_ui.INK, textAlign="center", maxWidth="80ch",
+                                    margin="10px auto 20px", lineHeight="1.5")),
+        ],
+        id="collection-viewer", className="collection-viewer",
+        style={"display": "none"},
     )
 
 
 # ─────────────────────────── callbacks ───────────────────────────
 
 def register(app) -> None:
+    register_viewer(app)
 
     @app.callback(Output("collection-picker", "options"), Output("collection-picker", "value"),
                   Input("state-signature", "data"), Input("collection-rev", "data"))
@@ -202,3 +244,65 @@ def register(app) -> None:
         except _ops.Refusal as e:
             return no_update, f"Could not import: {e.reason}", no_update
         return rev(), f"Imported {len(old)} into {slug}.", []
+
+
+# ─────────────────────────── the viewer ───────────────────────────
+
+VIEWER_OPEN = {"display": "flex", "flexDirection": "column", "position": "fixed", "inset": "0", "zIndex": 1000,
+               "backgroundColor": "rgba(14, 13, 12, 0.94)"}
+
+
+def _caption(path: str, d: dict) -> list:
+    bits = []
+    if d.get("kind") in ("derived", "generated"):
+        bits.append(html.Span(d["kind"].upper(), style={"color": _ui.WARN, "fontWeight": "700",
+                                                         "letterSpacing": "0.6px", "fontSize": "11px"}))
+    for key in ("role", "section"):
+        if d.get(key):
+            bits.append(html.Span(d[key], style={"color": _ui.INK_DIM}))
+    joined = []
+    for b in bits:
+        if joined:
+            joined.append(html.Span("  ·  ", style={"color": _ui.INK_FAINT}))
+        joined.append(b)
+    head = html.Div(joined, style={"marginBottom": "4px"}) if joined else None
+    return [head, html.Div(d.get("note") or ""),
+            html.Div(os.path.basename(path), style={"color": _ui.INK_FAINT, "fontSize": "11.5px", "marginTop": "4px"})]
+
+
+def register_viewer(app) -> None:
+
+    @app.callback(Output("collection-view", "data"),
+                  Input({"type": "collection-open", "index": ALL, "from": ALL}, "n_clicks"),
+                  Input("collection-view-prev", "n_clicks"), Input("collection-view-next", "n_clicks"),
+                  Input("collection-view-close", "n_clicks"),
+                  State("collection-view", "data"), State("collection-items", "data"),
+                  prevent_initial_call=True)
+    def _step(_opens, _prev, _next, _close, at, items):
+        hit = ctx.triggered_id
+        items = items or []
+        if not ctx.triggered or not ctx.triggered[0].get("value"):
+            return no_update                     # tiles redrawn with n_clicks 0, not a click
+        if hit == "collection-view-close" or not items:
+            return None
+        if isinstance(hit, dict):
+            return items.index(hit["index"]) if hit["index"] in items else no_update
+        if at is None:
+            return no_update
+        step = -1 if hit == "collection-view-prev" else 1
+        return (int(at) + step) % len(items)
+
+    @app.callback(Output("collection-viewer", "style"), Output("collection-view-img", "src"),
+                  Output("collection-view-where", "children"), Output("collection-view-caption", "children"),
+                  Input("collection-view", "data"), Input("collection-items", "data"),
+                  State("board-details", "data"))
+    def _show(at, items, details):
+        items = items or []
+        if at is None or not items:
+            return {"display": "none"}, no_update, "", ""
+        at = min(int(at), len(items) - 1)
+        path = items[at]
+        slug = active()
+        where = f"{at + 1} of {len(items)}" + (f"  ·  {slug}" if slug else "")
+        return (VIEWER_OPEN, "/preview?w=2048&q=88&p=" + urllib.parse.quote(path), where,
+                _caption(path, (details or {}).get(path) or {}))

@@ -484,6 +484,13 @@ def resolve_media_request(p: str) -> str | None:
         with _ALLOWED_ROOTS_LOCK:
             allowed = (os.path.normcase(os.path.abspath(full)) in files
                        or os.path.normcase(real) in files)
+    if not allowed and _ops.archive.handle_for_path(full) is not None:
+        # A file some dataset indexes. A collection shows pictures from datasets
+        # this process has not loaded, and a dataset's map can be older than its
+        # index, so the grant follows the index. It is still the file itself.
+        with _ALLOWED_ROOTS_LOCK:
+            _ALLOWED_FILES.update({os.path.normcase(os.path.abspath(full)), os.path.normcase(real)})
+        allowed = True
     if not allowed:
         return None
     if not os.path.isfile(real):
@@ -3139,11 +3146,15 @@ def render_moodboard_gallery(moodboard, ref_path, target_path, board_details=Non
                 "border": f"1px solid {_ui.LINE}"}))
         thumbnails.append(
             html.Div([
-                # Image
+                # Image. alt="" so a picture that cannot load leaves an empty
+                # frame; the note is the tile's hover text. Clicking the picture
+                # opens the collection viewer (ui_collection.py).
                 html.Img(
                     src=f"/thumb?p={qpath}",
-                    style=img_style,
-                    title=d.get("note") or "",
+                    alt="",
+                    style={**img_style, "backgroundColor": _ui.SURFACE_2, "cursor": "zoom-in"},
+                    id={"type": "collection-open", "index": path, "from": "rail"},
+                    n_clicks=0,
                 ),
                 html.Div(marks, style={"position": "absolute", "bottom": "5px", "left": "5px",
                                        "display": "flex", "gap": "3px"}) if marks else None,
@@ -3190,7 +3201,7 @@ def render_moodboard_gallery(moodboard, ref_path, target_path, board_details=Non
                         "padding": "0", "fontWeight": "bold", "opacity": "0.7",
                     },
                 ),
-            ], style={"position": "relative", "display": "inline-block"})
+            ], style={"position": "relative", "display": "inline-block"}, title=d.get("note") or "")
         )
     return thumbnails
 

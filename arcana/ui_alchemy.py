@@ -456,8 +456,12 @@ def register(app) -> None:
                                         "color": "#fff" if r in held else _ui.INK_DIM})
                      for r in ROLES]
             tiles.append(html.Div([
-                html.Img(src=_thumb(path), style={"width": "100%", "aspectRatio": "1", "objectFit": "cover",
-                                                  "borderRadius": "5px", "border": border, "display": "block"}),
+                # Clicking the picture opens the collection viewer (ui_collection.py).
+                html.Img(src=_thumb(path), alt="", id={"type": "collection-open", "index": path, "from": "alchemy"},
+                         n_clicks=0,
+                         style={"width": "100%", "aspectRatio": "1", "objectFit": "cover", "cursor": "zoom-in",
+                                "borderRadius": "5px", "border": border, "display": "block",
+                                "backgroundColor": _ui.SURFACE_2}),
                 html.Div(chips, style={"display": "flex", "gap": "2px", "marginTop": "3px"}),
             ]))
         return tiles, slots, *shares

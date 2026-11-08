@@ -151,6 +151,26 @@ def test_a_missing_file_inside_a_root_is_refused_not_crashed(tmp):
     assert A.resolve_media_request("") is None
 
 
+def test_a_file_a_dataset_indexes_is_served_without_its_dataset_loaded(tmp):
+    """
+    A collection shows pictures from datasets this process never loaded, and a
+    dataset's map can be older than its index. The grant follows the index:
+    the indexed file is served, its unindexed sibling is not.
+    """
+    _reset()
+    indexed = _png(os.path.join(tmp, "photos", "indexed.png"))
+    sibling = _png(os.path.join(tmp, "photos", "sibling.png"))
+    real = A._ops.archive.handle_for_path
+    want = os.path.normcase(os.path.abspath(indexed))
+    A._ops.archive.handle_for_path = (
+        lambda p, prefer=None: "synth:1" if os.path.normcase(os.path.abspath(p)) == want else None)
+    try:
+        assert CLIENT.get("/thumb", query_string={"p": indexed}).status_code == 200
+        assert CLIENT.get("/thumb", query_string={"p": sibling}).status_code == 404
+    finally:
+        A._ops.archive.handle_for_path = real
+
+
 def test_registration_is_memoised_per_dataset(tmp):
     """load_data() runs on every scatter update; 82k paths must not be rewalked."""
     _reset()

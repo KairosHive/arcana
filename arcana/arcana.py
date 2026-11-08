@@ -1004,6 +1004,30 @@ app = dash.Dash(
 _ops_server.register(app.server)
 
 
+# A board's own designed page (`board page set`). It is HTML an agent or a
+# person wrote, so it is served under a sandbox policy: its scripts run, but
+# with no origin of their own, so they cannot read the app's pages, call its
+# callbacks or reach the network. ?print=1 opens the browser's print dialog
+# once it has loaded, which is Save as PDF in every browser.
+@app.server.route("/board-page/<slug>")
+def board_page_endpoint(slug):
+    path = _ops.board.page_file(slug)
+    if not path:
+        return Response("This board has no page.", status=404)
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if request.args.get("print"):
+        hook = (b"<script>addEventListener('load',function(){"
+                b"setTimeout(function(){print()},500)})</script>")
+        at = data.rfind(b"</body>")
+        data = data[:at] + hook + data[at:] if at >= 0 else data + hook
+    resp = Response(data, mimetype="text/html")
+    resp.headers["Content-Security-Policy"] = ("sandbox allow-scripts allow-modals; "
+                                               "connect-src 'none'; form-action 'none'")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 # attach route to the built-in Flask server
 @app.server.route("/thumb")
 def thumb_endpoint():
@@ -1387,6 +1411,38 @@ app.layout = html.Div(
 
         _ui_datasets.layout(),
         _ui_agent.layout(),
+        html.Div(
+            id="board-page-modal",
+            style={"display": "none"},
+            children=[
+                html.Div([
+                    html.Span(id="board-page-title", style={
+                        "fontWeight": "700", "fontSize": "12px", "letterSpacing": "1px",
+                        "color": _ui.INK, "flex": "1", "minWidth": "0", "overflow": "hidden",
+                        "textOverflow": "ellipsis", "whiteSpace": "nowrap"}),
+                    html.Span(id="board-page-status", style={"color": _ui.INK_DIM,
+                                                             "fontSize": "11.5px"}),
+                    html.Button("Save as PDF", id="board-page-pdf", n_clicks=0,
+                                style=_ui.button("primary", padding="5px 12px", fontSize="12px")),
+                    html.A("Print view", id="board-page-print", href="", target="_blank",
+                           style={"color": _ui.INK_DIM, "fontSize": "12px"}),
+                    html.Button("Close", id="board-page-close", n_clicks=0,
+                                style=_ui.button("secondary", padding="5px 12px", fontSize="12px")),
+                ], style={"display": "flex", "alignItems": "center", "gap": "12px",
+                          "padding": "10px 14px", "borderBottom": f"1px solid {_ui.LINE}",
+                          "backgroundColor": _ui.SURFACE}),
+                # The route serves the page with a CSP sandbox header, which
+                # gives it an opaque origin: its own script (a slow hover
+                # reveal, say) runs, and it cannot read the app, call it or
+                # reach the network. A sandbox attribute here as well left the
+                # frame unpainted in some embedded browsers, so the header
+                # carries the isolation on its own.
+                html.Iframe(id="board-page-frame", src="about:blank",
+                            style={"flex": "1", "width": "100%", "border": "none",
+                                   "backgroundColor": "#fff"}),
+                dcc.Download(id="board-page-download"),
+            ],
+        ),
 
         dcc.Store(id="story-cache", storage_type="memory"),
         # Clientside callbacks need somewhere to return to; nothing reads this.
@@ -1496,6 +1552,10 @@ app.layout = html.Div(
                                             style=_ui.button("secondary",
                                                              padding="4px 10px",
                                                              fontSize="12px")),
+                                # Shown when the chosen board carries its own
+                                # designed page (`board page set`).
+                                html.Button("View page", id="board-page-btn", n_clicks=0,
+                                            style={"display": "none"}),
                             ],
                             style={"display": "flex", "gap": "6px",
                                    "marginTop": "6px"},
@@ -3309,6 +3369,64 @@ def refresh_board_list(mode, _status, _sig):
     other writer, so a board an agent builds appears here within two seconds.
     """
     return _board_options()
+
+
+_PAGE_OVERLAY = {"display": "flex", "flexDirection": "column", "position": "fixed",
+                 "inset": "18px", "zIndex": "1000", "backgroundColor": _ui.BG,
+                 "border": f"1px solid {_ui.LINE}", "borderRadius": "10px",
+                 "overflow": "hidden", "boxShadow": "0 20px 60px rgba(0,0,0,.6)"}
+
+
+@app.callback(
+    Output("board-page-btn", "style"),
+    [Input("board-picker", "value"), Input("state-signature", "data")],
+)
+def show_page_button(slug, _sig):
+    """Offer View page for a board that carries its own designed page."""
+    if slug and _ops.board.page_file(slug):
+        return _ui.button("primary", padding="4px 10px", fontSize="12px")
+    return {"display": "none"}
+
+
+@app.callback(
+    [Output("board-page-modal", "style"), Output("board-page-frame", "src"),
+     Output("board-page-title", "children"), Output("board-page-print", "href"),
+     Output("board-page-status", "children", allow_duplicate=True)],
+    [Input("board-page-btn", "n_clicks"), Input("board-page-close", "n_clicks")],
+    State("board-picker", "value"),
+    prevent_initial_call=True,
+)
+def toggle_board_page(_open, _close, slug):
+    path = _ops.board.page_file(slug) if slug else None
+    if ctx.triggered_id == "board-page-close" or not path:
+        return {"display": "none"}, "about:blank", "", "", ""
+    v = int(os.path.getmtime(path))
+    rec = _ops.board.load(slug)
+    q = urllib.parse.quote(slug)
+    return (_PAGE_OVERLAY, f"/board-page/{q}?v={v}", f"PAGE · {rec.get('name', slug)}",
+            f"/board-page/{q}?print=1&v={v}", "")
+
+
+@app.callback(
+    [Output("board-page-download", "data"),
+     Output("board-page-status", "children")],
+    Input("board-page-pdf", "n_clicks"),
+    State("board-picker", "value"),
+    running=[(Output("board-page-pdf", "disabled"), True, False),
+             (Output("board-page-pdf", "children"), "Saving…", "Save as PDF")],
+    prevent_initial_call=True,
+)
+def save_board_pdf(n, slug):
+    """Print the page to a PDF on the server, keep it in output/boards, and hand it over."""
+    if not n or not slug:
+        raise dash.exceptions.PreventUpdate
+    try:
+        res = _ops.call("board pdf", {"board": slug}, actor="person")
+    except _ops.Refusal as e:
+        return dash.no_update, (f"{e.reason} The Print view link prints from your browser "
+                                f"instead.")
+    return (dcc.send_file(res.path),
+            f"{res.pages} page{'s' if res.pages != 1 else ''}, saved to {res.path}")
 
 
 @app.callback(

@@ -1501,8 +1501,8 @@ def _blank_fig(message="Choose a dataset above to begin."):
     """
     fig = go.Figure()
     fig.update_layout(
-        plot_bgcolor="#121212",
-        paper_bgcolor="#121212",
+        plot_bgcolor=_ui.BG,
+        paper_bgcolor=_ui.BG,
         font=dict(color=_ui.INK_DIM),
         margin=dict(l=0, r=0, t=0, b=0),
         xaxis=dict(visible=False),
@@ -1520,7 +1520,7 @@ app.layout = html.Div(
     # of overflowing it by the height of the header. The plot flexes; the
     # controls under it are pinned; only the side panel scrolls, and only
     # when its own content needs it.
-    style={"backgroundColor": "#121212", "color": "white",
+    style={"backgroundColor": _ui.BG, "color": "white",
            "padding": "14px 18px 10px", "height": "100vh",
            "boxSizing": "border-box", "overflow": "hidden",
            "display": "flex", "flexDirection": "column", "gap": "8px"},
@@ -1609,7 +1609,7 @@ app.layout = html.Div(
                     style={"display": "flex", "alignItems": "center"},
                 ),
                 html.Div(id="relocate-status",
-                         style={"fontSize": "12px", "marginTop": "8px", "color": "#888"}),
+                         style={"fontSize": "12px", "marginTop": "8px", "color": _ui.INK_DIM}),
             ],
             id="relocate-panel",
             style={"display": "none"},
@@ -1699,7 +1699,7 @@ app.layout = html.Div(
                 # no way back to yesterday's, and Clear emptied it with no undo.
                 html.Div(
                     [
-                        html.Div("BOARD", style={"fontSize": "10px", "color": "#888",
+                        html.Div("BOARD", style={"fontSize": "10px", "color": _ui.INK_DIM,
                                                  "letterSpacing": "0.5px",
                                                  "marginBottom": "4px"}),
                         dcc.Dropdown(
@@ -1740,7 +1740,7 @@ app.layout = html.Div(
                     ],
                     style={"flex": "0 0 auto", "marginTop": "10px",
                            "paddingTop": "10px",
-                           "borderTop": "1px solid #333"},
+                           "borderTop": f"1px solid {_ui.LINE}"},
                 ),
                 html.Div(
                     [
@@ -1980,7 +1980,7 @@ app.layout = html.Div(
                                             html.Span(id="palette-db-status", style={"fontSize": "10px", "marginLeft": "8px"}),
                                         ], style={"marginBottom": "8px", "display": "flex", "alignItems": "center"}),
                                         html.Div([
-                                            html.Span("Method", style={"fontSize": "10px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
+                                            html.Span("Method", style={"fontSize": "10px", "color": _ui.INK_DIM, "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
                                             dcc.Dropdown(
                                                 id="palette-method",
                                                 options=[
@@ -2007,7 +2007,7 @@ app.layout = html.Div(
                                             ),
                                         ], style={"display": "flex", "flexDirection": "column"}),
                                         html.Div([
-                                            html.Span("Colors", style={"fontSize": "10px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
+                                            html.Span("Colors", style={"fontSize": "10px", "color": _ui.INK_DIM, "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
                                             dcc.Dropdown(
                                                 id="palette-n-colors",
                                                 options=[{"label": str(n), "value": n} for n in [4, 8, 12, 16, 24, 32]],
@@ -2018,7 +2018,7 @@ app.layout = html.Div(
                                         ], style={"display": "flex", "flexDirection": "column", "marginTop": "8px"}),
                                     ],
                                     id="palette-card",
-                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1 1 0", "minWidth": "128px", "overflow": "hidden"},
+                                    style={"padding": "10px", "backgroundColor": _ui.SURFACE_2, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}", "flex": "1 1 0", "minWidth": "128px", "overflow": "hidden"},
                                 ),
                                 # Style Card
                                 html.Div(
@@ -2034,7 +2034,7 @@ app.layout = html.Div(
                                             html.Span(id="style-db-status", style={"fontSize": "10px", "marginLeft": "8px"}),
                                         ], style={"marginBottom": "8px", "display": "flex", "alignItems": "center"}),
                                         html.Div([
-                                            html.Span("Method", style={"fontSize": "10px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
+                                            html.Span("Method", style={"fontSize": "10px", "color": _ui.INK_DIM, "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.5px"}),
                                             dcc.Dropdown(
                                                 id="style-method",
                                                 options=[
@@ -2049,7 +2049,7 @@ app.layout = html.Div(
                                         ], style={"display": "flex", "flexDirection": "column"}),
                                     ],
                                     id="style-card",
-                                    style={"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1 1 0", "minWidth": "128px", "overflow": "hidden"},
+                                    style={"padding": "10px", "backgroundColor": _ui.SURFACE_2, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}", "flex": "1 1 0", "minWidth": "128px", "overflow": "hidden"},
                                 ),
                             ],
                             style={"display": "flex", "gap": "10px", "marginBottom": "12px", "flexWrap": "wrap"},
@@ -2065,7 +2065,7 @@ app.layout = html.Div(
                                     style=_ui.input_box(flex="1", minWidth="150px"),
                                 ),
                                 html.Div([
-                                    html.Span("Results:", style={"fontSize": "11px", "color": "#888", "marginRight": "4px"}),
+                                    html.Span("Results:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "4px"}),
                                     dcc.Input(
                                         id="moodboard-num",
                                         type="number",
@@ -2090,7 +2090,7 @@ app.layout = html.Div(
                                     style={"fontSize": "12px"},
                                 ),
                                 html.Div([
-                                    html.Span("Image size:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                    html.Span("Image size:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
                                     dcc.Dropdown(
                                         id="moodboard-img-size",
                                         options=[
@@ -2105,7 +2105,7 @@ app.layout = html.Div(
                                     ),
                                 ], style={"display": "flex", "alignItems": "center"}),
                                 html.Div([
-                                    html.Span("Columns:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                    html.Span("Columns:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
                                     dcc.Dropdown(
                                         id="moodboard-columns",
                                         options=[{"label": str(n), "value": n} for n in [1, 2, 3, 4]],
@@ -2143,12 +2143,12 @@ app.layout = html.Div(
                         html.Div(
                             [
                                 html.Div("🎨 Color Transfer", style={"fontSize": "14px", "fontWeight": "600", "color": _ui.ROLE_TARGET, "marginBottom": "10px"}),
-                                html.Div("Apply Reference palette to Target image", style={"fontSize": "11px", "color": "#888", "marginBottom": "12px"}),
+                                html.Div("Apply Reference palette to Target image", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginBottom": "12px"}),
                                 html.Div(
                                     [
                                         # Method dropdown
                                         html.Div([
-                                            html.Span("Method:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            html.Span("Method:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
                                             dcc.Dropdown(
                                                 id="color-transfer-method",
                                                 options=[
@@ -2162,7 +2162,7 @@ app.layout = html.Div(
                                         ], style={"display": "flex", "alignItems": "center"}),
                                         # Strength slider
                                         html.Div([
-                                            html.Span("Strength:", style={"fontSize": "11px", "color": "#888", "marginRight": "8px"}),
+                                            html.Span("Strength:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "8px"}),
                                             dcc.Slider(
                                                 id="color-transfer-strength",
                                                 min=0.0, max=1.0, step=0.1, value=1.0,
@@ -2185,7 +2185,7 @@ app.layout = html.Div(
                                         # mapping is applied at full size
                                         # through a 3-D LUT.
                                         html.Div([
-                                            html.Span("Quality:", style={"fontSize": "11px", "color": "#888", "marginRight": "6px"}),
+                                            html.Span("Quality:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
                                             dcc.Dropdown(
                                                 id="color-transfer-quality",
                                                 options=[
@@ -2295,11 +2295,11 @@ app.layout = html.Div(
                         html.Div(
                             [
                                 html.Div("Apply the look of [R] to [T]",
-                                         style={"fontSize": "12px", "color": "#bbb",
+                                         style={"fontSize": "12px", "color": _ui.INK_DIM,
                                                 "marginBottom": "10px"}),
                                 html.Div([
                                     html.Div("METHOD", style={"fontSize": "10px",
-                                                              "color": "#888",
+                                                              "color": _ui.INK_DIM,
                                                               "letterSpacing": "0.5px",
                                                               "marginBottom": "4px"}),
                                     dcc.Dropdown(
@@ -2330,7 +2330,7 @@ app.layout = html.Div(
                                          style={"display": "none"},
                                          children=[
                                     html.Div("MAP FROM [T]",
-                                             style={"fontSize": "10px", "color": "#888",
+                                             style={"fontSize": "10px", "color": _ui.INK_DIM,
                                                     "letterSpacing": "0.5px",
                                                     "marginBottom": "4px"}),
                                     dcc.Dropdown(
@@ -2348,7 +2348,7 @@ app.layout = html.Div(
                                                "fontSize": "12px"},
                                     ),
                                     html.Div("HOW STRICTLY IT FOLLOWS",
-                                             style={"fontSize": "10px", "color": "#888",
+                                             style={"fontSize": "10px", "color": _ui.INK_DIM,
                                                     "letterSpacing": "0.5px",
                                                     "marginTop": "10px"}),
                                     dcc.Slider(id="cn-strength", min=0.1, max=1.5,
@@ -2359,7 +2359,7 @@ app.layout = html.Div(
                                 ]),
                                 html.Div([
                                     html.Div("STRENGTH", style={"fontSize": "10px",
-                                                                "color": "#888",
+                                                                "color": _ui.INK_DIM,
                                                                 "letterSpacing": "0.5px"}),
                                     dcc.Slider(id="style-strength", min=0.1, max=1.0,
                                                step=0.05, value=0.6,
@@ -2382,12 +2382,12 @@ app.layout = html.Div(
                         ),
                     ],
                     id="moodboard-controls",
-                    style={"display": "none", "marginTop": "10px", "padding": "16px", "backgroundColor": "#1a1a1a", "borderRadius": "10px", "border": "1px solid #333"},
+                    style={"display": "none", "marginTop": "10px", "padding": "16px", "backgroundColor": _ui.SURFACE, "borderRadius": "10px", "border": f"1px solid {_ui.LINE}"},
                 ),
                 # Reference image display (sticky in left column)
                 html.Div(
                     id="moodboard-ref-display",
-                    style={"display": "none", "marginTop": "12px", "padding": "12px", "backgroundColor": "#1a1a1a", "borderRadius": "10px", "border": f"1px solid {_ui.ACCENT}", "position": "sticky", "top": "10px"},
+                    style={"display": "none", "marginTop": "12px", "padding": "12px", "backgroundColor": _ui.SURFACE, "borderRadius": "10px", "border": f"1px solid {_ui.ACCENT}", "position": "sticky", "top": "10px"},
                 ),
             ],
             id="left-column",
@@ -2444,7 +2444,7 @@ html.Div(
                                          style={"fontSize": "11px", "color": _ui.INK_DIM}),
                                 html.Div(
                                     style={"height": "6px", "borderRadius": "3px",
-                                           "backgroundColor": "#333", "overflow": "hidden"},
+                                           "backgroundColor": _ui.LINE, "overflow": "hidden"},
                                     children=html.Div(
                                         id="poetry-progress-bar",
                                         style={"height": "100%", "width": "0%",
@@ -2636,8 +2636,8 @@ html.Div(
                 html.Div(id="moodboard-added-notification", style={"marginTop": "6px"}),
             ],
             style={
-                "backgroundColor": "#1b1b1b",
-                "border": "1px solid #2a2a2a",
+                "backgroundColor": _ui.SURFACE,
+                "border": f"1px solid {_ui.SURFACE_2}",
                 "borderRadius": "10px",
                 "padding": "12px",
                 "marginTop": "6px",
@@ -2909,7 +2909,7 @@ def toggle_inputs(mode, tool):
     field_hidden = {"display": "none"}
     count_visible = {"display": "flex", "alignItems": "center", "gap": "7px",
                      "flex": "0 0 auto"}
-    moodboard_controls_visible = {"display": "block", "marginTop": "10px", "padding": "10px", "backgroundColor": "#1a1a1a", "borderRadius": "5px"}
+    moodboard_controls_visible = {"display": "block", "marginTop": "10px", "padding": "10px", "backgroundColor": _ui.SURFACE, "borderRadius": "5px"}
     # The results bar. This callback owns moodboard-section's style, so the
     # sticky geometry has to be stated here too -- the style set in the layout
     # is overwritten on every mode change.
@@ -3223,7 +3223,7 @@ def update_moodboard_ref_display(ref_image, target_image, n_colors, mode):
             return html.Div(
                 [
                     html.Div(label, style={"color": color, "fontWeight": "600", "fontSize": "11px", "marginBottom": "8px", "textTransform": "uppercase", "letterSpacing": "1px"}),
-                    html.Div("Not selected", style={"color": "#666", "fontStyle": "italic", "fontSize": "12px", "padding": "30px 0", "textAlign": "center", "border": f"2px dashed {color}40", "borderRadius": "6px"}),
+                    html.Div("Not selected", style={"color": _ui.INK_FAINT, "fontStyle": "italic", "fontSize": "12px", "padding": "30px 0", "textAlign": "center", "border": f"2px dashed {color}40", "borderRadius": "6px"}),
                 ],
                 style={"flex": "1", "minWidth": "120px"},
             )
@@ -3242,7 +3242,7 @@ def update_moodboard_ref_display(ref_image, target_image, n_colors, mode):
                 ),
                 html.Div(
                     os.path.basename(image_path),
-                    style={"color": "#888", "fontSize": "9px", "marginTop": "6px", "wordBreak": "break-all", "textAlign": "center"},
+                    style={"color": _ui.INK_DIM, "fontSize": "9px", "marginTop": "6px", "wordBreak": "break-all", "textAlign": "center"},
                 ),
             ],
             style={"flex": "1", "minWidth": "120px"},
@@ -3902,7 +3902,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
             result_elements = [
                 html.Div(
                     f"#{rank} \u2022 {first_score:.2f}", 
-                    style={"color": "#888", "fontSize": "11px", "marginBottom": "6px"}
+                    style={"color": _ui.INK_DIM, "fontSize": "11px", "marginBottom": "6px"}
                 ),
                 result_img,
             ]
@@ -3917,7 +3917,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
                 html.Div([
                     daq.BooleanSwitch(id={"type": "select-image", "owner": "moodboard", "index": first}, on=False),
                     html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
-                               n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": "#333", "border": "none", "borderRadius": "3px", "color": "#aaa", "cursor": "pointer"}),
+                               n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": _ui.LINE, "border": "none", "borderRadius": "3px", "color": _ui.INK_DIM, "cursor": "pointer"}),
                                     # Finding a picture is a walk: you land near it and then
                     # step. Stepping used to mean adding the image to the
                     # collection, switching to the Moodboard, clicking its [R]
@@ -3936,7 +3936,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
             )
             
             result_items.append(
-                html.Div(result_elements, style={"padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "8px", "border": "1px solid #333"})
+                html.Div(result_elements, style={"padding": "10px", "backgroundColor": _ui.SURFACE, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"})
             )
         else:
             # Carousel for twins
@@ -3951,7 +3951,7 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
             card_elements = [
                 html.Div(
                     f"#{rank} \u2022 {first_score:.2f} \u2022 twins: {n}", 
-                    style={"color": "#888", "fontSize": "11px", "marginBottom": "6px"}
+                    style={"color": _ui.INK_DIM, "fontSize": "11px", "marginBottom": "6px"}
                 ),
                 html.Div(
                     [
@@ -3993,12 +3993,12 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
                 html.Div([
                     daq.BooleanSwitch(id={"type": "select-image", "owner": "moodboard", "index": f"group::{g['gid']}"}, on=False),
                     html.Button("+ Moodboard", id={"type": "add-to-moodboard", "index": first}, 
-                               n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": "#333", "border": "none", "borderRadius": "3px", "color": "#aaa", "cursor": "pointer"}),
+                               n_clicks=0, style={"marginLeft": "8px", "fontSize": "11px", "padding": "3px 8px", "backgroundColor": _ui.LINE, "border": "none", "borderRadius": "3px", "color": _ui.INK_DIM, "cursor": "pointer"}),
                 ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"})
             )
             
             result_items.append(
-                html.Div(card_elements, style={"padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "8px", "border": "1px solid #333"})
+                html.Div(card_elements, style={"padding": "10px", "backgroundColor": _ui.SURFACE, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"})
             )
     
     # Grid wrapper
@@ -4047,8 +4047,8 @@ def moodboard_similarity_search(n_clicks, step_clicks, ref_image, use_palette, p
 )
 def update_feature_availability(dataset_value):
     """Check if palette/style databases exist for the selected dataset and update UI."""
-    enabled_style = {"padding": "10px", "backgroundColor": "#252525", "borderRadius": "8px", "border": "1px solid #333", "flex": "1", "minWidth": "140px"}
-    disabled_style = {"padding": "10px", "backgroundColor": "#1a1a1a", "borderRadius": "8px", "border": "1px solid #222", "flex": "1", "minWidth": "140px", "opacity": "0.5", "pointerEvents": "none"}
+    enabled_style = {"padding": "10px", "backgroundColor": _ui.SURFACE_2, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}", "flex": "1", "minWidth": "140px"}
+    disabled_style = {"padding": "10px", "backgroundColor": _ui.SURFACE, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}", "flex": "1", "minWidth": "140px", "opacity": "0.5", "pointerEvents": "none"}
     
     if not dataset_value:
         return enabled_style, enabled_style, "", "", ["palette"], []
@@ -4941,7 +4941,7 @@ def poll_poetry(_n, job_ref):
                     ], style={"display": "flex", "alignItems": "center"}),
                 ],
                 style={"marginBottom": "24px", "padding": "10px",
-                       "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
+                       "backgroundColor": _ui.SURFACE, "borderRadius": "5px"},
             )
         )
 
@@ -5168,8 +5168,8 @@ def update_images(
     bare_axis = dict(showgrid=False, zeroline=False, showline=False,
                      showticklabels=False, title=None, ticks="")
     fig.update_layout(
-        plot_bgcolor="#121212",
-        paper_bgcolor="#121212",
+        plot_bgcolor=_ui.BG,
+        paper_bgcolor=_ui.BG,
         font=dict(color="white"),
         margin=dict(l=8, r=8, t=8, b=8),
         xaxis=({} if is_3d else bare_axis),
@@ -5178,9 +5178,9 @@ def update_images(
             dict(
                 # In 3-D the panes are what gives the cloud its depth, so they
                 # stay -- but as the faintest hint of a box rather than a ruler.
-                xaxis=dict(backgroundcolor="#121212", color="#3a3a42", **bare_axis),
-                yaxis=dict(backgroundcolor="#121212", color="#3a3a42", **bare_axis),
-                zaxis=dict(backgroundcolor="#121212", color="#3a3a42", **bare_axis),
+                xaxis=dict(backgroundcolor=_ui.BG, color=_ui.LINE, **bare_axis),
+                yaxis=dict(backgroundcolor=_ui.BG, color=_ui.LINE, **bare_axis),
+                zaxis=dict(backgroundcolor=_ui.BG, color=_ui.LINE, **bare_axis),
             )
             if is_3d
             else {}
@@ -5321,7 +5321,7 @@ def update_images(
                             style={"display": "flex", "alignItems": "center"},
                         ),
                     ],
-                    style={"marginBottom": "24px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
+                    style={"marginBottom": "24px", "padding": "10px", "backgroundColor": _ui.SURFACE, "borderRadius": "5px"},
                 )
             )
 
@@ -5410,7 +5410,7 @@ def update_images(
                             html.Span(" (no twins)", style={"marginLeft": "10px", "opacity": 0.7}),
                             marks_badge(*marks_by_path.get(first, (None, "", None))),
                         ],
-                        style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
+                        style={"marginBottom": "20px", "padding": "10px", "backgroundColor": _ui.SURFACE, "borderRadius": "5px"},
                     )
                 )
             else:
@@ -5470,7 +5470,7 @@ def update_images(
                             html.Div(id={"type": "carousel-marks", "owner": "search", "gid": g["gid"]},
                                      children=marks_badge(*marks_by_path.get(first, (None, "", None)))),
                         ],
-                        style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e",
+                        style={"marginBottom": "20px", "padding": "10px", "backgroundColor": _ui.SURFACE,
                             "borderRadius": "5px", "overflowX": "hidden"},
                     )
                 )
@@ -5523,7 +5523,7 @@ def update_images(
                                    n_clicks=0, style={"marginLeft": "10px", "fontSize": "12px", "padding": "2px 8px"}),
                     ], style={"display": "flex", "alignItems": "center"}),
                 ],
-                style={"marginBottom": "20px", "padding": "10px", "backgroundColor": "#1e1e1e", "borderRadius": "5px"},
+                style={"marginBottom": "20px", "padding": "10px", "backgroundColor": _ui.SURFACE, "borderRadius": "5px"},
             )
         )
         return images, fig, {"display": "none"}, {}, [], {}, []

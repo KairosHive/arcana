@@ -20,32 +20,36 @@
 from __future__ import annotations
 
 # ── palette ──────────────────────────────────────────────────────────────────
-INK = "#ececf0"          # primary text
-INK_DIM = "#9a9aa2"      # secondary text
-INK_FAINT = "#6c6c74"    # captions, disabled
+INK = "#ede8df"          # primary text
+INK_DIM = "#a39c90"      # secondary text
+INK_FAINT = "#6f685e"    # captions, disabled
 
-BG = "#121212"           # page
-SURFACE = "#1b1b1f"      # card
-SURFACE_2 = "#232329"    # input, well
-LINE = "#33333b"         # hairline
+BG = "#141311"           # page
+SURFACE = "#1c1a17"      # card
+SURFACE_2 = "#26231f"    # input, well
+LINE = "#38332d"         # hairline
 
-ACCENT = "#00bcd4"
-ACCENT_INK = "#08272c"   # text on a filled accent button
-OK = "#43b581"
-WARN = "#d99a34"
-BAD = "#e05252"
-MUTED = "#7f7f8a"
+# Earth, chosen 7 November 2026 from four candidates drawn on mock moodboard
+# parts: terracotta for the one action in a card and for Reference, sage for
+# Target, and moss, ochre and brick for done, attention and broken. The
+# previous cyan, magenta, green and purple had no relation to one another.
+ACCENT = "#c8743f"       # terracotta
+ACCENT_INK = "#2a1409"   # text on a filled accent button
+OK = "#7a9a5e"           # moss
+WARN = "#d6a74d"         # ochre
+BAD = "#b5423a"          # brick
+MUTED = "#8a8278"
 
 # Per-modality accents, so image and audio datasets are distinguishable at a
 # glance without reading the word.
-MODALITY = {"image": ACCENT, "audio": "#a982d9"}
+MODALITY = {"image": ACCENT, "audio": "#7c8f8a"}   # audio: slate
 
 # The moodboard's two picture roles. Genuine colour coding: the R and T badges
 # are the only place two things must be told apart at a glance, so they get
 # their own hues and nothing else in the app reuses them.
 ROLE_REF = ACCENT          # the palette source
-ROLE_TARGET = "#e05fd8"    # the picture that receives the palette
-ROLE_OFF = "#2a3a4a"       # neither role selected
+ROLE_TARGET = "#8c9a5b"    # the picture that receives the palette: sage
+ROLE_OFF = "#2b2824"       # neither role selected
 
 
 # ── building blocks ──────────────────────────────────────────────────────────

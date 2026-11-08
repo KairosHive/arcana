@@ -1306,68 +1306,97 @@ app.layout = html.Div(
            "boxSizing": "border-box", "overflow": "hidden",
            "display": "flex", "flexDirection": "column", "gap": "8px"},
     children=[
+        # ── The header ───────────────────────────────────────────────────────
+        # Two bands. The top one is the app's own, the mark and the tabs. The
+        # bar under it holds what every tab works on, the dataset and the
+        # active collection. chrome.js folds both away together.
         html.Div(
-            [
-                # The mark, then the tabs. Dash serves anything in
-                # arcana/assets, so this survives freezing as long as the spec
-                # ships that directory -- which it already does for custom.css
-                # and the label lists.
+            id="arc-header-row",
+            style={"display": "flex", "flexDirection": "column", "gap": "10px",
+                   "flex": "0 0 auto", "marginBottom": "6px"},
+            children=[
                 html.Div(
-                    style={"display": "flex", "alignItems": "center", "gap": "11px",
-                           "flex": "0 0 auto", "marginRight": "28px"},
+                    className="arc-topbar",
+                    # The right padding keeps the tabs clear of the fixed
+                    # hide-header button (chrome.js).
+                    style={"display": "flex", "alignItems": "center", "gap": "28px",
+                           "paddingRight": "130px"},
                     children=[
-                        html.Img(
-                            src=app.get_asset_url("arcana-mark.png"),
-                            alt="",
-                            style={"height": "36px", "width": "auto",
-                                   "display": "block"},
+                        # Dash serves anything in arcana/assets, so this
+                        # survives freezing as long as the spec ships that
+                        # directory, which it does.
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "gap": "11px",
+                                   "flex": "0 0 auto"},
+                            children=[
+                                html.Img(
+                                    src=app.get_asset_url("arcana-mark.png"),
+                                    alt="",
+                                    style={"height": "36px", "width": "auto",
+                                           "display": "block"},
+                                ),
+                                # The name is set in the app's own type. The
+                                # wordmark in the logo file is a pale outline
+                                # drawn for a light page.
+                                html.Span("Arcana", style={
+                                    "fontSize": "19px", "fontWeight": "600",
+                                    "letterSpacing": "0.5px", "color": _ui.INK}),
+                            ],
                         ),
-                        # The name is set in the app's own type rather than
-                        # taken from the logo file: the wordmark there is a pale
-                        # outline drawn for a light page, and on this ground it
-                        # reads as haze.
-                        html.Span("Arcana", style={
-                            "fontSize": "19px", "fontWeight": "600",
-                            "letterSpacing": "0.5px", "color": _ui.INK}),
+                        dcc.RadioItems(
+                            id="mode-select",
+                            # Datasets first, and selected by default. It is the only
+                            # tab that does anything useful with no dataset indexed --
+                            # the other three open on an empty plot and an empty
+                            # dropdown, which is a poor first thing to see and gives no
+                            # hint that indexing is the missing step.
+                            options=[
+                                {"label": "Datasets", "value": "datasets"},
+                                {"label": "Prompt Search", "value": "prompt"},
+                                {"label": "Generate Story", "value": "story"},
+                                {"label": "Moodboard", "value": "moodboard"},
+                                {"label": "Alchemy", "value": "alchemy"},
+                                # An agent's own command line, running here in the
+                                # Arcana workspace with Arcana's tools (ui_agent.py).
+                                {"label": "Agent", "value": "agent"},
+                            ],
+                            value="datasets",
+                            # Dash 4 gives labels its own dark design-token colour, which is
+                            # invisible on this dark ground. Set it explicitly so the app does
+                            # not depend on any external or default stylesheet.
+                            labelStyle={"display": "inline-block", "marginRight": "25px",
+                                        "fontWeight": "bold", "color": "#fff", "cursor": "pointer"},
+                            inputStyle={"marginRight": "6px", "accentColor": _ui.ACCENT},
+                        ),
                     ],
                 ),
-                dcc.RadioItems(
-                    id="mode-select",
-                    # Datasets first, and selected by default. It is the only
-                    # tab that does anything useful with no dataset indexed --
-                    # the other three open on an empty plot and an empty
-                    # dropdown, which is a poor first thing to see and gives no
-                    # hint that indexing is the missing step.
-                    options=[
-                        {"label": "Datasets", "value": "datasets"},
-                        {"label": "Prompt Search", "value": "prompt"},
-                        {"label": "Generate Story", "value": "story"},
-                        {"label": "Moodboard", "value": "moodboard"},
-                        {"label": "Alchemy", "value": "alchemy"},
-                        # An agent's own command line, running here in the
-                        # Arcana workspace with Arcana's tools (ui_agent.py).
-                        {"label": "Agent", "value": "agent"},
+                html.Div(
+                    className="arc-context",
+                    style={"display": "flex", "alignItems": "center", "flexWrap": "wrap",
+                           "gap": "10px 18px", "padding": "8px 14px",
+                           "backgroundColor": _ui.SURFACE, "border": f"1px solid {_ui.LINE}",
+                           "borderRadius": "10px"},
+                    children=[
+                        html.Div(
+                            [
+                                html.Span("Dataset", style=_ui.field_label(marginBottom="0", color=_ui.INK_DIM)),
+                                dcc.Dropdown(
+                                    id="dataset-dropdown",
+                                    options=get_matching_datasets(),
+                                    value=None,  # set default below after checking
+                                    clearable=False,
+                                    style={"width": "240px", "color": "#000"},
+                                ),
+                            ],
+                            style=_ui.row("10px", flexWrap="nowrap"),
+                        ),
+                        html.Div(style={"width": "1px", "alignSelf": "stretch",
+                                        "backgroundColor": _ui.LINE}),
+                        # The active collection, on every tab (ui_collection.py).
+                        _ui_collection.layout(),
                     ],
-                    value="datasets",
-                    # Dash 4 gives labels its own dark design-token colour, which is
-                    # invisible on this dark ground. Set it explicitly so the app does
-                    # not depend on any external or default stylesheet.
-                    labelStyle={"display": "inline-block", "marginRight": "25px",
-                                "fontWeight": "bold", "color": "#fff", "cursor": "pointer"},
-                    inputStyle={"marginRight": "6px", "accentColor": _ui.ACCENT},
                 ),
-                html.Label("Dataset:", style={"marginLeft": "40px", "marginRight": "6px"}),
-                dcc.Dropdown(
-                    id="dataset-dropdown",
-                    options=get_matching_datasets(),
-                    value=None,  # set default below after checking
-                    clearable=False,
-                    style={"width": "220px", "display": "inline-block", "verticalAlign": "middle", "color": "#000"},
-                ),
-                # The active collection, on every tab (ui_collection.py).
-                _ui_collection.layout(),
             ],
-            style={"display": "flex", "alignItems": "center", "marginBottom": "20px"},
         ),
 
         # ── Relocation panel ────────────────────────────────────────────────

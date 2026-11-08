@@ -183,7 +183,7 @@ def _stage_column():
                                                        {"label": " mask", "value": "mask"}],
                                value="compare", inline=True, labelStyle={"marginRight": "12px", **SMALL}),
                 dcc.Dropdown(id="alc-size", options=[{"label": f"preview {s}", "value": s} for s in (512, 640, 768, 1024)],
-                             value=640, clearable=False, style={**SMALL, "width": "128px"}),
+                             value=1024, clearable=False, style={**SMALL, "width": "128px"}),
                 dcc.Checklist(id="alc-live", options=[{"label": " live", "value": "on"}], value=["on"], style=SMALL),
                 html.Button("Draw", id="alc-draw", n_clicks=0,
                             style=_ui.button("secondary", padding="5px 11px", fontSize="12px")),
@@ -252,18 +252,6 @@ def _settings_column():
                     html.Div(id="alc-recipe-status", style=_ui.hint(fontSize="11.5px", marginTop="6px")),
                 ]),
             ], note="sets only what it holds"),
-            _section("Method", [
-                dcc.RadioItems(id="alc-family", options=[{"label": " " + FAMILY_LABEL[f], "value": f}
-                                                         for f in _methods.FAMILIES],
-                               value="tokens", inline=True, labelStyle={"marginRight": "10px", **SMALL}),
-                html.Div(id="alc-family-doc", style=_ui.hint(fontSize="11px", margin="4px 0 8px")),
-                dcc.Dropdown(id="alc-method", options=_method_options("tokens"), value="tokens.mix",
-                             clearable=False, style=SMALL),
-                html.Div(id="alc-method-doc", style=_ui.hint(fontSize="11.5px", margin="6px 0 8px")),
-                html.Div(id="alc-knobs-main"),
-                _sub("more", html.Div(id="alc-knobs-more"), id_="alc-more-sec"),
-                _sub("looks", html.Div(id="alc-knobs-looks"), id_="alc-looks-sec"),
-            ]),
             _section("Pictures", [
                 html.Div("WHO LEADS", style=LABEL),
                 dcc.RadioItems(id="alc-lead", options=[{"label": " the picture", "value": "picture"},
@@ -278,6 +266,18 @@ def _settings_column():
                 dcc.Input(id="alc-crop", type="number", min=0, max=99999, step=1, value=0, debounce=True,
                           style=_ui.input_box(width="90px", padding="5px 8px", fontSize="12px")),
             ], open_=False, note="lead, shares, zoom"),
+            _section("Method", [
+                dcc.RadioItems(id="alc-family", options=[{"label": " " + FAMILY_LABEL[f], "value": f}
+                                                         for f in _methods.FAMILIES],
+                               value="tokens", inline=True, labelStyle={"marginRight": "10px", **SMALL}),
+                html.Div(id="alc-family-doc", style=_ui.hint(fontSize="11px", margin="4px 0 8px")),
+                dcc.Dropdown(id="alc-method", options=_method_options("tokens"), value="tokens.mix",
+                             clearable=False, style=SMALL),
+                html.Div(id="alc-method-doc", style=_ui.hint(fontSize="11.5px", margin="6px 0 8px")),
+                html.Div(id="alc-knobs-main"),
+                _sub("more", html.Div(id="alc-knobs-more"), id_="alc-more-sec"),
+                _sub("looks", html.Div(id="alc-knobs-looks"), id_="alc-looks-sec"),
+            ]),
             _section("Mask", [
                 *[_layer_row(i) for i in range(1, LAYERS + 1)],
                 dcc.Checklist(id="alc-invert", options=[{"label": " invert", "value": "on"}], value=[],

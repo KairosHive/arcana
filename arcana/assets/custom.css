@@ -221,7 +221,7 @@ button.dash-dropdown .dash-dropdown-trigger-icon {
    the plot squeezed into a 26% column. splitter.js puts arc-moodboard on the
    body only while that mode is showing. */
 body.arc-moodboard #main-row > #moodboard-rail {
-    flex: 0 0 var(--arc-rail-w, 280px) !important;
+    flex: 0 0 var(--arc-rail-w, 380px) !important;
 }
 
 body.arc-moodboard #main-row > #left-column {
@@ -335,3 +335,37 @@ body.arc-chrome-folded #arc-header-row {
     color: var(--arc-accent);
     border-color: var(--arc-accent);
 }
+
+/* ---- the collection rail's controls ----
+   The Skeleton stylesheet makes every <button> 38px tall, uppercase and
+   letter-spaced, which made the rail's foot taller than its pictures. Inside
+   the rail they size to their label. */
+#moodboard-rail button:not(.dash-dropdown) {
+    height: auto;
+    line-height: 1.2;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+#moodboard-rail input[type="text"] {
+    height: auto;
+    margin: 0;
+}
+
+.rail-more { margin-top: 4px; }
+.rail-more > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 6px 0 2px;
+    font-size: 11px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--arc-ink-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.rail-more > summary::-webkit-details-marker { display: none; }
+.rail-more > summary::before { content: "+"; width: 10px; color: var(--arc-ink-faint); }
+.rail-more[open] > summary::before { content: "\2212"; }
+.rail-more > div { display: flex; flex-direction: column; gap: 7px; padding-top: 7px; }

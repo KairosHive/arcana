@@ -1296,6 +1296,15 @@ def _blank_fig(message="Choose a dataset above to begin."):
     return fig
 
 
+# The collection rail's small controls (the rail's own CSS resets the
+# stylesheet's tall uppercase buttons inside it).
+RAIL_BTN = _ui.button("secondary", padding="5px 10px", fontSize="11.5px")
+RAIL_DANGER = _ui.button("danger", padding="4px 9px", fontSize="11px")
+RAIL_INPUT = _ui.input_box(flex="1", minWidth="0", padding="5px 8px", fontSize="12px",
+                           boxSizing="border-box")
+RAIL_ROW = {"display": "flex", "gap": "6px", "alignItems": "center"}
+
+
 app.layout = html.Div(
     # A fixed-height flex column, so the app fills the window exactly instead
     # of overflowing it by the height of the header. The plot flexes; the
@@ -1514,22 +1523,27 @@ app.layout = html.Div(
             id="moodboard-rail",
             style={"display": "none"},
             children=[
-                html.Div(id="moodboard-rail-count",
-                         children="COLLECTION",
-                         style={"fontSize": "11px", "fontWeight": "700",
-                                "letterSpacing": "1px", "color": _ui.INK_DIM,
-                                "flex": "0 0 auto", "marginBottom": "10px"}),
-                dcc.Upload(
-                    id="moodboard-external-upload",
-                    children=html.Div("Drop images to collect them here",
-                                      style={"textAlign": "center", "lineHeight": "1.35"}),
-                    style={"padding": "10px", "border": f"2px dashed {_ui.LINE}",
-                           "borderRadius": "8px", "backgroundColor": _ui.SURFACE,
-                           "cursor": "pointer", "fontSize": "11.5px",
-                           "color": _ui.INK_DIM, "flex": "0 0 auto"},
-                    style_active={"borderColor": _ui.INK_DIM},
-                    accept="image/*",
-                    multiple=False,
+                html.Div(
+                    [
+                        html.Div(id="moodboard-rail-count",
+                                 children="COLLECTION",
+                                 style={"fontSize": "11px", "fontWeight": "700",
+                                        "letterSpacing": "1px", "color": _ui.INK_DIM,
+                                        "flex": "1", "minWidth": "0"}),
+                        dcc.Upload(
+                            id="moodboard-external-upload",
+                            children=html.Div("+ drop or add images"),
+                            style={"padding": "4px 10px", "border": f"1px dashed {_ui.LINE}",
+                                   "borderRadius": "6px", "backgroundColor": _ui.SURFACE,
+                                   "cursor": "pointer", "fontSize": "11px",
+                                   "color": _ui.INK_DIM, "flex": "0 0 auto"},
+                            style_active={"borderColor": _ui.INK_DIM},
+                            accept="image/*",
+                            multiple=False,
+                        ),
+                    ],
+                    style={"display": "flex", "alignItems": "center", "gap": "8px",
+                           "flex": "0 0 auto"},
                 ),
                 # The only flexible item in the rail, so every rounding error in
                 # the column lands here rather than clipping the footer.
@@ -1550,95 +1564,78 @@ app.layout = html.Div(
                     "alignItems": "start",
                 }),
                 # A board is the collection plus which picture is [R] and which
-                # is [T], saved by name in the data directory. The collection
-                # used to live only in browser localStorage: one unnamed list,
-                # no way back to yesterday's, and Clear emptied it with no undo.
+                # is [T], saved by name in the data directory. The foot keeps
+                # one row in view (the board and Use) and folds the rest, so
+                # the pictures above get the height.
                 html.Div(
                     [
-                        html.Div("BOARD", style={"fontSize": "10px", "color": _ui.INK_DIM,
-                                                 "letterSpacing": "0.5px",
-                                                 "marginBottom": "4px"}),
-                        dcc.Dropdown(
-                            id="board-picker", placeholder="Saved boards...",
-                            options=[], value=None, clearable=True,
-                            style={"width": "100%", "minWidth": "0",
-                                   "fontSize": "12px"},
-                        ),
                         html.Div(
                             [
+                                dcc.Dropdown(
+                                    id="board-picker", placeholder="Saved boards...",
+                                    options=[], value=None, clearable=True,
+                                    style={"flex": "1", "minWidth": "0", "fontSize": "12px"},
+                                ),
                                 html.Button("Use", id="board-load-btn", n_clicks=0,
-                                            style=_ui.button("secondary",
-                                                             padding="4px 10px",
-                                                             fontSize="12px")),
-                                html.Button("Delete", id="board-delete-btn", n_clicks=0,
-                                            style=_ui.button("secondary",
-                                                             padding="4px 10px",
-                                                             fontSize="12px")),
+                                            title="Make this board the collection",
+                                            style=RAIL_BTN),
                                 # Shown when the chosen board carries its own
                                 # designed page (`board page set`).
                                 html.Button("View page", id="board-page-btn", n_clicks=0,
                                             style={"display": "none"}),
                             ],
-                            style={"display": "flex", "gap": "6px",
-                                   "marginTop": "6px"},
+                            style={"display": "flex", "gap": "6px", "alignItems": "center"},
                         ),
-                        dcc.Input(
-                            id="board-name", type="text",
-                            placeholder="Name this board...",
-                            style=_ui.input_box(width="100%", marginTop="8px",
-                                                padding="6px 9px", fontSize="12px",
-                                                boxSizing="border-box"),
-                        ),
-                        html.Button("Save a copy", id="board-save-btn", n_clicks=0,
-                                    style=_ui.button("success", padding="5px 11px",
-                                                     fontSize="12px",
-                                                     marginTop="6px", width="100%")),
                         html.Div(id="board-status",
-                                 style={"fontSize": "11.5px", "color": _ui.INK_DIM,
-                                        "minHeight": "16px", "marginTop": "6px",
-                                        "lineHeight": "1.4"}),
-                        # A8: only the person decides whether an agent may see
-                        # thumbnails. Off by default; agents work blind.
-                        dcc.Checklist(
-                            id="agent-pixels",
-                            options=[{"label": " Agents may see thumbnails", "value": "on"}],
-                            value=[], inputStyle={"marginRight": "6px"},
-                            style={"fontSize": "11.5px", "color": _ui.INK_DIM,
-                                   "marginTop": "8px"},
+                                 style={"fontSize": "11px", "color": _ui.INK_DIM,
+                                        "marginTop": "5px", "lineHeight": "1.4"}),
+                        html.Details(
+                            [
+                                html.Summary("save, export, more"),
+                                html.Div([
+                                    html.Div([
+                                        dcc.Input(id="board-name", type="text",
+                                                  placeholder="Name this board...",
+                                                  style=RAIL_INPUT),
+                                        html.Button("Save copy", id="board-save-btn", n_clicks=0,
+                                                    style=RAIL_BTN),
+                                    ], style=RAIL_ROW),
+                                    html.Div([
+                                        dcc.Input(id="moodboard-save-folder", type="text",
+                                                  placeholder="Export folder name...",
+                                                  style=RAIL_INPUT),
+                                        # Copies the image files out to a folder,
+                                        # which is a different thing from saving
+                                        # a board.
+                                        html.Button("Export copies", id="save-moodboard-btn",
+                                                    n_clicks=0, style=RAIL_BTN),
+                                    ], style=RAIL_ROW),
+                                    # A8: only the person decides whether an agent
+                                    # may see thumbnails. Off by default.
+                                    dcc.Checklist(
+                                        id="agent-pixels",
+                                        options=[{"label": " Agents may see thumbnails",
+                                                  "value": "on"}],
+                                        value=[], inputStyle={"marginRight": "6px"},
+                                        style={"fontSize": "11.5px", "color": _ui.INK_DIM},
+                                    ),
+                                    html.Div([
+                                        html.Button("Clear collection", id="clear-moodboard-btn",
+                                                    n_clicks=0, style=RAIL_DANGER),
+                                        html.Button("Delete board", id="board-delete-btn",
+                                                    n_clicks=0, style=RAIL_DANGER),
+                                    ], style=RAIL_ROW),
+                                ]),
+                            ],
+                            className="rail-more",
                         ),
+                        html.Div(id="moodboard-save-confirmation",
+                                 style={"fontSize": "11px", "color": _ui.OK,
+                                        "marginTop": "4px"}),
                     ],
-                    style={"flex": "0 0 auto", "marginTop": "10px",
-                           "paddingTop": "10px",
+                    style={"flex": "0 0 auto", "marginTop": "8px", "paddingTop": "8px",
                            "borderTop": f"1px solid {_ui.LINE}"},
                 ),
-                html.Div(
-                    [
-                        html.Button("Clear", id="clear-moodboard-btn", n_clicks=0,
-                                    style=_ui.button("secondary", padding="5px 11px",
-                                                     fontSize="12px")),
-                        # Renamed: this copies the image FILES out to a folder,
-                        # which is a different thing from saving a board, and
-                        # calling both "save" is how it read before.
-                        html.Button("Export copies", id="save-moodboard-btn", n_clicks=0,
-                                    style=_ui.button("secondary", padding="5px 11px",
-                                                     fontSize="12px")),
-                    ],
-                    style={"display": "flex", "gap": "8px", "flex": "0 0 auto",
-                           "marginTop": "10px"},
-                ),
-                dcc.Input(
-                    id="moodboard-save-folder",
-                    type="text",
-                    placeholder="Export folder name...",
-                    style=_ui.input_box(width="100%", marginTop="8px",
-                                        padding="6px 9px", fontSize="12px",
-                                        boxSizing="border-box"),
-                ),
-                # Height reserved so an async confirmation cannot reflow the rail.
-                html.Div(id="moodboard-save-confirmation",
-                         style={"fontSize": "11.5px", "color": _ui.OK,
-                                "minHeight": "16px", "marginTop": "6px",
-                                "flex": "0 0 auto"}),
             ],
         ),
         html.Div(
@@ -2538,7 +2535,7 @@ def toggle_inputs(mode):
     # The rail exists only in moodboard mode. Fixed width, full height, its own
     # flex column so the gallery inside it is the single flexible item.
     rail_visible = {"display": "flex", "flexDirection": "column",
-                    "flex": "0 0 280px", "minHeight": "0",
+                    "flex": "0 0 380px", "minHeight": "0",
                     "backgroundColor": _ui.BG, "border": f"1px solid {_ui.LINE}",
                     "borderRadius": "10px", "padding": "10px",
                     "boxSizing": "border-box"}
@@ -3110,7 +3107,7 @@ _PAGE_OVERLAY = {"display": "flex", "flexDirection": "column", "position": "fixe
 def show_page_button(slug, _sig):
     """Offer View page for a board that carries its own designed page."""
     if slug and _ops.board.page_file(slug):
-        return _ui.button("primary", padding="4px 10px", fontSize="12px")
+        return _ui.button("primary", padding="5px 10px", fontSize="11.5px")
     return {"display": "none"}
 
 

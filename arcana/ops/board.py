@@ -287,6 +287,7 @@ class BoardShowResult(Result):
     metrics: Metrics = Field(default_factory=Metrics)
     reference: str = ""
     transfer: str = ""
+    page: str | None = None            # the board's own designed page, when it has one
 
     @property
     def items(self) -> list[BoardItem]:
@@ -317,6 +318,8 @@ class BoardShowResult(Result):
         if self.unsectioned:
             lines.append(f"\n## Unsectioned ({len(self.unsectioned)})" if self.sections else "")
             lines += [i.line() for i in self.unsectioned]
+        if self.page:
+            lines.append(f"\nPage: {self.page} (its own designed page; `board pdf` prints it)")
         lines.append("\nMetrics: " + m.line())
         if m.warnings:
             lines.append("Look at: " + " ".join(m.warnings))
@@ -433,7 +436,8 @@ def view(rec: dict) -> BoardShowResult:
                            concept=rec.get("concept") or "", dataset=rec.get("dataset") or "",
                            palette=pal, sections=sections, unsectioned=loose,
                            metrics=metrics(built, sections), reference=rec.get("reference") or "",
-                           transfer=rec.get("transfer") or "")
+                           transfer=rec.get("transfer") or "",
+                           page=page_path(rec["slug"]) if rec.get("page") else None)
 
 
 def write_result(rec: dict, message: str, handles=()) -> BoardWriteResult:
@@ -1075,3 +1079,219 @@ def _board_open(a: BoardOpenArgs, ctx: Context) -> RenderResult:
         webbrowser.open("file:///" + path.replace("\\", "/"))
     return RenderResult(board=a.board, path=path, format="html", layout=layout,
                         count=shown.metrics.count, warnings=shown.metrics.warnings)
+
+
+# ─────────────────────────── designed pages and PDF ───────────────────────────
+# `board render` lays a board out from a fixed template. A board can also carry
+# its own designed page: one self-contained HTML file an agent or a person made
+# for it (images embedded, no network). It lives beside the rendered boards as
+# output/boards/<slug>.page.html, so `board render` (which writes <slug>.html)
+# never overwrites it, and the board records that it has one. The app shows it
+# in a sandboxed frame, and `board pdf` prints it with a headless Chromium,
+# honouring the page's own @page CSS.
+
+PAGE_SUFFIX = ".page.html"
+PAGE_LIMIT_MB = 300
+
+
+def page_path(slug: str) -> str:
+    return os.path.join(_paths.subdir("output"), "boards", f"{slug}{PAGE_SUFFIX}")
+
+
+def page_file(slug: str) -> str | None:
+    """The board's designed page on disk, or None when it has none."""
+    rec = _boards.load(slug)
+    if not rec or not rec.get("page"):
+        return None
+    p = page_path(rec["slug"])
+    return p if os.path.isfile(p) else None
+
+
+def _allowed_source(path: str, actor: str) -> bool:
+    """An agent hands in pages from its workspace or Arcana's output only."""
+    if actor != "agent":
+        return True
+    try:
+        from .. import workspace as _ws
+    except ImportError:                               # pragma: no cover
+        import workspace as _ws
+    return _paths.is_within(path, [_ws.workspace_dir(), _paths.subdir("output")])
+
+
+def _resolve_page_source(given: str) -> str:
+    """A path as given, or relative to the folder that holds output/ and workspace/."""
+    if os.path.isabs(given):
+        return os.path.abspath(given)
+    here = os.path.abspath(given)
+    if os.path.exists(here):
+        return here
+    base = os.path.dirname(os.path.abspath(_paths.subdir("output")))
+    return os.path.abspath(os.path.join(base, given))
+
+
+class PageResult(Result):
+    board: str
+    path: str | None = None
+    size_mb: float = 0.0
+    message: str
+
+    def text(self) -> str:
+        return self.message + "\n"
+
+
+class PageSetArgs(Args):
+    board: str = slug_arg()
+    file: str = positional(1, description="A self-contained HTML page for the board (images "
+                                          "embedded, no network). A relative path is read from "
+                                          "the folder that holds output/ and workspace/.",
+                           json_schema_extra={"metavar": "FILE"})
+
+
+@op("board page set", "write", PageSetArgs, PageResult,
+    doc="""
+    Give a board its own designed page. The file is copied to
+    output/boards/<board>.page.html, which `board render` never overwrites,
+    and the app's Moodboard tab shows it, sandboxed, with Save as PDF. An agent
+    hands in pages from its workspace or from Arcana's output folder.
+    """,
+    examples=("board page set monsoon output/boards/monsoon.page.html",))
+def _page_set(a: PageSetArgs, ctx: Context) -> PageResult:
+    src = _resolve_page_source(a.file)
+    if not os.path.isfile(src):
+        raise ValueError(f"No file at {a.file}.")
+    if not src.lower().endswith((".html", ".htm")):
+        raise ValueError("A board's page is an .html file.")
+    size = os.path.getsize(src) / 1e6
+    if size > PAGE_LIMIT_MB:
+        raise ValueError(f"The page is {size:,.0f} MB, over the {PAGE_LIMIT_MB} MB limit.")
+    if not _allowed_source(src, ctx.actor):
+        raise ValueError("An agent hands in pages from its workspace or from Arcana's output "
+                         "folder. Write the page there first.")
+    rec = load(a.board)
+    dest = page_path(rec["slug"])
+    _paths.ensure_dir(os.path.dirname(dest))
+    rec["page"] = {"file": os.path.basename(dest), "source": os.path.basename(src),
+                   "set": time.time()}
+    put(ctx, rec)                     # the A7 check runs here, before anything is copied
+    if os.path.normcase(src) != os.path.normcase(os.path.abspath(dest)):
+        shutil.copyfile(src, dest)
+    return PageResult(board=a.board, path=dest, size_mb=round(size, 2),
+                      message=f"`{a.board}` now carries its own page, {size:,.1f} MB, at {dest}. "
+                              f"The Moodboard tab shows it under View page.")
+
+
+class PageClearArgs(Args):
+    board: str = slug_arg()
+
+
+@op("board page clear", "write", PageClearArgs, PageResult,
+    doc="""
+    Detach a board's designed page. The board goes back to its rendered
+    layout, and the page file stays in output/boards.
+    """,
+    examples=("board page clear monsoon",))
+def _page_clear(a: PageClearArgs, ctx: Context) -> PageResult:
+    rec = load(a.board)
+    if not rec.get("page"):
+        return PageResult(board=a.board, message=f"`{a.board}` has no page to clear.")
+    rec.pop("page", None)
+    put(ctx, rec)
+    return PageResult(board=a.board, path=page_path(rec["slug"]),
+                      message=f"Detached the page from `{a.board}`. The file stays at "
+                              f"{page_path(rec['slug'])}.")
+
+
+def _program_files(var: str, default: str) -> str:
+    return os.environ.get(var) or default
+
+
+BROWSERS = (
+    os.path.join(_program_files("PROGRAMFILES", r"C:\Program Files"),
+                 "Google", "Chrome", "Application", "chrome.exe"),
+    os.path.join(_program_files("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+                 "Microsoft", "Edge", "Application", "msedge.exe"),
+    os.path.join(_program_files("PROGRAMFILES", r"C:\Program Files"),
+                 "Microsoft", "Edge", "Application", "msedge.exe"),
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+)
+
+
+def chromium() -> str | None:
+    """A Chromium to print with: ARCANA_BROWSER, then Chrome or Edge, then one on PATH."""
+    given = os.environ.get("ARCANA_BROWSER")
+    if given and os.path.isfile(given):
+        return given
+    for p in BROWSERS:
+        if p and os.path.isfile(p):
+            return p
+    for name in ("chrome", "msedge", "chromium", "chromium-browser", "google-chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+class PdfResult(Result):
+    board: str
+    path: str
+    pages: int
+    size_mb: float
+    source: str
+
+    def text(self) -> str:
+        return (f"Saved `{self.board}` as a PDF of {self.pages} page{'s' if self.pages != 1 else ''}, "
+                f"{self.size_mb:,.1f} MB, from its {self.source}:\n  {self.path}\n")
+
+
+class PdfArgs(Args):
+    board: str = slug_arg()
+    layout: Literal["editorial", "masonry", "grid"] | None = Field(
+        None, description="For a board without its own page, the layout to render first.")
+    wait: float = Field(4.0, ge=0, le=30,
+                        description="Seconds the page may run its scripts before printing.")
+
+
+@op("board pdf", "effect", PdfArgs, PdfResult,
+    doc="""
+    Save a board as a PDF in output/boards. A board with its own designed page
+    prints that page, following its @page size and print styles. Otherwise the
+    board is rendered as HTML first and that is printed. It uses Chrome or Edge
+    without a window.
+    """,
+    examples=("board pdf monsoon",))
+def _board_pdf(a: PdfArgs, ctx: Context) -> PdfResult:
+    import subprocess
+    import tempfile
+    rec = load(a.board)
+    browser = chromium()
+    if browser is None:
+        raise ValueError("No Chrome or Edge found to print with. Set ARCANA_BROWSER to a "
+                         "Chromium, or print the page from the Moodboard tab.")
+    src = page_file(rec["slug"])
+    source = "designed page"
+    if src is None:
+        src, _, _, layout = render_board(rec["slug"], "html", a.layout)
+        source = f"{layout} layout"
+    out = os.path.join(os.path.dirname(page_path(rec["slug"])), f"{rec['slug']}.pdf")
+    if os.path.exists(out):
+        os.remove(out)
+    url = "file:///" + os.path.abspath(src).replace(os.sep, "/")
+    with tempfile.TemporaryDirectory(prefix="arcana-pdf-") as profile:
+        cmd = [browser, "--headless=new", "--disable-gpu", "--no-first-run",
+               "--no-default-browser-check", f"--user-data-dir={profile}",
+               "--no-pdf-header-footer", "--print-to-pdf-no-header",
+               "--run-all-compositor-stages-before-draw",
+               f"--virtual-time-budget={int(a.wait * 1000)}",
+               f"--print-to-pdf={out}", url]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            raise ValueError("The browser took over three minutes to print the page.") from None
+    if not os.path.isfile(out) or os.path.getsize(out) == 0:
+        raise ValueError(f"{os.path.basename(browser)} did not write a PDF.")
+    with open(out, "rb") as fh:
+        data = fh.read()
+    pages = max(1, data.count(b"/Type /Page") - data.count(b"/Type /Pages"))
+    return PdfResult(board=a.board, path=out, pages=pages, size_mb=round(len(data) / 1e6, 2),
+                     source=source)

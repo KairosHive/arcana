@@ -98,6 +98,8 @@ VOCABULARY = {
     "job list", "job show", "job wait", "job cancel",
     # P3: boards as pages
     "board render", "board open",
+    # boards with their own designed page, and as PDF
+    "board page set", "board page clear", "board pdf",
     # P4: the dataset lifecycle
     "dataset create", "dataset extend", "dataset finish", "dataset marks", "dataset relocate",
     "dataset migrate", "dataset delete",
@@ -106,7 +108,7 @@ VOCABULARY = {
 # Examples that load a large model. They run when ARCANA_SLOW_EXAMPLES is set,
 # and their behaviour is tested with stubs in test_colour_ops.py either way.
 # `model download` fetches hundreds of megabytes, so its example never runs here.
-SLOW = {"generate", "colour lut", "alchemy make"}
+SLOW = {"generate", "colour lut", "alchemy make", "board pdf"}
 NETWORK = {"model download"}
 # Examples that index or rewrite a real folder. test_lifecycle.py runs these
 # ops against the synthetic dataset with the encoding stubbed.
@@ -177,6 +179,11 @@ def test_every_example_runs(tmp, ds, actor, pixels_on):
             _fixture_board(tmp, "agent" if actor == "agent" else "person")
             if o.name == "board create":
                 os.remove(os.path.join(tmp, "boards", "monsoon.json"))
+            if o.name == "board page set":
+                page = os.path.join(tmp, "output", "boards", "monsoon.page.html")
+                os.makedirs(os.path.dirname(page), exist_ok=True)
+                with open(page, "w", encoding="utf-8") as fh:
+                    fh.write("<!doctype html><title>p</title>")
             if o.name.startswith("job "):
                 # A job that waits a moment, so cancel finds it running.
                 jid = jobs.MANAGER.submit(lambda h: __import__("time").sleep(0.3) or {"text": "ok"},

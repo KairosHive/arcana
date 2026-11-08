@@ -2,7 +2,7 @@
 #
 # Every method lives in transfer_methods.py, so the app's dropdown, these ops
 # and an agent choose from one table. A result is a new file in
-# output/color_transfer, recorded in the ledger as derived from its target, so
+# output/edited/colour/<date>, recorded in the ledger as derived from its target, so
 # it has an out: handle and is badged as derived wherever it goes. The original
 # is never written to.
 
@@ -182,7 +182,7 @@ def reference_image(a: ReferenceArgs, actor: str) -> tuple[Image.Image, str]:
 
 def recolour(target: archive.Item, ref_img: Image.Image, ref_name: str, a: ReferenceArgs,
              progress=None) -> dict:
-    """The transfer itself, written to output/color_transfer. Returns what record() needs."""
+    """The transfer itself, written to output/edited/colour/<date>. Returns what record() needs."""
     try:
         from .. import refselect as _refselect
     except ImportError:                               # pragma: no cover

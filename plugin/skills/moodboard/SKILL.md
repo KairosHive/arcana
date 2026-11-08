@@ -113,6 +113,22 @@ With pixels on, look at the png and critique it with the board-design skill.
 Blind, critique it from `board show` and the metrics. Revise once by removing,
 moving and re-noting, then render again.
 
+## A page of its own
+
+When the brief asks for a page designed for the theme, write one
+self-contained HTML file (images embedded, no network, system fonts, print
+CSS with an `@page` size), save it in your workspace or in `output/boards`,
+and attach it. The app's Moodboard tab then shows it under *View page*, with
+Save as PDF.
+
+```ops
+board page set monsoon output/boards/monsoon.page.html
+board pdf monsoon
+```
+
+`board render` keeps writing the template layout to `<board>.html` and never
+touches the page. `board page clear` detaches it.
+
 ## 10. Hand back
 
 The path of the HTML board, its name in Arcana (the person sees it in the

@@ -378,7 +378,7 @@ def help_text(op: Op) -> str:
     """The op's help page, generated from its declaration."""
     lines = _wrap_terms(usage_terms(op), WIDTH)
     lines.append(f"({op.kind}" + (f", needs {', '.join(sorted(op.needs))}" if op.needs else "")
-                 + (f", for {', '.join(a for a in registry.ACTORS if a in op.actors)} only"
+                 + (f", {' and '.join(a for a in registry.ACTORS if a in op.actors)} only"
                     if op.actors != frozenset(registry.ACTORS) else "") + ")")
     lines.append("")
     for para in op.doc.split("\n\n"):
@@ -442,6 +442,17 @@ def _dataset_ids() -> list[str]:
     return [archive.dataset_id(d["name"], d["modality"]) for d in core.find_datasets()]
 
 
+def _board_ids() -> list[str]:
+    try:
+        from .. import boards as _boards
+    except ImportError:                              # pragma: no cover
+        import boards as _boards
+    return [b["slug"] for b in _boards.listing()]
+
+
+_COMPLETERS = {"dataset": _dataset_ids, "board": _board_ids}
+
+
 def complete(partial: str) -> list[str]:
     """
     Candidates for the word being typed at the end of `partial`.
@@ -481,8 +492,8 @@ def complete(partial: str) -> list[str]:
             if s.shape != "bool":
                 if s.choices:
                     return [str(c) for c in s.choices if str(c).startswith(current)]
-                if s.complete == "dataset":
-                    return [d for d in _dataset_ids() if d.startswith(current)]
+                if s.complete in _COMPLETERS:
+                    return [d for d in _COMPLETERS[s.complete]() if d.startswith(current)]
                 return []
     if current.startswith("-"):
         flags = []
@@ -495,8 +506,8 @@ def complete(partial: str) -> list[str]:
     # A bare word: the next positional, if it completes.
     used = sum(1 for w in rest if not w.startswith("--"))
     slots = sorted((s for s in fields if s.positional is not None), key=lambda s: s.positional)
-    if used < len(slots) and slots[used].complete == "dataset":
-        return [d for d in _dataset_ids() if d.startswith(current)]
+    if used < len(slots) and slots[used].complete in _COMPLETERS:
+        return [d for d in _COMPLETERS[slots[used].complete]() if d.startswith(current)]
     return []
 
 

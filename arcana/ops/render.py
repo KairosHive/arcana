@@ -54,7 +54,9 @@ def batch_text(batch: Batch) -> str:
             files = "".join(f"Sheet: {a.path}\n" for a in s.result.attachments if a.path)
             parts.append(head + s.result.text().rstrip() + "\n" + files)
         elif s.refusal is not None:
-            where = f"Line {i} was refused, so nothing after it ran.\n" if many else ""
+            where = (f"Line {i} was refused, so nothing after it ran"
+                     + (" and the changes before it were undone" if batch.rolled_back else "")
+                     + ".\n") if many else ""
             parts.append(head + where + refusal_text(s.refusal))
         else:
             parts.append(head + "(not run)\n")

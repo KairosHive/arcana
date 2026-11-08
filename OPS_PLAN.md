@@ -1,6 +1,6 @@
 # Arcana ops: one vocabulary, many thin surfaces
 
-P0 done, P1 next. Goal: every action Arcana can perform is a named op, declared
+P0 and P1 done, P2 next. Goal: every action Arcana can perform is a named op, declared
 once, and the web UI, the command line and an MCP agent all reach the same ops
 through thin surfaces generated from that one declaration. An agent can then
 prompt the latent space, build libraries, assemble moodboards from varied
@@ -599,6 +599,45 @@ What building it settled, beyond the text above:
   `exec` call, it appears in the open app within two seconds, a person's edit
   there keeps the agent's notes, and `arcana undo` in a terminal takes back
   only the terminal's own last batch.
+
+**Done 7 November 2026.** `state.py` holds transactions, per-actor undo and
+the version counter, `ledger.py` the output ledger, and `ops/board.py` the
+board ops. The app serves the ops from its own Flask server and announces
+itself in `server.json`. The CLI and the MCP server forward to it when it
+answers and run in-process otherwise. `mcp_server.py` is one `exec` tool, two
+resources and the `moodboard` prompt. All four acceptance checks pass against
+the running app:
+
+- an agent's batch built a board with two sections and a hero in 0.28 s,
+  through the app's process
+- the board appeared in the Moodboard tab's picker 1.86 s after the agent
+  created it
+- loading it in the tab and saving it there kept every note, role, section
+  and the agent as author
+- `arcana undo` in a terminal took back only the terminal's last step
+
+What building it settled, beyond the text above:
+
+- The routes sit under `/ops/` (`/ops/exec`, `/ops/rpc`, `/ops/list`,
+  `/ops/schema.json`, `/ops/state`), beside Dash's own routes on the same
+  server.
+- Undo history lives on disk in `state/history.json`, so a terminal's undo
+  works with or without the app open. A step is undone only while its files
+  are as it left them.
+- Every line of a batch is parsed before any runs, so a typo on line five
+  changes nothing.
+- The MCP tool always acts as `agent`. A model cannot name another actor.
+- `board set --name --brief --concept --dataset` replaces `board concept set`.
+  `board note` also takes `--role`. `board save` replaces a board's item list,
+  which is how the Moodboard tab saves. `item export` copies pictures into
+  `output/selections` or `output/moodboards`.
+- `undo` and `redo` run on their own line, outside a batch that writes.
+- The Moodboard tab saved to the slug of the board's name, so saving an
+  agent's board (id `p1-check`, name "P1 check, ...") forked a second board.
+  It now saves over the loaded board while the name is unchanged.
+- The tab badges derived and generated pictures from the ledger and the board,
+  shows each picture's role, and has the person's pixels switch (A8).
+- `test_parity.py` forbids `boards` in `arcana.py` and `ui_datasets.py`.
 
 ### P2. Transfer registry and the completion ops (about 3 days)
 

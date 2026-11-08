@@ -1,226 +1,166 @@
 """
-Tests for the MCP server.
+The MCP server: one tool, `exec`, taking op lines.
 
-The tools are called as plain functions against a small synthetic dataset in a
-scratch data dir, with the text encoder replaced by fixed vectors: no model is
-downloaded. One test at the end starts the real server as a subprocess and
-talks to it through an MCP client, because the failure that matters most there
--- a stray print() corrupting the protocol -- only shows up over a real pipe.
+The tool is called as a plain function first, then over a real stdio pipe,
+because the failure that matters most there -- a stray print() corrupting the
+protocol -- only shows up over a pipe. One test starts the ops routes on a
+local port and checks the tool forwards to them, the way it does when the app
+is open. The ops' own behaviour is tested in test_read_ops.py and
+test_exec.py.
 
 Run with:  python -m pytest tests/test_mcp_server.py
 """
 
+import json
 import os
 import sys
+import threading
 
 import pytest
 
 pytest.importorskip("mcp")
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, HERE)
 
-from arcana import core, mcp_server as srv  # noqa: E402
+from arcana import mcp_server as srv, server  # noqa: E402
 
-from synth import N_FOREST, N_MIXED, N_WATER  # noqa: E402
 import synth  # noqa: E402
 
 
 @pytest.fixture
 def ds(tmp, monkeypatch):
+    monkeypatch.setenv("ARCANA_NO_SERVER", "1")      # never reach a real app on this machine
     return synth.use(tmp, monkeypatch)
 
 
-def _pixels(tmp, on=True):
-    synth.pixels(tmp, on)
-
-
-def _texts(out):
+def texts(out):
     return "\n".join(c.text for c in out if c.type == "text")
 
 
-def _images(out):
+def images(out):
     return [c for c in out if c.type == "image"]
 
 
-def _keys(out, ds_id="synth"):
-    """Handles in a result, in order, as keys."""
-    import re
-    return [int(m) for m in re.findall(rf"\b{ds_id}:(\d+)", _texts(out))]
-
-
-# ─────────────────────────── privacy ───────────────────────────
-
-def test_blind_is_the_default_and_says_so(tmp, ds):
-    out = srv.do_search("synth", [srv.Facet(name="w", phrases=["water"])])
-    assert not _images(out)
-    assert "Mode: blind" in _texts(out)
-
-
-def test_pixels_is_the_persons_switch(tmp, ds):
-    _pixels(tmp)
-    out = srv.do_search("synth", [srv.Facet(name="w", phrases=["water"])])
-    assert len(_images(out)) == 1
-    assert "Mode: pixels" in _texts(out)
-
-
-def test_no_tool_can_change_the_setting_or_write_anything(tmp, ds):
-    """Every tool is read-only, and declares itself so to the client."""
+def test_there_is_one_tool_plus_resources_and_a_prompt():
     import anyio
     tools = anyio.run(srv.mcp.list_tools)
-    assert {t.name for t in tools} == {"list_datasets", "survey", "search",
-                                       "more_like", "find_by_palette", "inspect"}
-    assert all(t.annotations and t.annotations.read_only_hint for t in tools)
-
-    _pixels(tmp)
-    before = {os.path.join(d, f) for d, _, fs in os.walk(tmp) for f in fs}
-    srv.do_list_datasets()
-    srv.do_survey("synth")
-    srv.do_search("synth", [srv.Facet(name="w", phrases=["water"])])
-    srv.do_more_like(["synth:0"])
-    srv.do_inspect(["synth:0"])
-    after = {os.path.join(d, f) for d, _, fs in os.walk(tmp) for f in fs}
-    assert after == before
+    assert [t.name for t in tools] == ["exec"]
+    assert "commands" in tools[0].input_schema["properties"]
+    assert "orient" in tools[0].description
+    resources = {str(r.uri) for r in anyio.run(srv.mcp.list_resources)}
+    assert {"arcana://orient", "arcana://ops"} <= resources
+    assert [p.name for p in anyio.run(srv.mcp.list_prompts)] == ["moodboard"]
 
 
-# ─────────────────────────── search ───────────────────────────
-
-def test_a_present_idea_is_strong_and_an_absent_one_weak(tmp, ds):
-    out = srv.do_search("synth", [srv.Facet(name="water", phrases=["water"]),
-                                  srv.Facet(name="space", phrases=["spaceship"])], k=5)
-    text = _texts(out)
-    assert "## water — strong" in text
-    assert "## space — weak" in text
-    assert "say so" in text.lower()
-    assert set(_keys(out)[:5]) == set(range(N_WATER))
+def test_a_batch_comes_back_as_text_with_the_mode(tmp, ds):
+    out = srv.run(["dataset list", "search text synth --phrase water --k 3"])
+    t = texts(out)
+    assert "[1] dataset list" in t and "## water — strong" in t
+    assert "Mode: blind" in t and not images(out)
 
 
-def test_facets_never_repeat_a_picture(tmp, ds):
-    out = srv.do_search("synth", [srv.Facet(name="a", phrases=["water"]),
-                                  srv.Facet(name="b", phrases=["water"])], k=6)
-    keys = _keys(out)
-    assert len(keys) == len(set(keys))
+def test_pictures_reach_the_agent_only_with_pixels_on(tmp, ds):
+    synth.pixels(tmp, True)
+    out = srv.run(["search text synth --phrase water --k 3"])
+    assert len(images(out)) == 1 and "Mode: pixels" in texts(out)
 
 
-def test_negatives_push_the_intruder_down(tmp, ds):
-    """Water-and-forest pictures follow pure water; asked to avoid forest, they sink."""
-    mixed = set(range(N_WATER + N_FOREST, N_WATER + N_FOREST + N_MIXED))
-    plain = srv.do_search("synth", [srv.Facet(name="w", phrases=["water"])], k=12, diversity=0)
-    pushed = srv.do_search("synth", [srv.Facet(name="w", phrases=["water"],
-                                               negatives=["forest"], negative_weight=0.6)],
-                           k=12, diversity=0)
-    assert set(_keys(plain)[N_WATER:N_WATER + N_MIXED]) == mixed
-
-    def position(out, key):
-        keys = _keys(out)
-        return keys.index(key) if key in keys else len(keys)
-    assert sum(position(pushed, m) for m in mixed) > sum(position(plain, m) for m in mixed)
+def test_a_refusal_is_an_error_the_model_can_read(tmp, ds):
+    from mcp.server.mcpserver.exceptions import ToolError
+    with pytest.raises(ToolError) as e:
+        srv.run(["search text nope --phrase water"])
+    assert "Known datasets: synth" in str(e.value)
+    assert "search text <dataset>" in str(e.value)        # the op's help comes with it
 
 
-def test_filters_are_the_persons_marks(tmp, ds):
-    out = srv.do_search("synth", [srv.Facet(name="w", phrases=["water"])], k=24,
-                        filters=srv.Filters(min_stars=4))
-    frame = core.open_dataset("synth").frame
-    for key in _keys(out):
-        assert frame.iloc[key]["rating"] >= 4
-    assert "filters left" in _texts(out)
+def test_the_agent_cannot_act_as_the_person(tmp, ds):
+    from mcp.server.mcpserver.exceptions import ToolError
+    srv.run(['board create "Mine" --id mine'])
+    with pytest.raises(ToolError, match="is for the person"):
+        srv.run(["board delete mine"])
+    with pytest.raises(ToolError, match="is for the person"):
+        srv.run(["settings set --pixels on"])
 
 
-def test_more_like_leaves_out_the_examples(tmp, ds):
-    out = srv.do_more_like(["synth:0", "synth:1"], k=3)
-    keys = _keys(out)[2:]                       # the first two are the request line
-    assert 0 not in keys and 1 not in keys
-    assert set(keys) <= set(range(N_WATER)) | set(range(N_WATER + N_FOREST, N_WATER + N_FOREST + N_MIXED))
+def test_a_refused_batch_leaves_nothing_behind(tmp, ds):
+    from mcp.server.mcpserver.exceptions import ToolError
+    with pytest.raises(ToolError, match="undone"):
+        srv.run(['board create "Half" --id half', "board add half synth:0", "board add half synth:999"])
+    assert not os.path.exists(os.path.join(tmp, "boards", "half.json"))
 
 
-# ─────────────────────────── survey and inspect ───────────────────────────
-
-def test_survey_lists_clusters_largest_first_with_exemplars(tmp, ds):
-    _pixels(tmp)
-    out = srv.do_survey("synth", per_cluster=2)
-    text = _texts(out)
-    assert text.index("Noise") < text.index("Water")
-    assert len(_images(out)) == 1
+def test_the_moodboard_prompt_names_the_theme_and_dataset():
+    text = srv.moodboard("monsoon melancholy", "japan")
+    assert "monsoon melancholy" in text and "dataset survey japan" in text
 
 
-def test_inspect_describes_in_blind_mode_and_shows_in_pixels(tmp, ds, monkeypatch):
-    from arcana import style_transfer
-    monkeypatch.setattr(style_transfer, "describe", lambda *a, **k: "lake, mist")
-    blind = srv.do_inspect(["synth:0"])
-    assert "looks like: lake, mist" in _texts(blind) and not _images(blind)
-    assert "palette: #" in _texts(blind)
+# ─────────────────────────── forwarding ───────────────────────────
 
-    _pixels(tmp)
-    seen = srv.do_inspect(["synth:0"])
-    assert len(_images(seen)) == 1
+def test_with_the_app_open_the_tool_forwards_to_it(tmp, ds, monkeypatch):
+    """Start the ops routes on a free port, announce them, and watch the call go there."""
+    import urllib.error
+    from flask import Flask
+    from werkzeug.serving import make_server
 
+    monkeypatch.delenv("ARCANA_NO_SERVER")
+    app = Flask("test-app")
+    server.register(app)
+    http = make_server("127.0.0.1", 0, app, threaded=True)
+    threading.Thread(target=http.serve_forever, daemon=True).start()
+    try:
+        info = {"port": http.server_port, "pid": -1, "token": server._TOKEN}
+        with open(server.discovery_path(), "w", encoding="utf-8") as fh:
+            json.dump(info, fh)
+        seen = []
+        real = server.remote_exec
+        monkeypatch.setattr(server, "remote_exec",
+                            lambda *a, **k: seen.append(a[1]) or real(*a, **k))
+        out = srv.run(['board create "Over the wire" --id wire', "board add wire synth:0"])
+        assert seen == [['board create "Over the wire" --id wire', "board add wire synth:0"]]
+        assert "Created `wire`" in texts(out)
+        assert os.path.exists(os.path.join(tmp, "boards", "wire.json"))
 
-def test_list_datasets_describes_each_one(tmp, ds):
-    text = _texts(srv.do_list_datasets())
-    assert "synth" in text and "43 pictures" in text and "4 clusters" in text
-    assert "marks: stars, colour tags" in text
-    assert "FILES MOVED" not in text
-
-
-def test_moved_files_are_named_not_left_as_grey_tiles(tmp, ds):
-    """Search survives a move; pictures do not. The agent should know which is which."""
-    for k in range(5):
-        os.remove(ds[k])
-    assert "FILES MOVED: about 12%" in _texts(srv.do_list_datasets())
-    out = srv.do_search("synth", [srv.Facet(name="w", phrases=["water"])], k=6)
-    assert "(file missing)" in _texts(out)
-
-
-# ─────────────────────────── small parts ───────────────────────────
-
-def test_handles(tmp):
-    assert srv.parse_handle("japan:1423") == ("japan", 1423)
-    assert srv.parse_handle(srv.handle("field@audio", 7)) == ("field@audio", 7)
-    assert srv.split_dataset_id("field@audio") == ("field", "audio")
-    for bad in ("japan", "japan:x", ":3", ""):
-        with pytest.raises(ValueError, match="handle"):
-            srv.parse_handle(bad)
+        # A wrong token is shut out.
+        with pytest.raises(urllib.error.HTTPError):
+            real(dict(info, token="nope"), ["dataset list"], "agent")
+    finally:
+        http.shutdown()
 
 
-def test_an_unknown_dataset_names_the_known_ones(tmp, ds):
-    with pytest.raises(ValueError, match="Known datasets: synth"):
-        srv.open_dataset("nope")
-
-
-def test_swatch_bands_follow_weights(tmp):
-    img = srv._swatch(["#ff0000", "#0000ff"], [3, 1])
-    assert img.shape[0] == 128 and abs(img.shape[1] - 256) <= 2
-    assert tuple(img[0, 0]) == (0, 0, 255)            # BGR red
-    assert tuple(img[0, -1]) == (255, 0, 0)           # BGR blue
-    assert 180 <= int((img[0, :, 2] == 255).sum()) <= 200
-    with pytest.raises(ValueError):
-        srv._swatch(["red"], None)
+def test_a_dead_server_record_is_ignored(tmp, ds, monkeypatch):
+    monkeypatch.delenv("ARCANA_NO_SERVER")
+    with open(server.discovery_path(), "w", encoding="utf-8") as fh:
+        json.dump({"port": 1, "pid": 999999, "token": "x"}, fh)
+    assert server.find(timeout=0.2) is None
+    assert "Created" in texts(srv.run(['board create "Local" --id local']))
 
 
 # ─────────────────────────── over a real pipe ───────────────────────────
 
-# Starts the real server, except that list_datasets first prints to stdout the
+# Starts the real server, except that every batch first prints to stdout the
 # way db.py's progress messages do. On a pipe that line would be read as a
 # malformed protocol message unless the transport keeps fd 1 off the wire.
 _NOISY_SERVER = (
-    "import arcana.mcp_server as s\n"
-    "real = s.do_list_datasets\n"
-    "def noisy():\n"
+    "import arcana.server as s\n"
+    "real = s.run_lines\n"
+    "def noisy(*a, **k):\n"
     "    print('Encoding 3/10 ...', flush=True)\n"
-    "    return real()\n"
-    "s.do_list_datasets = noisy\n"
-    "s.main()\n"
+    "    return real(*a, **k)\n"
+    "s.run_lines = noisy\n"
+    "import arcana.mcp_server as m\n"
+    "m.main()\n"
 )
 
 
-def test_the_server_answers_over_stdio_even_when_a_tool_prints(tmp, ds):
-    """Start the server as a client would and call a tool through the protocol."""
+def test_the_server_answers_over_stdio_even_when_an_op_prints(tmp, ds):
     import anyio
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    env = dict(os.environ, ARCANA_DATA_DIR=tmp, PYTHONPATH=ROOT)
+    env = dict(os.environ, ARCANA_DATA_DIR=tmp, PYTHONPATH=ROOT, ARCANA_NO_SERVER="1")
     params = StdioServerParameters(command=sys.executable, args=["-c", _NOISY_SERVER],
                                    env=env, cwd=ROOT)
 
@@ -229,17 +169,11 @@ def test_the_server_answers_over_stdio_even_when_a_tool_prints(tmp, ds):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = await session.list_tools()
-                result = await session.call_tool("list_datasets", {})
-                wrong = await session.call_tool(
-                    "search", {"dataset": "nope", "facets": [{"name": "x", "phrases": ["x"]}]})
-                return {t.name for t in tools.tools}, result, wrong
+                ok = await session.call_tool("exec", {"commands": ["dataset list"]})
+                wrong = await session.call_tool("exec", {"commands": ["search text nope --phrase x"]})
+                return [t.name for t in tools.tools], ok, wrong
 
-    names, result, wrong = anyio.run(talk)
-    assert "search" in names
-    assert not result.is_error
-    assert "synth" in result.content[0].text
-
-    # A mistake the agent can fix has to reach it in words, not as "Error
-    # executing tool search".
-    assert wrong.is_error
-    assert "Known datasets: synth" in wrong.content[0].text
+    names, ok, wrong = anyio.run(talk)
+    assert names == ["exec"]
+    assert not ok.is_error and "synth" in ok.content[0].text
+    assert wrong.is_error and "Known datasets: synth" in wrong.content[0].text

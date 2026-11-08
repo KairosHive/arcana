@@ -34,8 +34,9 @@ ENV_MEDIA_ROOTS = "ARCANA_MEDIA_ROOTS"
 # "boards" holds saved moodboards as JSON. They live here rather than in
 # browser localStorage so they survive clearing site data, and so two
 # machines sharing ARCANA_DATA_DIR share their boards along with datasets.
+# "state" holds the ops layer's undo history and version counter (state.py).
 _SUBDIRS = ("databases", "latents", "bundles", "output", "cache", "models",
-            "boards")
+            "boards", "state")
 
 # Legacy in-package locations, kept working for existing checkouts.
 _LEGACY = {

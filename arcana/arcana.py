@@ -38,16 +38,25 @@ try:
     from . import ui_datasets as _ui_datasets
     from . import ui_style as _ui
     from . import jobs
-    from . import boards as _boards
     from . import on1 as _on1
     from . import core as _core
+    # Everything the app changes goes through the ops (OPS_PLAN.md): the same
+    # vocabulary the terminal and an agent use, with transactions and undo.
+    # tests/test_parity.py keeps boards.py and the transfer modules out of here.
+    from . import ops as _ops
+    from . import server as _ops_server
+    from . import state as _state
+    from . import ledger as _ledger
 except ImportError:
     import ui_datasets as _ui_datasets
     import ui_style as _ui
     import jobs
-    import boards as _boards
     import on1 as _on1
     import core as _core
+    import ops as _ops
+    import server as _ops_server
+    import state as _state
+    import ledger as _ledger
 
 # --- palette/style search ---
 try:
@@ -1002,6 +1011,11 @@ app = dash.Dash(
 )
 
 
+# The ops over HTTP (/ops/exec and friends), so the terminal and an agent reach
+# this process -- its encoders, jobs and GPU -- while the app is open.
+_ops_server.register(app.server)
+
+
 # attach route to the built-in Flask server
 @app.server.route("/thumb")
 def thumb_endpoint():
@@ -1401,6 +1415,13 @@ app.layout = html.Div(
         dcc.Store(id="mb-carousel-state", storage_type="memory"),
         dcc.Store(id="mb-carousel-order", storage_type="memory"),
         dcc.Store(id="moodboard-store", storage_type="local"),  # Persist moodboard across sessions
+        # What the loaded board says about each picture: role, section, note,
+        # and whether it was derived. The gallery badges from it.
+        dcc.Store(id="board-details", storage_type="local"),
+        # The state version. A write from anywhere (this tab, a terminal, an
+        # agent) moves it, and the board list follows within two seconds.
+        dcc.Store(id="state-signature", storage_type="memory"),
+        dcc.Interval(id="state-poll", interval=2000),
         dcc.Store(id="selected-moodboard-image", storage_type="memory"),  # Reference image (palette source for search/transfer)
         dcc.Store(id="selected-target-image", storage_type="memory"),  # Target image (receives colors in transfer)
 
@@ -1502,6 +1523,15 @@ app.layout = html.Div(
                                  style={"fontSize": "11.5px", "color": _ui.INK_DIM,
                                         "minHeight": "16px", "marginTop": "6px",
                                         "lineHeight": "1.4"}),
+                        # A8: only the person decides whether an agent may see
+                        # thumbnails. Off by default; agents work blind.
+                        dcc.Checklist(
+                            id="agent-pixels",
+                            options=[{"label": " Agents may see thumbnails", "value": "on"}],
+                            value=[], inputStyle={"marginRight": "6px"},
+                            style={"fontSize": "11.5px", "color": _ui.INK_DIM,
+                                   "marginTop": "8px"},
+                        ),
                     ],
                     style={"flex": "0 0 auto", "marginTop": "10px",
                            "paddingTop": "10px",
@@ -3044,11 +3074,21 @@ def update_moodboard_ref_display(ref_image, target_image, n_colors, mode):
         Input("moodboard-store", "data"),
         Input("selected-moodboard-image", "data"),
         Input("selected-target-image", "data"),
+        Input("board-details", "data"),
     ],
 )
-def render_moodboard_gallery(moodboard, ref_path, target_path):
-    """Render clickable thumbnails in the moodboard gallery with [R] and [T] toggle badges."""
+def render_moodboard_gallery(moodboard, ref_path, target_path, board_details=None):
+    """
+    Render clickable thumbnails in the moodboard gallery with [R] and [T] toggle badges.
+
+    A picture a transfer or a generator made is badged DERIVED or GENERATED,
+    from the loaded board or from the output ledger, so nothing made here can
+    pass for a photograph from the archive. A role the board gives it (hero,
+    texture...) is shown along the bottom, and its note on hover.
+    """
     moodboard = moodboard or []
+    board_details = board_details or {}
+    made = {e.get("path"): e.get("kind", "derived") for e in _ledger.entries()}
     if not moodboard:
         # gridColumn spans the whole track list: the gallery is a grid of ~100px
         # columns, so without this the sentence wraps to one word per line.
@@ -3093,13 +3133,29 @@ def render_moodboard_gallery(moodboard, ref_path, target_path):
         if border_image:
             img_style["borderImage"] = border_image
         
+        d = board_details.get(path) or {}
+        kind = d.get("kind") if d.get("kind") in ("derived", "generated") else made.get(path)
+        marks = []
+        if kind:
+            marks.append(html.Span(kind.upper(), style={
+                "backgroundColor": _ui.WARN, "color": _ui.ACCENT_INK, "fontSize": "9px",
+                "fontWeight": "700", "letterSpacing": "0.6px", "padding": "1px 4px",
+                "borderRadius": "3px"}))
+        if d.get("role"):
+            marks.append(html.Span(d["role"], style={
+                "backgroundColor": _ui.SURFACE_2, "color": _ui.INK, "fontSize": "9.5px",
+                "padding": "1px 4px", "borderRadius": "3px",
+                "border": f"1px solid {_ui.LINE}"}))
         thumbnails.append(
             html.Div([
                 # Image
                 html.Img(
                     src=f"/thumb?p={qpath}",
                     style=img_style,
+                    title=d.get("note") or "",
                 ),
+                html.Div(marks, style={"position": "absolute", "bottom": "5px", "left": "5px",
+                                       "display": "flex", "gap": "3px"}) if marks else None,
                 # [R] badge - top left
                 html.Button(
                     "R",
@@ -3227,28 +3283,67 @@ def select_moodboard_target(clicks, current_target):
 
 
 def _board_options():
-    """Saved boards, newest first, labelled with what is in them."""
+    """Saved boards, newest first, labelled with what is in them and who made them."""
     opts = []
-    for b in _boards.listing():
-        bits = f"{b['count']} image" + ("s" if b["count"] != 1 else "")
-        if b["missing"]:
-            bits += f", {b['missing']} missing"
-        opts.append({"label": f"{b['name']}  ·  {bits}", "value": b["slug"]})
+    for b in _ops.call("board list", actor="person").boards:
+        bits = f"{b.count} image" + ("s" if b.count != 1 else "")
+        if b.missing:
+            bits += f", {b.missing} missing"
+        if b.author == "agent":
+            bits += ", by an agent"
+        opts.append({"label": f"{b.name}  ·  {bits}", "value": b.slug})
     return opts
 
 
 @app.callback(
-    Output("board-picker", "options"),
-    [Input("mode-select", "value"), Input("board-status", "children")],
+    Output("state-signature", "data"),
+    Input("state-poll", "n_intervals"),
+    State("state-signature", "data"),
 )
-def refresh_board_list(mode, _status):
+def poll_state(_n, seen):
+    """Move only when state did: a board written here, by a terminal or by an agent."""
+    sig = _state.STORE.signature()
+    return dash.no_update if sig == seen else sig
+
+
+@app.callback(
+    Output("board-picker", "options"),
+    [Input("mode-select", "value"), Input("board-status", "children"),
+     Input("state-signature", "data")],
+)
+def refresh_board_list(mode, _status, _sig):
     """
     Rebuild the picker whenever a board is written, deleted, or the tab opens.
 
-    board-status is an Input rather than a State on purpose: every action that
-    changes the set of boards writes to it, so this needs no separate signal.
+    board-status covers this tab's own actions. state-signature covers every
+    other writer, so a board an agent builds appears here within two seconds.
     """
     return _board_options()
+
+
+@app.callback(
+    Output("agent-pixels", "value"),
+    Input("mode-select", "value"),
+)
+def show_agent_pixels(_mode):
+    return ["on"] if _ops.archive.settings()["pixels"] else []
+
+
+@app.callback(
+    Output("board-status", "children", allow_duplicate=True),
+    Input("agent-pixels", "value"),
+    prevent_initial_call=True,
+)
+def set_agent_pixels(value):
+    want = "on" if value else "off"
+    if (want == "on") == _ops.archive.settings()["pixels"]:
+        return dash.no_update
+    try:
+        _ops.call("settings set", {"pixels": want}, actor="person")
+    except _ops.Refusal as e:
+        return f"Could not change it: {e.reason}"
+    return ("Agents may now see thumbnails of your pictures." if want == "on"
+            else "Agents work blind again: no picture leaves this machine.")
 
 
 @app.callback(
@@ -3259,10 +3354,11 @@ def refresh_board_list(mode, _status):
      State("moodboard-store", "data"),
      State("selected-moodboard-image", "data"),
      State("selected-target-image", "data"),
-     State("dataset-dropdown", "value")],
+     State("dataset-dropdown", "value"),
+     State("board-picker", "value")],
     prevent_initial_call=True,
 )
-def save_board(n, name, items, reference, target, dataset):
+def save_board(n, name, items, reference, target, dataset, picked=None):
     """Write the collection, plus which image is [R] and which is [T]."""
     if not n:
         return dash.no_update, dash.no_update
@@ -3270,15 +3366,23 @@ def save_board(n, name, items, reference, target, dataset):
         return "Give the board a name first.", dash.no_update
     if not items:
         return "Nothing in the collection to save.", dash.no_update
+    # Save over the board that is loaded while its name is unchanged. A board's
+    # id need not be its name as a slug (an agent picks short ids), and without
+    # this a save from here would fork a second board under a new id.
+    args = {"name": (name or "").strip(), "items": list(items), "reference": reference or "",
+            "transfer": target or "", "dataset": dataset or ""}
+    if picked:
+        loaded = next((b for b in _ops.call("board list", actor="person").boards
+                       if b.slug == picked), None)
+        if loaded is not None and loaded.name == args["name"]:
+            args["id"] = picked
     try:
-        rec = _boards.save((name or "").strip(), list(items),
-                           reference=reference or "", transfer=target or "",
-                           dataset=(dataset or ""))
-    except Exception as e:
-        return f"Could not save: {e}", dash.no_update
-    n_items = len(rec["items"])
-    return (f"Saved “{rec['name']}” — {n_items} image"
-            + ("s" if n_items != 1 else "") + ".", rec["slug"])
+        res = _ops.call("board save", args, actor="person")
+    except _ops.Refusal as e:
+        return f"Could not save: {e.reason}", dash.no_update
+    n_items = res.board.count
+    return (f"Saved “{res.board.name}” — {n_items} image"
+            + ("s" if n_items != 1 else "") + ".", res.board.slug)
 
 
 @app.callback(
@@ -3286,7 +3390,8 @@ def save_board(n, name, items, reference, target, dataset):
      Output("selected-moodboard-image", "data", allow_duplicate=True),
      Output("selected-target-image", "data", allow_duplicate=True),
      Output("board-name", "value"),
-     Output("board-status", "children", allow_duplicate=True)],
+     Output("board-status", "children", allow_duplicate=True),
+     Output("board-details", "data")],
     Input("board-load-btn", "n_clicks"),
     State("board-picker", "value"),
     prevent_initial_call=True,
@@ -3300,26 +3405,34 @@ def load_board(n, slug):
     beats dropping them silently.
     """
     if not n or not slug:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    rec = _boards.load(slug)
-    if not rec:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, "That board could not be read."
+        return (dash.no_update,) * 6
+    try:
+        rec = _ops.call("board show", {"board": slug}, actor="person")
+    except _ops.Refusal:
+        return (dash.no_update,) * 4 + ("That board could not be read.", dash.no_update)
 
-    here, gone = _boards.present(rec)
-    ref = rec.get("reference") or ""
-    tgt = rec.get("transfer") or ""
+    here = [i.path for i in rec.items if not i.missing]
+    gone = [i.path for i in rec.items if i.missing]
+    ref = rec.reference or ""
+    tgt = rec.transfer or ""
     if ref and ref not in here:
         ref = ""
     if tgt and tgt not in here:
         tgt = ""
+    details = {i.path: {"role": i.role, "kind": i.kind, "section": i.section,
+                        "note": i.note, "derived_from": i.derived_from} for i in rec.items}
 
-    msg = f"Loaded “{rec['name']}” — {len(here)} image" + ("s" if len(here) != 1 else "")
+    msg = f"Loaded “{rec.name}” — {len(here)} image" + ("s" if len(here) != 1 else "")
+    if rec.sections:
+        msg += f" in {len(rec.sections)} section" + ("s" if len(rec.sections) != 1 else "")
+    if rec.author == "agent":
+        msg += ", made by an agent"
     if gone:
         msg += (f". {len(gone)} could not be found; "
                 "run arcana-relocate if the files moved.")
     else:
         msg += "."
-    return here, ref, tgt, rec.get("name", ""), msg
+    return here, ref, tgt, rec.name, msg, details
 
 
 @app.callback(
@@ -3333,11 +3446,11 @@ def delete_board(n, slug):
     """Delete a saved board. The collection on screen is left alone."""
     if not n or not slug:
         return dash.no_update, dash.no_update
-    rec = _boards.load(slug)
-    label = rec.get("name", slug) if rec else slug
-    if _boards.delete(slug):
-        return f"Deleted “{label}”.", None
-    return f"Could not delete “{label}”.", dash.no_update
+    try:
+        res = _ops.call("board delete", {"board": slug}, actor="person")
+    except _ops.Refusal as e:
+        return f"Could not delete it: {e.reason}", dash.no_update
+    return f"Deleted “{res.board.name}”.", None
 
 
 @app.callback(
@@ -3358,22 +3471,12 @@ def save_moodboard_images(n_clicks, moodboard, folder_name):
         return html.Span("Please enter a folder name", style={"color": _ui.WARN})
     
     folder_name = folder_name.strip()
-    # Create output path
-    output_dir = _safe_output_dir("moodboards", folder_name)
-    os.makedirs(output_dir, exist_ok=True)
-    
-    saved = 0
-    for path in moodboard:
-        if os.path.exists(path):
-            try:
-                dst = os.path.join(output_dir, os.path.basename(path))
-                import shutil
-                shutil.copy2(path, dst)
-                saved += 1
-            except Exception as e:
-                print(f"Failed to save {path}: {e}")
-    
-    return html.Span(f"Saved {saved} images to {output_dir}", style={"color": _ui.OK})
+    try:
+        res = _ops.call("item export", {"items": list(moodboard), "folder": folder_name,
+                                        "kind": "moodboards"}, actor="person")
+    except _ops.Refusal as e:
+        return html.Span(e.reason, style={"color": _ui.WARN})
+    return html.Span(f"Saved {res.copied} images to {res.folder}", style={"color": _ui.OK})
 
 
 @app.callback(
@@ -3417,8 +3520,6 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
         return html.Span("Please enter a folder name", style={"color": _ui.WARN})
     
     folder_name = folder_name.strip()
-    output_dir = _safe_output_dir("selections", folder_name)
-    os.makedirs(output_dir, exist_ok=True)
 
     # A card showing twins carries one switch for the whole group, labelled
     # "group::<gid>". This used to skip those outright, so selecting a twin
@@ -3437,23 +3538,20 @@ def save_moodboard_selected_results(n_clicks, selections, ids, folder_name,
         # Whichever frame of the group is on screen, not always the first.
         return paths[car_state.get(g["gid"], 0) % len(paths)]
 
-    saved = 0
+    chosen = []
     for sel, id_obj in zip(selections, ids):
         if sel and isinstance(id_obj, dict):
             path = _resolve(str(id_obj.get("index", "")))
             if path and os.path.exists(path):
-                try:
-                    dst = os.path.join(output_dir, os.path.basename(path))
-                    import shutil
-                    shutil.copy2(path, dst)
-                    saved += 1
-                except Exception as e:
-                    print(f"Failed to save {path}: {e}")
-    
-    if saved > 0:
-        return html.Span(f"Saved {saved} images to {output_dir}", style={"color": _ui.OK})
-    else:
+                chosen.append(path)
+    if not chosen:
         return html.Span("No images selected", style={"color": _ui.WARN})
+    try:
+        res = _ops.call("item export", {"items": chosen, "folder": folder_name,
+                                        "kind": "selections"}, actor="person")
+    except _ops.Refusal as e:
+        return html.Span(e.reason, style={"color": _ui.WARN})
+    return html.Span(f"Saved {res.copied} images to {res.folder}", style={"color": _ui.OK})
 
 
 @app.callback(
@@ -5802,6 +5900,8 @@ def main():
     #
     # Override with ARCANA_DEV_PORT when running several branches side by side.
     port = int(os.environ.get("ARCANA_DEV_PORT", "8051"))
+    # server.json tells the terminal and an agent's server where to send ops.
+    _ops_server.announce(port)
     app.run(host="127.0.0.1", port=port, debug=False)
 
 

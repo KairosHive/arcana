@@ -170,6 +170,7 @@ class Context:
     actor: str = "cli"
     pixels: bool = True
     sheets: bool = False
+    tx: object = None             # the open state.Transaction, for write and effect ops
     _flags: dict = field(default_factory=dict, repr=False)
 
     def has(self, flag: str) -> bool:
@@ -212,6 +213,9 @@ class Op:
     examples: tuple[str, ...] = ()
     needs: frozenset[str] = frozenset()
     actors: frozenset[str] = frozenset(ACTORS)
+    # False for undo and redo, which move history entries themselves and must
+    # not be recorded as steps of their own.
+    journal: bool = True
 
     @property
     def summary(self) -> str:
@@ -243,10 +247,6 @@ def register(op: Op) -> Op:
         problems.append("an op with this name already exists")
     if op.kind not in KINDS:
         problems.append(f"kind is one of {KINDS}")
-    if op.kind == "write":
-        # Writes run as transactions on state.Store, with per-actor undo. That
-        # arrives with the board ops in P1. Until then nothing may write.
-        problems.append("write ops need state.Store, which arrives in P1")
     if not op.doc or not op.doc.strip():
         problems.append("every op needs a doc")
     if not (isinstance(op.args, type) and issubclass(op.args, Args)):
@@ -277,11 +277,11 @@ def register(op: Op) -> Op:
 
 
 def op(name: str, kind: str, args: type[Args], result: type[Result], *, doc: str,
-       examples: tuple[str, ...] = (), needs=(), actors=ACTORS):
+       examples: tuple[str, ...] = (), needs=(), actors=ACTORS, journal: bool = True):
     """Decorator form of register(): the decorated function is the op's body."""
     def wrap(fn):
         register(Op(name, kind, args, result, fn, textwrap.dedent(doc).strip(),
-                    tuple(examples), frozenset(needs), frozenset(actors)))
+                    tuple(examples), frozenset(needs), frozenset(actors), journal))
         return fn
     return wrap
 
@@ -393,10 +393,23 @@ def validate(op: Op, args) -> Args:
 
 # ─────────────────────────── call ───────────────────────────
 
-def call(name: str, args=None, actor: str = "cli", ctx: Context | None = None) -> Result:
+def _store():
+    try:
+        from .. import state as _state
+    except ImportError:                              # pragma: no cover
+        import state as _state
+    return _state
+
+
+def call(name: str, args=None, actor: str = "cli", ctx: Context | None = None,
+         label: str | None = None) -> Result:
     """
     The one entry point. Look the op up, check who is asking and what this
     Arcana can do, parse the arguments, run it.
+
+    A write or an effect runs inside a transaction on state.STORE: committed as
+    one undo step for this actor when the op returns, rolled back when it
+    refuses. Inside a batch, the batch's transaction is used instead.
 
     Every expected failure leaves as a Refusal carrying the op's help. A
     ValueError or FileNotFoundError from an op body is expected: it is how the
@@ -418,16 +431,34 @@ def call(name: str, args=None, actor: str = "cli", ctx: Context | None = None) -
                       f"`{found.name}` needs " + ", ".join(FLAG_MEANING[f] for f in missing)
                       + ", which this Arcana does not have.", grammar.help_text(found))
     parsed = validate(found, args)
+    st = _store()
+    if not found.journal and ctx.tx is not None:
+        raise Refusal(found.name, f"`{found.name}` runs on its own, outside a batch that "
+                                  f"changes anything.", grammar.help_text(found))
+    own_tx = found.kind != "read" and found.journal and ctx.tx is None
+    if own_tx:
+        ctx.tx = st.STORE.begin(ctx.actor, label or found.name)
     try:
-        return found.run(parsed, ctx)
-    except Refusal as e:
-        if not e.op:
-            e.op = found.name
-        if not e.help:
-            e.help = grammar.help_text(found)
+        try:
+            result = found.run(parsed, ctx)
+        except Refusal as e:
+            if not e.op:
+                e.op = found.name
+            if not e.help:
+                e.help = grammar.help_text(found)
+            raise
+        except (ValueError, FileNotFoundError) as e:
+            # state.StateError is a ValueError: A7 and stale undos land here.
+            raise Refusal(found.name, str(e), grammar.help_text(found)) from e
+        if own_tx:
+            tx, ctx.tx = ctx.tx, None
+            st.STORE.commit(tx)
+        return result
+    except BaseException:
+        if own_tx and ctx.tx is not None:
+            tx, ctx.tx = ctx.tx, None
+            st.STORE.rollback(tx)
         raise
-    except (ValueError, FileNotFoundError) as e:
-        raise Refusal(found.name, str(e), grammar.help_text(found)) from e
 
 
 # ─────────────────────────── batches ───────────────────────────
@@ -444,6 +475,8 @@ class Step(BaseModel):
 
 class Batch(BaseModel):
     steps: list[Step]
+    rolled_back: bool = False             # a refusal undid the writes before it
+    version: int | None = None            # state version after a batch that wrote
 
     @property
     def ok(self) -> bool:
@@ -456,38 +489,68 @@ class Batch(BaseModel):
 
 def exec_lines(lines, actor: str = "cli", ctx: Context | None = None) -> Batch:
     """
-    Run text lines as one batch: each line one op, in order, stopping at the
-    first refusal.
+    Run text lines as one batch: each line one op, in order.
 
-    A batch is meant to be atomic, so that a refused third line leaves no trace
-    of the first two. Every op registered so far is a read or an effect that
-    returns its output without recording it, so stopping is enough for now.
-    When writes arrive (P1) the batch becomes one transaction and one undo step
-    on state.Store, and a refusal rolls back what came before it.
+    Every line is parsed before any runs, so a typo on line five stops the
+    batch before line one changes anything. If the batch writes, it runs as one
+    transaction and one undo step, and a refusal on any line rolls back every
+    change the lines before it made. Reads run in order with the writes around
+    them, so a batch can add pictures to a board and then show the board.
 
     A line that ends in --help answers with the op's help and runs nothing.
     Blank lines and lines starting with # are skipped.
     """
     from . import grammar
     ctx = ctx or context(actor)
-    steps: list[Step] = []
-    stopped = False
+    wanted = []
     for raw in lines:
         line = (raw or "").strip()
-        if not line or line.startswith("#"):
-            continue
-        if stopped:
-            steps.append(Step(line=line))
-            continue
+        if line and not line.startswith("#"):
+            wanted.append(line)
+
+    parsed = []
+    for i, line in enumerate(wanted):
         try:
-            parsed = grammar.parse_line(line)
-            if parsed.help:
-                steps.append(Step(line=line, op=parsed.op.name, help=True,
-                                  result=TextResult(body=grammar.help_text(parsed.op))))
-                continue
-            result = call(parsed.op.name, parsed.args, ctx=ctx)
-            steps.append(Step(line=line, op=parsed.op.name, result=result))
+            parsed.append(grammar.parse_line(line))
         except Refusal as e:
-            steps.append(Step(line=line, op=e.op, refusal=e.as_dict()))
-            stopped = True
-    return Batch(steps=steps)
+            steps = [Step(line=l) for l in wanted]
+            steps[i] = Step(line=line, op=e.op, refusal=e.as_dict())
+            return Batch(steps=steps)
+
+    writes = any(p.op.kind != "read" and p.op.journal and not p.help for p in parsed)
+    st = _store()
+    own_tx = writes and ctx.tx is None
+    if own_tx:
+        label = "; ".join(wanted)
+        ctx.tx = st.STORE.begin(ctx.actor, label if len(label) <= 160 else label[:157] + "...")
+    steps: list[Step] = []
+    refused = False
+    try:
+        for line, p in zip(wanted, parsed):
+            if refused:
+                steps.append(Step(line=line))
+                continue
+            if p.help:
+                steps.append(Step(line=line, op=p.op.name, help=True,
+                                  result=TextResult(body=grammar.help_text(p.op))))
+                continue
+            try:
+                result = call(p.op.name, p.args, ctx=ctx)
+                steps.append(Step(line=line, op=p.op.name, result=result))
+            except Refusal as e:
+                steps.append(Step(line=line, op=e.op, refusal=e.as_dict()))
+                refused = True
+    except BaseException:
+        if own_tx:
+            tx, ctx.tx = ctx.tx, None
+            st.STORE.rollback(tx)
+        raise
+    batch = Batch(steps=steps)
+    if own_tx:
+        tx, ctx.tx = ctx.tx, None
+        if refused:
+            st.STORE.rollback(tx)
+            batch.rolled_back = bool(tx.before)
+        else:
+            batch.version = st.STORE.commit(tx)
+    return batch

@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import textwrap
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,9 +20,11 @@ try:
     from .. import __version__
     from .. import core
     from .. import paths as _paths
+    from .. import state as _state
 except ImportError:                                   # pragma: no cover
     from arcana import __version__, core
     from arcana import paths as _paths
+    from arcana import state as _state
 
 
 ABOUT = """\
@@ -229,3 +234,95 @@ def _settings_show(a: SettingsShowArgs, ctx: Context) -> SettingsResult:
     flags = {f: ctx.has(f) for f in registry.FLAG_PROBES if f != "pixels"}
     return SettingsResult(version=__version__, data_dir=_paths.data_dir(),
                           agent_config=cfg["path"], pixels=cfg["pixels"], flags=flags)
+
+
+# ─────────────────────────── settings set ───────────────────────────
+
+class SettingsSetArgs(Args):
+    pixels: Literal["on", "off"] = Field(
+        description="on lets agents receive thumbnails of the pictures. off keeps every "
+                    "picture on this machine.")
+
+
+@op("settings set", "write", SettingsSetArgs, SettingsResult,
+    doc="""
+    Let agents see thumbnails, or keep them blind. Only the person changes
+    this, from the app or a terminal, so a model cannot decide for itself to
+    start receiving pictures.
+    """,
+    examples=("settings set --pixels off",), actors=("person", "cli"))
+def _settings_set(a: SettingsSetArgs, ctx: Context) -> SettingsResult:
+    path = archive.settings()["path"]
+    ctx.tx.touch(path)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data["pixels"] = a.pixels == "on"
+    _paths.ensure_dir(os.path.dirname(path))
+    _state.write_json(path, data)
+    return _settings_show(SettingsShowArgs(), ctx)
+
+
+# ─────────────────────────── undo, redo, history ───────────────────────────
+
+class StepResult(Result):
+    action: str
+    label: str | None = None
+    version: int = 0
+
+    def text(self) -> str:
+        if self.label is None:
+            return f"Nothing to {self.action}.\n"
+        return f"{'Undid' if self.action == 'undo' else 'Redid'}: {self.label}\n"
+
+
+class NoArgs(Args):
+    pass
+
+
+@op("undo", "write", NoArgs, StepResult,
+    doc="""
+    Take back your own last step: the last op, or the whole of the last batch.
+    Each caller has its own history, so an agent's undo never touches the
+    person's edits, and the person's never touches the agent's. A step is
+    undone only while its files are as it left them.
+    """,
+    examples=("undo",), journal=False)
+def _undo(a: NoArgs, ctx: Context) -> StepResult:
+    label = _state.STORE.undo(ctx.actor)
+    return StepResult(action="undo", label=label, version=_state.STORE.version)
+
+
+@op("redo", "write", NoArgs, StepResult,
+    doc="Put back the step your last undo took back.",
+    examples=("redo",), journal=False)
+def _redo(a: NoArgs, ctx: Context) -> StepResult:
+    label = _state.STORE.redo(ctx.actor)
+    return StepResult(action="redo", label=label, version=_state.STORE.version)
+
+
+class HistoryResult(Result):
+    actor: str
+    undo: list[str]
+    redo: list[str]
+    version: int
+
+    def text(self) -> str:
+        lines = [f"Your steps ({self.actor}), newest last:"]
+        lines += [f"  {i}. {l}" for i, l in enumerate(self.undo, 1)] or ["  none"]
+        if self.redo:
+            lines.append("Undone, and redo puts back:")
+            lines += [f"  {l}" for l in reversed(self.redo)]
+        return "\n".join(lines) + "\n"
+
+
+@op("history", "read", NoArgs, HistoryResult,
+    doc="Your own steps, the ones `undo` takes back in reverse order.",
+    examples=("history",))
+def _history(a: NoArgs, ctx: Context) -> HistoryResult:
+    h = _state.STORE.history(ctx.actor)
+    return HistoryResult(actor=ctx.actor, undo=h["undo"], redo=h["redo"], version=h["version"])

@@ -49,9 +49,8 @@ def _setup_environment() -> str:
     """
     Point Arcana at a writable data directory before anything imports it.
 
-    A frozen app lives somewhere like C:\\Program Files, so the source-checkout
-    fallback in arcana.paths (keep using arcana/databases if it has content)
-    must not be allowed to win.
+    Setting ARCANA_DATA_DIR here hands the same folder to every child process,
+    and HF_HOME and the media root follow it.
     """
     data_dir = os.environ.get("ARCANA_DATA_DIR") or _default_data_dir()
     os.environ["ARCANA_DATA_DIR"] = data_dir

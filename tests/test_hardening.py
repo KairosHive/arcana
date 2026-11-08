@@ -99,6 +99,27 @@ def test_data_dir_env_override_wins(tmp):
         importlib.reload(paths)
 
 
+def test_every_subdir_lives_in_the_one_data_dir(tmp):
+    """
+    Every process uses one data folder. A source checkout that still holds files in
+    arcana/output (or databases/, latents/, ...) used to win over the data folder, so
+    the app run from it kept outputs and a ledger that a worktree's app never saw.
+    """
+    saved = {k: os.environ.pop(k, None)
+             for k in ("ARCANA_DATA_DIR", "LOCALAPPDATA", "XDG_DATA_HOME", "HOME")}
+    os.environ.update(LOCALAPPDATA=tmp, XDG_DATA_HOME=tmp, HOME=tmp)
+    try:
+        root = paths.data_dir()
+        assert os.path.commonpath([root, tmp]) == tmp
+        for name in paths._SUBDIRS:
+            assert paths.subdir(name) == os.path.join(root, name)
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
 def test_ensure_dir_error_names_the_env_var(tmp):
     """A read-only install must fail with something a user can act on."""
     blocker = os.path.join(tmp, "blocker")

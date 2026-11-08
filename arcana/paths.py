@@ -6,17 +6,13 @@
 # fails on the first line of a packaged app, where the install directory is
 # read-only.
 #
-# This module is the single place that answers "where does data go", with three
-# rules, in order:
+# This module is the single place that answers "where does data go":
+# ARCANA_DATA_DIR if it is set, else the per-user data directory for the
+# platform. Every process, from any checkout, uses that one folder.
 #
-#   1. ARCANA_DATA_DIR, if set, wins. One env var to relocate everything.
-#   2. Otherwise, if a source checkout already has data in arcana/<dir>, keep
-#      using it -- an existing install must not appear to lose its datasets.
-#   3. Otherwise, the per-user data directory for the platform.
-#
-# Nothing here creates a directory on import. Call ensure_writable() (or
-# ensure_dir) at the point of first write, so read-only installs and fresh
-# machines both survive being imported.
+# Nothing here creates a directory on import. Call ensure_dir() at the point of
+# first write, so read-only installs and fresh machines both survive being
+# imported.
 
 from __future__ import annotations
 
@@ -38,15 +34,6 @@ ENV_MEDIA_ROOTS = "ARCANA_MEDIA_ROOTS"
 _SUBDIRS = ("databases", "latents", "bundles", "output", "cache", "models",
             "boards", "state")
 
-# Legacy in-package locations, kept working for existing checkouts.
-_LEGACY = {
-    "databases": os.path.join(APP_ROOT, "databases"),
-    "latents": os.path.join(APP_ROOT, "latents"),
-    "bundles": os.path.join(APP_ROOT, "bundles"),
-    "output": os.path.join(APP_ROOT, "output"),
-    "cache": os.path.join(APP_ROOT, "cache_specs"),
-}
-
 
 def _platform_data_dir() -> str:
     """Per-user, writable, conventional for the platform."""
@@ -57,17 +44,6 @@ def _platform_data_dir() -> str:
         return os.path.expanduser("~/Library/Application Support/Arcana")
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return os.path.join(base, "arcana")
-
-
-def _has_content(path: str) -> bool:
-    try:
-        with os.scandir(path) as it:
-            for entry in it:
-                if not entry.name.startswith("."):
-                    return True
-    except OSError:
-        pass
-    return False
 
 
 def data_dir() -> str:
@@ -86,13 +62,6 @@ def subdir(name: str) -> str:
     """
     if name not in _SUBDIRS:
         raise ValueError(f"unknown data subdirectory {name!r}; expected one of {_SUBDIRS}")
-
-    # An explicit ARCANA_DATA_DIR overrides everything, including legacy layouts.
-    if not os.environ.get(ENV_DATA_DIR):
-        legacy = _LEGACY.get(name)
-        if legacy and _has_content(legacy):
-            return legacy
-
     return os.path.join(data_dir(), name)
 
 
@@ -324,12 +293,7 @@ def describe() -> str:
     """One-line summary for logs and bug reports."""
     lines = [f"data dir: {data_dir()}"]
     for name in _SUBDIRS:
-        try:
-            p = subdir(name)
-        except ValueError:
-            continue
-        tag = "  (legacy in-package)" if p == _LEGACY.get(name) else ""
-        lines.append(f"  {name:10s} {p}{tag}")
+        lines.append(f"  {name:10s} {subdir(name)}")
     lines.append(f"media roots: {media_roots() or '(none configured)'}")
     return "\n".join(lines)
 

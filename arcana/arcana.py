@@ -77,26 +77,6 @@ except ImportError:
         search_by_palette = search_by_style = search_combined = None
         load_palette_features = load_style_features = None
 
-# --- colour and style transfer ---
-# Both run through the ops (`colour transfer`, `style transfer`), which own the
-# method registry, the output files and the ledger. The app asks the registry
-# for its methods once, for the dropdown and the controls each method uses.
-_COLOUR_METHODS = None
-
-
-def _colour_methods():
-    global _COLOUR_METHODS
-    if _COLOUR_METHODS is None:
-        _COLOUR_METHODS = _ops.call("colour methods", actor="person")
-    return _COLOUR_METHODS
-
-
-def _colour_method(method_id):
-    return next((m for m in _colour_methods().methods if m.id == method_id), None)
-
-
-def _colour_method_options():
-    return [{"label": m.label, "value": m.id} for m in _colour_methods().methods]
 
 
 
@@ -1723,22 +1703,6 @@ app.layout = html.Div(
                 # Moodboard controls (hidden by default)
                 html.Div(
                     [
-                        # THE TOOL SWITCHER. Both cards mounted together are
-                        # ~930px against the ~810px the bench has, which is what
-                        # forced the bench to scroll and put "Find Similar" and
-                        # the Color Transfer panel at opposite ends of it. They
-                        # share no settings and write to the same output region,
-                        # so showing one at a time costs nothing and makes the
-                        # stage unambiguous about which control produced what.
-                        dcc.RadioItems(
-                            id="moodboard-tool",
-                            # Colour and style transfer moved to the Alchemy tab.
-                            options=[{"label": "Find similar", "value": "search"}],
-                            value="search",
-                            className="tool-switch",
-                            labelStyle={"cursor": "pointer"},
-                            style={"display": "none"},
-                        ),
                         # ─────────────────────────────────────────────────────────
                         # SIMILARITY SEARCH PANEL
                         # ─────────────────────────────────────────────────────────
@@ -1932,247 +1896,6 @@ app.layout = html.Div(
                             ],
                             id="similarity-card",
                             style={"padding": "14px", "backgroundColor": _ui.SURFACE, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
-                        ),
-                        
-                        # ─────────────────────────────────────────────────────────
-                        # COLOR TRANSFER PANEL
-                        # ─────────────────────────────────────────────────────────
-                        html.Div(
-                            [
-                                html.Div("🎨 Color Transfer", style={"fontSize": "14px", "fontWeight": "600", "color": _ui.ROLE_TARGET, "marginBottom": "10px"}),
-                                html.Div("Apply Reference palette to Target image", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginBottom": "12px"}),
-                                html.Div(
-                                    [
-                                        # Method dropdown
-                                        html.Div([
-                                            html.Span("Method:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
-                                            dcc.Dropdown(
-                                                id="color-transfer-method",
-                                                options=_colour_method_options(),
-                                                value="modflows",
-                                                clearable=False,
-                                                style={"width": "170px", "color": "#000", "fontSize": "12px"},
-                                            ),
-                                        ], style={"display": "flex", "alignItems": "center"}),
-                                        # Strength slider
-                                        html.Div([
-                                            html.Span("Strength:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "8px"}),
-                                            dcc.Slider(
-                                                id="color-transfer-strength",
-                                                min=0.0, max=1.0, step=0.1, value=1.0,
-                                                marks={0: "0", 0.5: "0.5", 1: "1"},
-                                                tooltip={"placement": "bottom", "always_visible": False},
-                                            ),
-                                        ], style={"flex": "1", "minWidth": "150px"}),
-                                        # ── QUALITY ─────────────────────────
-                                        # One choice replaces Size, Steps and a
-                                        # "Full-res output" checkbox. Those were
-                                        # three implementation details the user
-                                        # had to understand, and two of them
-                                        # decided whether the result came back
-                                        # at 1024px or at the original size.
-                                        # Every preset now returns the picture
-                                        # at its original resolution: the flow
-                                        # runs small, because it is looking for
-                                        # a global colour mapping and does not
-                                        # need detail to find one, and that
-                                        # mapping is applied at full size
-                                        # through a 3-D LUT.
-                                        html.Div([
-                                            html.Span("Quality:", style={"fontSize": "11px", "color": _ui.INK_DIM, "marginRight": "6px"}),
-                                            dcc.Dropdown(
-                                                id="color-transfer-quality",
-                                                options=[
-                                                    {"label": "Quick look", "value": "quick"},
-                                                    {"label": "Balanced", "value": "balanced"},
-                                                    {"label": "Best", "value": "best"},
-                                                ],
-                                                value="balanced",
-                                                clearable=False,
-                                                style={"width": "150px", "color": "#000", "fontSize": "12px"},
-                                            ),
-                                        ], id="color-transfer-quality-wrapper",
-                                           style={"display": "flex", "alignItems": "center"}),
-                                        html.Div(id="color-transfer-quality-note",
-                                                 style={"fontSize": "11px", "color": _ui.INK_DIM,
-                                                        "width": "100%", "marginTop": "-4px",
-                                                        "minHeight": "15px"}),
-                                        # ── the ModFlows model, if it is missing ──
-                                        # The neural method needs a 229 MB
-                                        # checkpoint that is deliberately not
-                                        # shipped in the build. Without this the
-                                        # only sign of that was an error message
-                                        # after pressing Transfer.
-                                        html.Div(id="ct-model-status",
-                                                 style={"marginBottom": "10px"}),
-                                        dcc.Interval(id="ct-poll", interval=700,
-                                                     disabled=True),
-                                        dcc.Store(id="ct-job",
-                                                  storage_type="memory"),
-                                        # ── WHICH COLOURS OF THE REFERENCE ──
-                                        # Both methods read the reference's whole
-                                        # colour distribution, so a picture that
-                                        # reads as teal but is 70% near-black
-                                        # transfers as mostly-black. These two
-                                        # ranges pick the pixels that actually get
-                                        # used; the swatches below show the result
-                                        # before you spend 30s on a transfer.
-                                        html.Details([
-                                            html.Summary(
-                                                "Which colours of the reference",
-                                                style={"fontSize": "11.5px",
-                                                       "color": _ui.ACCENT,
-                                                       "cursor": "pointer",
-                                                       "marginBottom": "8px",
-                                                       "userSelect": "none"},
-                                            ),
-                                            html.Div("Lightness", style=_ui.field_label()),
-                                            dcc.RangeSlider(
-                                                id="ct-lightness",
-                                                min=0, max=100, step=1, value=[0, 100],
-                                                marks={0: {"label": "black"},
-                                                       50: {"label": "mid"},
-                                                       100: {"label": "white"}},
-                                                tooltip={"placement": "bottom"},
-                                            ),
-                                            html.Div("Saturation", style=_ui.field_label(
-                                                marginTop="10px")),
-                                            dcc.RangeSlider(
-                                                id="ct-saturation",
-                                                min=0, max=100, step=1, value=[0, 100],
-                                                marks={0: {"label": "grey"},
-                                                       100: {"label": "vivid"}},
-                                                tooltip={"placement": "bottom"},
-                                            ),
-                                            html.Div(id="ct-swatches",
-                                                     style={"display": "flex", "height": "22px",
-                                                            "borderRadius": "4px",
-                                                            "overflow": "hidden",
-                                                            "marginTop": "12px",
-                                                            "border": f"1px solid {_ui.LINE}"}),
-                                            html.Div(id="ct-keep-note",
-                                                     style={"fontSize": "11px",
-                                                            "color": _ui.INK_DIM,
-                                                            "marginTop": "6px",
-                                                            "minHeight": "15px"}),
-                                            html.Button(
-                                                "Reset", id="ct-reset", n_clicks=0,
-                                                style=_ui.button("ghost", padding="4px 0",
-                                                                 fontSize="11px",
-                                                                 marginTop="4px"),
-                                            ),
-                                        ], style={"marginTop": "6px", "marginBottom": "10px",
-                                                  "borderTop": f"1px solid {_ui.LINE}",
-                                                  "paddingTop": "10px"}),
-                                        html.Button(
-                                            "Transfer Colors",
-                                            id="color-transfer-btn",
-                                            n_clicks=0,
-                                            style=_ui.button("primary"),
-                                        ),
-                                    ],
-                                    style={"display": "flex", "gap": "16px", "alignItems": "center", "flexWrap": "wrap"},
-                                ),
-                                html.Div(id="color-transfer-status", style={"marginTop": "10px", "fontSize": "12px"}),
-                            ],
-                            id="transfer-card",
-                            style={"marginTop": "16px", "padding": "14px", "backgroundColor": _ui.SURFACE, "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
-                        ),
-
-                        # ─────────────────────────────────────────────────────────
-                        # STYLE TRANSFER PANEL
-                        # ─────────────────────────────────────────────────────────
-                        # Its own tool, not a method inside Colour transfer.
-                        # These three move grain and appearance; two of them
-                        # regenerate the picture. Offering that under a control
-                        # labelled "colour" misrepresented what pressing it does.
-                        html.Div(
-                            [
-                                html.Div("Apply the look of [R] to [T]",
-                                         style={"fontSize": "12px", "color": _ui.INK_DIM,
-                                                "marginBottom": "10px"}),
-                                html.Div([
-                                    html.Div("METHOD", style={"fontSize": "10px",
-                                                              "color": _ui.INK_DIM,
-                                                              "letterSpacing": "0.5px",
-                                                              "marginBottom": "4px"}),
-                                    dcc.Dropdown(
-                                        id="style-method-pick",
-                                        options=[
-                                            {"label": "Texture — keeps your pixels",
-                                             "value": "texture"},
-                                            {"label": "IP-Adapter — strongest",
-                                             "value": "ip_adapter"},
-                                            {"label": "img2img — from words",
-                                             "value": "img2img"},
-                                            {"label": "IP-Adapter + ControlNet — style along a map",
-                                             "value": "controlnet"},
-                                        ],
-                                        value="texture", clearable=False,
-                                        style={"width": "100%", "minWidth": "0",
-                                               "fontSize": "12px"},
-                                    ),
-                                ], style={"marginBottom": "10px"}),
-                                html.Div(id="style-method-note",
-                                         style={"fontSize": "11px", "color": _ui.INK_DIM,
-                                                "lineHeight": "1.5", "marginBottom": "10px",
-                                                "minHeight": "32px"}),
-                                # Only ControlNet reads these two. Hidden
-                                # otherwise, because a control that does
-                                # nothing is worse than one that is absent.
-                                html.Div(id="cn-controls",
-                                         style={"display": "none"},
-                                         children=[
-                                    html.Div("MAP FROM [T]",
-                                             style={"fontSize": "10px", "color": _ui.INK_DIM,
-                                                    "letterSpacing": "0.5px",
-                                                    "marginBottom": "4px"}),
-                                    dcc.Dropdown(
-                                        id="cn-map",
-                                        options=[
-                                            {"label": "Depth — texture follows the form",
-                                             "value": "depth"},
-                                            {"label": "Canny — holds edges hardest",
-                                             "value": "canny"},
-                                            {"label": "Luminance — no extra model",
-                                             "value": "luminance"},
-                                        ],
-                                        value="depth", clearable=False,
-                                        style={"width": "100%", "minWidth": "0",
-                                               "fontSize": "12px"},
-                                    ),
-                                    html.Div("HOW STRICTLY IT FOLLOWS",
-                                             style={"fontSize": "10px", "color": _ui.INK_DIM,
-                                                    "letterSpacing": "0.5px",
-                                                    "marginTop": "10px"}),
-                                    dcc.Slider(id="cn-strength", min=0.1, max=1.5,
-                                               step=0.05, value=0.9,
-                                               marks={0.1: "0.1", 0.8: "0.8", 1.5: "1.5"},
-                                               tooltip={"placement": "bottom",
-                                                        "always_visible": False}),
-                                ]),
-                                html.Div([
-                                    html.Div("STRENGTH", style={"fontSize": "10px",
-                                                                "color": _ui.INK_DIM,
-                                                                "letterSpacing": "0.5px"}),
-                                    dcc.Slider(id="style-strength", min=0.1, max=1.0,
-                                               step=0.05, value=0.6,
-                                               marks={0.1: "0.1", 0.5: "0.5", 1.0: "1"},
-                                               tooltip={"placement": "bottom",
-                                                        "always_visible": False}),
-                                ], style={"marginBottom": "6px"}),
-                                html.Button("Apply style", id="style-transfer-btn",
-                                            n_clicks=0,
-                                            style=_ui.button("success", width="100%",
-                                                             padding="7px 12px",
-                                                             fontSize="12.5px",
-                                                             marginTop="6px")),
-                                html.Div(id="style-transfer-status",
-                                         style={"fontSize": "11.5px", "marginTop": "8px",
-                                                "minHeight": "18px", "lineHeight": "1.4"}),
-                            ],
-                            id="style-transfer-card",
-                            style={"display": "none"},
                         ),
                     ],
                     id="moodboard-controls",
@@ -2381,22 +2104,6 @@ html.Div(
                     style={"overflowX": "hidden", "display": "none"},
                 ),
 
-                # The transfer output. Same region as the search results, and
-                # toggle_inputs mounts exactly one of the three containers for
-                # the tool in use, so the stage always has one plausible author.
-                # Until November 2026 the moodboard's results container was
-                # hidden by mode alone, so switching to a transfer tool left the
-                # whole results list in place and the one picture a transfer
-                # produced landed under it, off the bottom of the screen.
-                html.Div(
-                    id="transfer-preview",
-                    style={"display": "none"},
-                    children=html.Div(
-                        "Pick a Reference [R] and a Target [T] in the collection, "
-                        "then run the transfer. The result appears here.",
-                        style={"color": _ui.INK_FAINT, "fontSize": "12.5px",
-                               "padding": "28px 12px", "textAlign": "center"}),
-                ),
 
                 # Bulk selection buttons (hidden in moodboard mode)
                 html.Div(
@@ -2680,15 +2387,12 @@ def filter_from_matrix(_clicks):
         Output("main-row", "style"),
         Output("moodboard-rail", "style"),
         Output("similarity-card", "style"),
-        Output("transfer-card", "style"),
-        Output("style-transfer-card", "style"),
         Output("image-display", "style"),
         Output("mb-image-display", "style"),
-        Output("transfer-preview", "style"),
     ],
-    [Input("mode-select", "value"), Input("moodboard-tool", "value")],
+    [Input("mode-select", "value")],
 )
-def toggle_inputs(mode, tool):
+def toggle_inputs(mode):
     # The command panel: one bordered surface holding the prompt row and, under
     # a hairline, the filter row. A column, because its two rows are one thought
     # at two levels of detail.
@@ -2751,20 +2455,13 @@ def toggle_inputs(mode, tool):
                     "boxSizing": "border-box"}
     rail_hidden = {"display": "none"}
 
-    # Which tool is mounted in the bench, and therefore what the stage shows.
     hidden = {"display": "none"}
     sim_card = {"padding": "14px", "backgroundColor": _ui.SURFACE,
                 "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}
-    xfer_card = {"padding": "14px", "backgroundColor": _ui.SURFACE,
-                 "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}
-    style_card = {"padding": "14px", "backgroundColor": _ui.SURFACE,
-                  "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}
     # The stage. Prompt search and story write #image-display; the moodboard
-    # writes #mb-image-display; the transfer tools write #transfer-preview.
-    # Each keeps its contents while hidden, so coming back to a tab or a tool
-    # restores what was there, carousels included. One of the three is shown.
+    # writes #mb-image-display. Each keeps its contents while hidden, so coming
+    # back to a tab restores what was there, carousels included.
     results_list = {"display": "block", "overflowX": "hidden"}
-    transfer_stage = {"display": "block", "overflowX": "hidden"}
     
     if mode == "prompt":
         return (
@@ -2784,10 +2481,7 @@ def toggle_inputs(mode, tool):
             main_row_visible,
             rail_hidden,
             hidden,
-            hidden,
-            hidden,
             results_list,
-            hidden,
             hidden,
         )
     elif mode == "story":
@@ -2808,10 +2502,7 @@ def toggle_inputs(mode, tool):
             main_row_visible,
             rail_hidden,
             hidden,
-            hidden,
-            hidden,
             results_list,
-            hidden,
             hidden,
         )
     elif mode == "moodboard":
@@ -2822,7 +2513,7 @@ def toggle_inputs(mode, tool):
             "Search",
             controls_hidden,
             moodboard_controls_visible,
-            moodboard_section_visible if tool == "search" else moodboard_section_hidden,
+            moodboard_section_visible,
             scatter_hidden,
             left_col_moodboard,
             right_col_moodboard,
@@ -2831,12 +2522,9 @@ def toggle_inputs(mode, tool):
             {"display": "none"},  # hide the dataset manager
             main_row_visible,
             rail_visible,
-            sim_card if tool == "search" else hidden,
-            xfer_card if tool == "transfer" else hidden,
-            style_card if tool == "style" else hidden,
+            sim_card,
             hidden,
-            results_list if tool == "search" else hidden,
-            hidden if tool == "search" else transfer_stage,
+            results_list,
         )
     elif mode == "alchemy":
         # The Alchemy panel (ui_alchemy) fills the main row and shows its own
@@ -2846,7 +2534,7 @@ def toggle_inputs(mode, tool):
             controls_hidden, controls_hidden, moodboard_section_hidden, scatter_hidden,
             hidden, hidden, hidden, hidden, hidden,
             main_row_visible, rail_hidden,
-            hidden, hidden, hidden, hidden, hidden, hidden,
+            hidden, hidden, hidden,
         )
     else:  # datasets, or the agent tab, which draws its own panel (ui_agent.py)
         # The manager owns the whole width: there is no scatter to show, and
@@ -2872,9 +2560,6 @@ def toggle_inputs(mode, tool):
             else {"display": "none"},
             main_row_hidden,
             rail_hidden,
-            hidden,
-            hidden,
-            hidden,
             hidden,
             hidden,
             hidden,
@@ -3946,497 +3631,6 @@ def update_feature_availability(dataset_value):
         palette_value,
         style_value,
     )
-
-
-# ─────────────────────────────────────────────────────────────────
-# Color Transfer Callbacks
-# ─────────────────────────────────────────────────────────────────
-
-# Disable ModFlows-only parameters when LAB method is selected
-@app.callback(
-    # A bare Output, not a one-element list: Dash matches the return value
-    # against the declared shape, so a list here would require the function to
-    # return a list too. It used to have three outputs; reducing it to one left
-    # the brackets behind and every method change raised
-    # SchemaTypeValidationError.
-    Output("color-transfer-quality-wrapper", "style"),
-    Input("color-transfer-method", "value"),
-)
-def toggle_method_params(method):
-    """
-    Grey out the quality control for methods that have none.
-
-    The registry says which controls each method reads: LAB, MKL and IDT are
-    closed-form or iterative on a fixed working size, so strength is all they
-    take. Only ModFlows has a quality preset.
-    """
-    m = _colour_method(method)
-    if m is None or "quality" not in m.params:
-        return {"display": "flex", "alignItems": "center", "opacity": "0.4",
-                "pointerEvents": "none"}
-    return {"display": "flex", "alignItems": "center"}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# THE MODFLOWS CHECKPOINT
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _ct_model_card(job_snapshot=None):
-    """One line describing whether the neural method can run, plus a way to fix it."""
-    if job_snapshot and not job_snapshot.get("status") in (None, "done", "failed",
-                                                           "cancelled"):
-        pct = int(round((job_snapshot.get("fraction") or 0) * 100))
-        return html.Div([
-            html.Div(job_snapshot.get("message") or "Downloading...",
-                     style={"fontSize": "11.5px", "color": _ui.ACCENT}),
-            html.Div(style={"height": "4px", "borderRadius": "2px",
-                            "backgroundColor": _ui.SURFACE_2, "marginTop": "6px"},
-                     children=html.Div(style={
-                         "width": f"{pct}%", "height": "100%",
-                         "borderRadius": "2px", "backgroundColor": _ui.ACCENT,
-                         "transition": "width .3s"})),
-        ])
-
-    if job_snapshot and job_snapshot.get("status") == "failed":
-        return html.Div(job_snapshot.get("error") or "The download failed.",
-                        style={"fontSize": "11.5px", "color": _ui.BAD})
-
-    try:
-        modflows = _ops.call("colour methods", actor="person")
-        modflows = next(m for m in modflows.methods if m.id == "modflows")
-        st = {"ready": modflows.available, "download_mb": 229}
-    except Exception:
-        return ""
-
-    if st["ready"]:
-        return ""                      # nothing to say when it just works
-    # The only thing that can be missing is the checkpoint. There used to be a
-    # second branch here saying ModFlows was "not installed in this build",
-    # which fired whenever the upstream source folder was absent -- and it is
-    # absent by design now that arcana/modflows_net.py does that work. It read
-    # as a dead end on machines where colour transfer ran perfectly.
-    return html.Div([
-        html.Div(f"ModFlows needs a one-off {st['download_mb']} MB model download.",
-                 style={"fontSize": "11.5px", "color": _ui.INK_DIM,
-                        "marginBottom": "6px"}),
-        html.Button("Download colour model", id="ct-download-btn", n_clicks=0,
-                    style=_ui.button("secondary", padding="6px 12px",
-                                     fontSize="12px")),
-    ])
-
-
-@app.callback(
-    [Output("ct-job", "data"), Output("ct-poll", "disabled"),
-     Output("ct-model-status", "children", allow_duplicate=True)],
-    Input("ct-download-btn", "n_clicks"),
-    prevent_initial_call=True,
-)
-def start_modflows_download(n):
-    if not n:
-        raise dash.exceptions.PreventUpdate
-    try:
-        from .jobs import MANAGER
-    except ImportError:
-        from jobs import MANAGER
-
-    # One job at a time, shared with indexing and encoder downloads: they all
-    # compete for the same disk and network.
-    if MANAGER.active():
-        return dash.no_update, dash.no_update, html.Div(
-            "Something else is running — wait for it to finish.",
-            style={"fontSize": "11.5px", "color": _ui.WARN})
-    try:
-        started = _ops.call("model download", {"model": "modflows", "background": True},
-                            actor="person")
-    except _ops.Refusal as e:
-        return dash.no_update, dash.no_update, html.Div(
-            e.reason, style={"fontSize": "11.5px", "color": _ui.BAD})
-    global _COLOUR_METHODS
-    _COLOUR_METHODS = None            # ModFlows' availability changes when this finishes
-    if not hasattr(started, "job"):
-        return dash.no_update, True, _ct_model_card(None)
-    return started.job, False, _ct_model_card({"status": "running", "fraction": 0.0,
-                                                "message": "Starting download..."})
-
-
-@app.callback(
-    [Output("ct-model-status", "children"), Output("ct-poll", "disabled",
-                                                   allow_duplicate=True)],
-    [Input("ct-poll", "n_intervals"), Input("mode-select", "value"),
-     Input("moodboard-tool", "value")],
-    State("ct-job", "data"),
-    prevent_initial_call="initial_duplicate",
-)
-def poll_modflows_download(_ticks, mode, tool, job_id):
-    try:
-        from .jobs import MANAGER
-    except ImportError:
-        from jobs import MANAGER
-    snap = MANAGER.snapshot(job_id) if job_id else None
-    finished = (snap or {}).get("status") in ("done", "failed", "cancelled")
-    return _ct_model_card(snap), (snap is None or finished)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# WHICH COLOURS OF THE REFERENCE GET USED
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.callback(
-    [Output("ct-lightness", "value"), Output("ct-saturation", "value")],
-    Input("ct-reset", "n_clicks"),
-    prevent_initial_call=True,
-)
-def reset_reference_filter(n):
-    if not n:
-        raise dash.exceptions.PreventUpdate
-    return [0, 100], [0, 100]
-
-
-@app.callback(
-    [Output("ct-swatches", "children"), Output("ct-keep-note", "children")],
-    [Input("selected-moodboard-image", "data"),
-     Input("ct-lightness", "value"),
-     Input("ct-saturation", "value")],
-)
-def preview_reference_filter(ref_path, lightness, saturation):
-    """
-    Draw the colours the transfer would actually use.
-
-    Runs on every slider move, so it works off a 256px sample and uniform
-    quantisation rather than anything iterative.
-    """
-    if not ref_path:
-        return [], "Pick a Reference [R] picture to choose its colours."
-
-    l_min, l_max = (lightness or [0, 100])
-    s_min, s_max = (saturation or [0, 100])
-
-    try:
-        from . import refselect
-    except ImportError:
-        import refselect
-
-    try:
-        resolved = resolve_path(ref_path)
-        if not os.path.exists(resolved):
-            return [], "The reference file is no longer on disk."
-        with Image.open(resolved) as im:
-            im.load()
-            colours = refselect.palette_strip(im, n=14, l_min=l_min, l_max=l_max,
-                                              s_min=s_min, s_max=s_max,
-                                              source_path=resolved)
-            _proxy, frac = refselect.filter_reference(im, l_min, l_max, s_min, s_max)
-    except Exception as e:
-        return [], f"Could not read the reference: {type(e).__name__}"
-
-    if not colours:
-        return [], html.Span("Nothing is left in that range — the transfer would "
-                             "use the whole picture.", style={"color": _ui.WARN})
-
-    # Widths are proportional to each colour's share, exactly like the strips
-    # /palette draws under the Reference and Target thumbnails. Equal widths
-    # made a 70%-black photograph look like an evenly-spread dark palette, and
-    # disagreed with the strip a few centimetres below it. Proportional widths
-    # also make the sliders legible: raising the lightness floor visibly hands
-    # the black band's width over to the colours you actually want.
-    strip = [html.Div(style={"flexGrow": max(share, 0.0005), "flexBasis": "0",
-                             "backgroundColor": c},
-                      title=f"{c} · {share * 100:.1f}%")
-             for c, share in colours]
-    pct = frac * 100
-    if frac >= 1.0:
-        note = "Using the whole reference — widths show each colour's share."
-    elif frac < refselect.MIN_KEEP:
-        note = html.Span(f"Only {pct:.2f}% of the picture survives — that is very "
-                         "little to estimate from.", style={"color": _ui.WARN})
-    else:
-        note = f"Using {pct:.1f}% of the reference's pixels."
-    return strip, note
-
-
-@app.callback(
-    Output("color-transfer-quality-note", "children"),
-    [Input("color-transfer-quality", "value"),
-     Input("color-transfer-method", "value")],
-)
-def describe_transfer_quality(quality, method):
-    """Say what the chosen method or preset costs, and that the output is full size."""
-    m = _colour_method(method)
-    if m is None:
-        return ""
-    if "quality" not in m.params:
-        return f"{m.label} takes {m.timing} at 1024 px and needs no model."
-    presets = {q.id: q for q in _colour_methods().qualities}
-    p = presets.get(quality or "balanced")
-    if not p:
-        return ""
-    # Measured on a 6000x4000 photograph; the GPU numbers barely move between
-    # presets because building and applying the LUT is CPU work.
-    secs = {"quick": (5, 5), "balanced": (11, 4), "best": (38, 5)}[quality or "balanced"]
-    took = secs[1] if _gpu.available() else secs[0]
-    return f"{p.note} — about {took}s here, output at full resolution."
-
-
-@app.callback(
-    Output("cn-controls", "style"),
-    Input("style-method-pick", "value"),
-)
-def _cn_controls(method):
-    if method == "controlnet":
-        return {"display": "block", "marginBottom": "10px"}
-    return {"display": "none"}
-
-
-@app.callback(
-    Output("style-method-note", "children"),
-    Input("style-method-pick", "value"),
-)
-def _style_note(method):
-    """Say what each method will actually do before it is run."""
-    return {
-        "texture": ("Keeps every pixel of [T] and borrows how much detail [R] "
-                    "carries at each scale. Nothing is invented and the "
-                    "composition is exact. Subtle between two photographs from "
-                    "the same camera; strong from a painting or a film scan."),
-        "img2img": ("Regenerates [T], aimed by words CLIP finds for [R]. It "
-                    "never sees [R] itself, so it transfers mood rather than a "
-                    "specific look. The weakest of the three."),
-        "ip_adapter": ("Regenerates [T] conditioned on the [R] image itself. "
-                       "The strongest, and the only one that carries what "
-                       "language cannot name. Around 0.4-0.6 keeps the subject "
-                       "recognisable; higher and [R] takes over."),
-        "controlnet": ("Both conditions at once. IP-Adapter carries what [R] "
-                       "looks like; ControlNet carries a map of [T] and holds "
-                       "the result to it, so the texture follows the form "
-                       "instead of lying flat over it. This is what keeps a "
-                       "face a face at strengths where IP-Adapter alone "
-                       "dissolves it. Strength is how loudly [R] speaks; the "
-                       "slider below is how strictly the map is obeyed. Turn "
-                       "that down and it approaches plain IP-Adapter."),
-    }.get(method, "")
-
-
-@app.callback(
-    [Output("style-transfer-status", "children"),
-     Output("transfer-preview", "children", allow_duplicate=True)],
-    Input("style-transfer-btn", "n_clicks"),
-    [State("selected-moodboard-image", "data"),
-     State("selected-target-image", "data"),
-     State("style-method-pick", "value"),
-     State("style-strength", "value"),
-     State("cn-map", "value"),
-     State("cn-strength", "value")],
-    # A transfer blocks for seconds. Without this the button sat unchanged the
-    # whole time and the only way to tell anything had happened was the result
-    # appearing. Dash flips these for the life of the callback. The status line
-    # is left out: Dash 4 renders a dash.no_update "off" value as a child, which
-    # crashed React (error #31) and stopped the page answering clicks.
-    running=[
-        (Output("style-transfer-btn", "disabled"), True, False),
-        (Output("style-transfer-btn", "children"), "Working…", "Apply style"),
-    ],
-    prevent_initial_call=True,
-)
-def perform_style_transfer(n_clicks, ref_path, target_path, method, strength,
-                           cn_map, cn_strength):
-    """
-    Apply the look of [R] to [T].
-
-    Deliberately not a method inside Colour transfer. Two of these regenerate
-    the picture rather than remapping its colours, which is a much larger thing
-    to do, and offering it under a control labelled "colour" misrepresented what
-    pressing the button does.
-    """
-    if not n_clicks:
-        raise dash.exceptions.PreventUpdate
-    args = {"target": resolve_path(target_path), "source": resolve_path(ref_path),
-            "method": method or "texture", "strength": float(strength or 0.6),
-            "control": cn_map or "depth", "control_strength": float(cn_strength or 0.9)}
-    try:
-        res = _ops.call("style transfer", args, actor="person")
-    except _ops.Refusal as e:
-        hint = ""
-        if method in ("img2img", "ip_adapter", "controlnet") and "diffusers" not in e.reason:
-            hint = (" — the diffusion methods download their weights on first "
-                    "use, which takes a few minutes.")
-        return html.Div(f"{method}: {e.reason}{hint}", style={"color": _ui.BAD}), dash.no_update
-    except Exception as e:
-        # Print the traceback. Returning only str(e) into the UI is how a
-        # dtype mismatch reached a user as one unattributable line with no
-        # record of where it came from.
-        import traceback
-        print(f"[style-transfer] {method} failed:", flush=True)
-        traceback.print_exc()
-        return html.Div(f"{method}: {e}", style={"color": _ui.BAD}), dash.no_update
-
-    out_path, out_name = res.path, res.file
-    buf = BytesIO()
-    preview = Image.open(out_path).convert("RGB")
-    preview.thumbnail((1600, 1600), Image.LANCZOS)
-    preview.save(buf, format="JPEG", quality=90)
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    control_png = None
-    if res.map_path:
-        # Show the map. "The result looks wrong" and "the depth is wrong" are
-        # different problems, and only the second is one the user can fix.
-        mbuf = BytesIO()
-        mprev = Image.open(res.map_path).convert("RGB")
-        mprev.thumbnail((360, 360), Image.LANCZOS)
-        mprev.save(mbuf, format="JPEG", quality=85)
-        control_png = base64.b64encode(mbuf.getvalue()).decode()
-
-    status = html.Div(f"{res.label} · {res.device} · {res.elapsed:.1f}s · saved to {out_path}",
-                      style={"color": _ui.OK})
-    # The stage, laid out like the colour-transfer one: a header bar naming
-    # what ran, the picture, then its supporting material, then the action.
-    stage = [
-        html.Div(
-            [
-                html.Span(f"STYLE · {res.label}", style={
-                    "fontWeight": "700", "fontSize": "12px",
-                    "letterSpacing": "1px", "color": _ui.INK}),
-                html.Span(f"{res.width}×{res.height} · {res.device} · {res.elapsed:.1f}s",
-                          style={"color": _ui.INK_DIM, "fontSize": "11px"}),
-            ],
-            style={"display": "flex", "alignItems": "baseline", "gap": "10px",
-                   "flexWrap": "wrap", "margin": "0 -12px 12px",
-                   "padding": "9px 12px",
-                   "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
-        ),
-        html.Img(
-            src=f"data:image/jpeg;base64,{b64}",
-            title=out_name,
-            style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
-                   "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"}),
-    ]
-    if control_png:
-        stage.append(html.Div([
-            html.Div(f"{cn_map or 'depth'} map of [T], what ControlNet followed",
-                     style={"fontSize": "10.5px", "color": _ui.INK_DIM,
-                            "letterSpacing": "0.4px", "marginBottom": "6px"}),
-            html.Img(src=f"data:image/jpeg;base64,{control_png}",
-                     style={"display": "block", "maxWidth": "260px",
-                            "borderRadius": "4px", "border": f"1px solid {_ui.LINE}"}),
-        ], style={"marginTop": "14px"}))
-    stage += [
-        html.Div(f"Saved to {os.path.join('output', 'transfers')} as {res.handle}",
-                 style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
-        html.Div(out_name, style={"color": _ui.INK_FAINT, "fontSize": "10px",
-                                  "wordBreak": "break-all"}),
-        html.Button("+ Collection",
-                    id={"type": "add-to-moodboard", "index": out_path},
-                    n_clicks=0,
-                    title="Add this result to the collection",
-                    style=_ui.button("success", marginTop="10px", fontSize="11.5px",
-                                     padding="5px 11px")),
-    ]
-    return status, html.Div(stage)
-
-
-@app.callback(
-    # Two outputs: a one-line receipt that stays in the card, and the picture
-    # itself, which goes to the stage. The preview used to be a 640px image
-    # rendered width:100% inside a ~300px card in the bench -- the result of the
-    # operation was the smallest thing on screen. Both tools now obey one rule:
-    # you set up on the left, the result appears on the right.
-    [Output("color-transfer-status", "children"),
-     Output("transfer-preview", "children")],
-    Input("color-transfer-btn", "n_clicks"),
-    State("selected-moodboard-image", "data"),  # Reference (palette source)
-    State("selected-target-image", "data"),      # Target (receives colors)
-    State("color-transfer-method", "value"),
-    State("color-transfer-strength", "value"),
-    State("color-transfer-quality", "value"),
-    State("ct-lightness", "value"),
-    State("ct-saturation", "value"),
-    running=[
-        (Output("color-transfer-btn", "disabled"), True, False),
-        (Output("color-transfer-btn", "children"), "Working…", "Transfer colors"),
-    ],
-    prevent_initial_call=True,
-)
-def perform_color_transfer(n_clicks, ref_path, target_path, method, strength,
-                           quality, ct_lightness, ct_saturation):
-    """Transfer colors from reference image to target image."""
-    if not n_clicks:
-        raise dash.exceptions.PreventUpdate
-    
-    # Validate inputs
-    if not ref_path:
-        return html.Div("⚠️ No Reference [R] image selected", style={"color": _ui.WARN}), ""
-    if not target_path:
-        return html.Div("⚠️ No Target [T] image selected", style={"color": _ui.WARN}), ""
-    
-    l_min, l_max = (ct_lightness or [0, 100])
-    s_min, s_max = (ct_saturation or [0, 100])
-    args = {"target": resolve_path(target_path), "reference": resolve_path(ref_path),
-            "method": method or None, "strength": float(strength) if strength else 1.0,
-            "quality": quality or "balanced",
-            "l_min": l_min, "l_max": l_max, "s_min": s_min, "s_max": s_max}
-    try:
-        res = _ops.call("colour transfer", args, actor="person")
-    except _ops.Refusal as e:
-        return html.Div(f"⚠️ {e.reason}", style={"color": _ui.WARN, "wordBreak": "break-word"}), ""
-    except Exception as e:
-        # Print the traceback. Returning only str(e) is how a dtype mismatch
-        # reached a user as one unattributable line, with nothing in the log to
-        # say which call raised it or from where.
-        import traceback
-        print(f"[colour-transfer] {method} failed:", flush=True)
-        traceback.print_exc()
-        return (html.Div(f"✗ Error: {str(e)}",
-                         style={"color": _ui.BAD, "wordBreak": "break-word"}), "")
-
-    filter_note = ""
-    if res.kept == 0.0:
-        filter_note = " — colour range matched nothing, used the whole reference"
-    elif res.kept < 1.0:
-        filter_note = f" — from {res.kept * 100:.1f}% of the reference"
-
-    # Show the result, not just a filename. Embedded as a downscaled JPEG data
-    # URI rather than a /preview URL: the output directory is not a media root,
-    # and one preview does not justify making it servable.
-    preview = Image.open(res.path).convert("RGB")
-    preview.thumbnail((640, 640), Image.LANCZOS)
-    buf = BytesIO()
-    preview.save(buf, "JPEG", quality=88)
-    preview_uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-    receipt = html.Div(f"✓ Done in {res.elapsed:.1f}s — see the panel on the right",
-                       style={"color": _ui.OK, "fontSize": "11.5px"})
-    stage = html.Div([
-        html.Div(
-            [
-                html.Span(f"TRANSFER · {res.label}{filter_note}", style={
-                    "fontWeight": "700", "fontSize": "12px",
-                    "letterSpacing": "1px", "color": _ui.INK}),
-                html.Span(f"{res.width}×{res.height} · {res.device} · {res.elapsed:.2f}s",
-                          style={"color": _ui.INK_DIM, "fontSize": "11px"}),
-            ],
-            style={"display": "flex", "alignItems": "baseline", "gap": "10px",
-                   "flexWrap": "wrap", "margin": "0 -12px 12px",
-                   "padding": "9px 12px",
-                   "borderBottom": f"2px solid {_ui.ROLE_TARGET}"},
-        ),
-        html.Img(
-            src=preview_uri,
-            title=res.file,
-            style={"display": "block", "maxWidth": "100%", "maxHeight": "62vh",
-                   "borderRadius": "8px", "border": f"1px solid {_ui.LINE}"},
-        ),
-        html.Div(f"Saved to {os.path.join('output', 'color_transfer')} as {res.handle}",
-                 style={"color": _ui.INK_FAINT, "fontSize": "11px", "marginTop": "8px"}),
-        html.Div(res.file,
-                 style={"color": _ui.INK_FAINT, "fontSize": "10px",
-                        "wordBreak": "break-all"}),
-        html.Button("+ Collection",
-                    id={"type": "add-to-moodboard", "index": res.path},
-                    n_clicks=0,
-                    title="Add this result to the collection",
-                    style=_ui.button("success", marginTop="10px", fontSize="11.5px",
-                                     padding="5px 11px")),
-    ])
-    return receipt, stage
 
 
 def _poetry_job(story_cache, folder, strength_val):

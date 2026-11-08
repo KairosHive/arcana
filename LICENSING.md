@@ -102,8 +102,24 @@ but display and pass-through obligations still apply.
 | `lllyasviel/control_v11p_sd15_canny` | OpenRAIL | see A3 |
 | `Intel/dpt-hybrid-midas` | Apache-2.0 | attribution |
 | ⚠️ `runwayml/stable-diffusion-v1-5` | **CreativeML OpenRAIL-M** | see A3 |
+| `facebook/dinov2-with-registers-base` | Apache-2.0 | attribution |
+| `nyu-visionx/RAE-collections` | MIT | attribution |
+| `black-forest-labs/FLUX.2-klein-4B` (its `vae` only) | Apache-2.0 | attribution |
+| `ZhengPeng7/BiRefNet_dynamic-matting` | MIT | attribution |
+| `IDEA-Research/grounding-dino-tiny` | Apache-2.0 | attribution |
+| `facebook/sam2.1-hiera-small` | Apache-2.0 | attribution |
+| `CIDAS/clipseg-rd64-refined` | Apache-2.0 | attribution |
+| `xinntao/Real-ESRGAN` `RealESRGAN_x4plus.pth` (GitHub release) | BSD-3-Clause | attribution, licence text |
 
-⚠️ **The last row is new.** The plan predates the IP-Adapter and ControlNet work
+The rows from DINOv2 down are the Alchemy tab's (`arcana/alchemy`), read on 8
+November 2026, none gated. Real-ESRGAN's licence was read from its GitHub
+repository, where its weights are released, rather than from HuggingFace.
+BiRefNet loads with `trust_remote_code`, so its model code is fetched from that
+repository at first use and runs in Arcana's process, under the same MIT
+licence. Alchemy also adds three Python packages: `kornia` and `timm`
+(Apache-2.0) and `einops` (MIT), read from their installed metadata.
+
+⚠️ **The SD-1.5 row is new.** The plan predates the IP-Adapter and ControlNet work
 of 5 September 2026, and SD-1.5 is the base model both of those load
 (`style_transfer.py`, `IP_BASE_MODEL`). It carries the same OpenRAIL
 restrictions as the ControlNets and must be in the EULA flow-through.

@@ -127,6 +127,13 @@ restrictions as the ControlNets and must be in the EULA flow-through.
 **Bundled binaries.** The `opencv-python` wheel bundles FFmpeg; include the LGPL
 text and FFmpeg attribution for the frozen build.
 
+`imageio-ffmpeg` (BSD-2-Clause), which writes the Alchemy tab's films, ships an
+ffmpeg 9.0.2 executable built by gyan.dev with `--enable-gpl --enable-version3`,
+so that binary is GPL-3.0 (read from its own `-version` on 8 November 2026).
+Arcana runs it as a separate program and links none of it, which keeps it apart
+from Arcana's AGPL code. A frozen build that ships it must include the GPL-3.0
+text and say where its source is (https://www.gyan.dev/ffmpeg/builds/).
+
 ## A3. Obligations that reach the UI and installer
 
 **Stability AI Community License** — `sd-turbo`, used by Inject Poetry and by

@@ -82,6 +82,7 @@ class JobView(BaseModel):
     message: str = ""
     error: str = ""
     result_text: str | None = None
+    result: dict | None = None            # the finished op's result, as fields
 
     def line(self) -> str:
         pct = f" {self.fraction:.0%}" if self.fraction is not None and self.status == "running" else ""
@@ -99,9 +100,10 @@ def view(job_id: str) -> JobView:
         raise ValueError(f"No job {job_id} in this process. `job list` shows the jobs.")
     snap = j.as_dict()
     text = j.result.get("text") if isinstance(j.result, dict) else None
+    fields = j.result.get("result") if isinstance(j.result, dict) else None
     return JobView(id=j.id, kind=j.kind, label=j.label, status=j.status,
                    fraction=snap["fraction"], message=snap["message"], error=j.error,
-                   result_text=text)
+                   result_text=text, result=fields if isinstance(fields, dict) else None)
 
 
 class JobResult(Result):

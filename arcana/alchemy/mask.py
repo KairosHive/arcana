@@ -233,12 +233,13 @@ class Scene:
     """What a mask reads: the picture at the frame's size, the first material, and how to ask the
     vision models about the picture (its key names it, so their answers are kept)."""
 
-    def __init__(self, picture, key, material=None, image=None, load=None):
+    def __init__(self, picture, key, material=None, image=None, load=None, asker=None):
         self.c = picture                      # [H, W, 3] floats in 0..1
         self.key = key
         self.t = material                     # the first material at the frame, or None
         self._image = image                   # the picture as a PIL image, for the models
         self._load = load                     # loads another picture by reference at a size
+        self._asker = asker                   # answers ask() in place of the models (a film frame)
         self.H, self.W = picture.shape[:2]
         self.lum = picture @ LUM
 
@@ -248,9 +249,15 @@ class Scene:
         return self._image
 
     def ask(self, kind, arg=""):
-        from .vision import vision
+        """A model's map of this picture: its subject, a named thing or stuff, its depth. A film frame
+        gives an `asker`, which blends the maps of the key pictures it lies between, so a mask moves
+        with the morph and no model runs on a frame."""
+        if self._asker is not None:
+            got = self._asker(kind, arg)
+        else:
+            from .vision import vision
 
-        got = vision().ask(self.key, self.image, kind, arg)
+            got = vision().ask(self.key, self.image, kind, arg)
         if got.shape != (self.H, self.W):
             got = cx._resize(got, self.W, self.H, Image.BILINEAR)
         return got

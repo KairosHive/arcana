@@ -126,6 +126,8 @@ idna==3.19
     #   httpx
     #   httpx2
     #   requests
+imageio-ffmpeg==0.8.1
+    # via arcana
 importlib-metadata==9.0.1
     # via
     #   dash

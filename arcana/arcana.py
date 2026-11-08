@@ -38,6 +38,7 @@ try:
     from . import ui_datasets as _ui_datasets
     from . import ui_alchemy as _ui_alchemy
     from . import ui_collection as _ui_collection
+    from . import ui_film as _ui_film
     from . import ui_style as _ui
     from . import jobs
     from . import on1 as _on1
@@ -54,6 +55,7 @@ except ImportError:
     import ui_datasets as _ui_datasets
     import ui_alchemy as _ui_alchemy
     import ui_collection as _ui_collection
+    import ui_film as _ui_film
     import ui_style as _ui
     import jobs
     import on1 as _on1
@@ -4998,6 +5000,7 @@ def save_images(n_clicks_images, n_clicks_story, selections, ids, folder, mode, 
 _ui_datasets.register(app)
 _ui_collection.register(app)
 _ui_alchemy.register(app)
+_ui_film.register(app)
 _ui_agent.register(app)
 
 

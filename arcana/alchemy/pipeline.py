@@ -137,6 +137,38 @@ def _run(spec, long_side, view, with_before):
     return image, (to_image(c) if with_before else None), info
 
 
+def step_on(c, key, spec, asker=None):
+    """One step on a picture already in memory, such as a film frame: the materials read at its frame,
+    the mask built on it (models answered by `asker` when given), the method, the finish. The method
+    "none" keeps the picture, so a film can be its morph and a finish alone. Returns ([H, W, 3] floats,
+    the mask or None)."""
+    spec = resolved({k: v for k, v in (spec or {}).items() if k != "picture"})
+    H, W = c.shape[:2]
+    zoom, crop = float(spec.get("zoom", 1.0) or 1.0), int(spec.get("crop", 0) or 0)
+    method = None if spec.get("method") in (None, "", "none") else mt.get(spec["method"])
+    lo, hi = method.materials if method else (0, 3)
+    mat_paths = [resolve(r) for r in [m for m in (spec.get("materials") or []) if m][:hi]]
+    if method and len(mat_paths) < lo:
+        raise ValueError(f"{method.id} needs at least {lo} material{'s' if lo != 1 else ''}.")
+    mats = [crop_of(p, W, H, zoom, crop) for p in mat_paths]
+    scene = mk.Scene(c, key, mats[0] if mats else None,
+                     load=lambda ref, w, h: load_frame(resolve(ref), w, h), asker=asker)
+    m = mk.build(spec.get("mask"), scene)
+    out = c
+    if method is not None:
+        knobs = mt.settle_knobs(method, spec.get("knobs") or {})
+        if method.family == "tokens":
+            knobs.setdefault("seed", crop)
+        step = Step(W, H, c, key, mats, [f"{p}@{W}x{H}@z{zoom}@s{crop}" for p in mat_paths],
+                    list(spec.get("weights") or [1.0] * len(mats)), m, depth=lambda: scene.ask("depth"))
+        out = method.run(step, knobs)
+        if out.shape[:2] != (H, W):
+            out = np.asarray(to_image(out).resize((W, H), mk.Image.LANCZOS), np.float32) / 255.0
+        if m is not None and method.picture:
+            out = m[..., None] * out + (1 - m[..., None]) * c
+    return fn.apply(out, spec.get("finish"), m, seed=crop), m
+
+
 def _enlarged(image, TW, TH):
     from .spaces import enlarge
 

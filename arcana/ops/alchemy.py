@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from .registry import Args, Attachment, Context, Result, op, positional
+from .registry import Args, Attachment, Context, Result, TextResult, op, positional
 
 COMBINES = ("and", "or", "but not")
 MASK_KEYS = ("invert", "grow", "follow", "ragged", "feather", "amount", "seed")
@@ -664,3 +664,284 @@ def _alchemy_recipe_save(a: AlchemyRecipeSaveArgs, ctx: Context) -> RecipeShowRe
         raise ValueError("A recipe needs at least one setting: a method, knobs, a mask or a finish.")
     ctx.tx.touch(recipes.store_path())          # undoable like any other write
     return RecipeShowResult(recipe=RecipeInfo(**recipes.save(a.name, spec, a.doc, a.group).public()))
+
+
+# ─────────────────────────── films ───────────────────────────
+# A film is pictures morphed through a token space on a timeline, with any number of a step keyed in
+# time (arcana/alchemy/film.py holds the format). Films are kept by name in the data directory.
+
+def _film_mod():
+    try:
+        from ..alchemy import film
+    except ImportError:                               # pragma: no cover
+        from alchemy import film
+    return film
+
+
+def _film_of(name: str | None, spec: dict | None, ctx: Context) -> dict:
+    """The film an op names or carries, its pictures checked against the caller's rules: an agent
+    names pictures by handle."""
+    from . import archive
+
+    film = _film_mod()
+    spec = spec if spec else film.load(name) if name else None
+    if spec is None:
+        raise ValueError("Name a kept film, or give one with --spec.")
+    for p in spec.get("pictures") or []:
+        archive.resolve_item(str(p.get("ref", "")), ctx.actor)
+    for k in spec.get("looks") or []:
+        for m in (k.get("settings") or {}).get("materials") or []:
+            if m:
+                archive.resolve_item(str(m), ctx.actor)
+    return film.normalised(spec)
+
+
+def _film_arg():
+    return positional(0, None, description="A kept film, by name.", json_schema_extra={"metavar": "FILM"})
+
+
+def _spec_field():
+    return Field(None, description="A film as a JSON object, in place of a kept one.")
+
+
+class FilmInfo(BaseModel):
+    name: str
+    length: float
+    fps: int
+    size: int
+    space: str
+    loop: bool
+    pictures: list[str]
+    passes: list[float]
+    looks: int
+    lanes: list[str]
+
+    def text(self) -> str:
+        film = _film_mod()
+        lines = [f"{self.name}  {film.length_text(self.length)} at {self.fps} fps, {self.size} px, "
+                 f"{self.space}{', looping' if self.loop else ''}"]
+        lines += [f"  {t:7.2f} s  {ref}" for t, ref in zip(self.passes, self.pictures)]
+        lines.append(f"  {self.looks} look{'s' if self.looks != 1 else ''}; lanes: {', '.join(self.lanes) or 'none'}")
+        return "\n".join(lines)
+
+
+def _info_of(f: dict) -> FilmInfo:
+    return FilmInfo(name=f["name"], length=f["length"], fps=f["fps"], size=f["size"], space=f["space"],
+                    loop=f["loop"], pictures=[p["ref"] for p in f["pictures"]],
+                    passes=[p["t"] for p in f["pictures"]], looks=len(f["looks"]), lanes=list(f["lanes"]))
+
+
+class FilmListResult(Result):
+    films: list[FilmInfo]
+
+    def text(self) -> str:
+        return ("\n\n".join(f.text() for f in self.films) or "No films kept yet.") + "\n"
+
+
+class AlchemyFilmListArgs(Args):
+    pass
+
+
+@op("alchemy film list", "read", AlchemyFilmListArgs, FilmListResult,
+    doc="""
+    The films kept so far. Each comes with its length, its pictures and when
+    the film passes them, its looks and its lanes.
+    """,
+    examples=("alchemy film list",))
+def _alchemy_film_list(a: AlchemyFilmListArgs, ctx: Context) -> FilmListResult:
+    film = _film_mod()
+    out = []
+    for name in film.listing():
+        try:
+            out.append(_info_of(film.normalised(film.load(name))))
+        except ValueError:
+            continue
+    return FilmListResult(films=out)
+
+
+class FilmShowResult(Result):
+    film: FilmInfo
+    spec: dict
+
+    def text(self) -> str:
+        return self.film.text() + "\n"
+
+
+class FilmSpecArgs(Args):
+    film: str | None = _film_arg()
+    spec: dict | None = _spec_field()
+
+    @field_validator("spec", mode="before")
+    @classmethod
+    def _spec(cls, v):
+        return _json_dict(v, "--spec") if v is not None else None
+
+
+class AlchemyFilmShowArgs(FilmSpecArgs):
+    pass
+
+
+EXAMPLE_SPEC = ('\'{"name": "rites", "pictures": [{"t": 0, "ref": "japan:12"}, {"t": 4, "ref": "japan:7"}], '
+                '"lanes": {"finish.saturation": [{"t": 0, "v": 0}, {"t": 6, "v": -100}]}}\'')
+
+
+@op("alchemy film show", "read", AlchemyFilmShowArgs, FilmShowResult,
+    doc="""
+    One film in full, every default filled in. It lists its pictures and their
+    times, its looks and its lanes, and the spec it returns is what alchemy
+    film save takes.
+    """,
+    examples=("alchemy film show --spec " + EXAMPLE_SPEC,))
+def _alchemy_film_show(a: AlchemyFilmShowArgs, ctx: Context) -> FilmShowResult:
+    f = _film_of(a.film, a.spec, ctx)
+    return FilmShowResult(film=_info_of(f), spec=f)
+
+
+class AlchemyFilmSaveArgs(Args):
+    spec: dict = Field(description="The film as a JSON object. Its name is the name it is kept under.")
+
+    @field_validator("spec", mode="before")
+    @classmethod
+    def _spec(cls, v):
+        return _json_dict(v, "--spec")
+
+
+@op("alchemy film save", "write", AlchemyFilmSaveArgs, FilmShowResult,
+    doc="""
+    Keep a film under its name, replacing one of the same name. Undo takes it
+    back like any other write.
+    """,
+    examples=("alchemy film save --spec " + EXAMPLE_SPEC,))
+def _alchemy_film_save(a: AlchemyFilmSaveArgs, ctx: Context) -> FilmShowResult:
+    film = _film_mod()
+    f = _film_of(None, a.spec, ctx)
+    ctx.tx.touch(film.film_path(f["name"]))
+    f = film.save(f)
+    return FilmShowResult(film=_info_of(f), spec=f)
+
+
+class AlchemyFilmDeleteArgs(Args):
+    film: str = positional(0, description="The kept film to delete, by name.", json_schema_extra={"metavar": "FILM"})
+
+
+@op("alchemy film delete", "write", AlchemyFilmDeleteArgs, TextResult,
+    doc="""
+    Delete a kept film. Its rendered videos stay in output, and undo brings
+    the film back.
+    """,
+    examples=("alchemy film delete rites",), actors=("person", "cli"))
+def _alchemy_film_delete(a: AlchemyFilmDeleteArgs, ctx: Context) -> TextResult:
+    film = _film_mod()
+    film.load(a.film)
+    path = film.film_path(a.film)
+    ctx.tx.touch(path)
+    os.remove(path)
+    return TextResult(body=f"Deleted the film {a.film}.\n")
+
+
+class FrameResult(Result):
+    film: str
+    at: float
+    length: float
+    size: list[int]
+    ms: int
+    withheld: bool = False
+
+    def text(self) -> str:
+        t = f"{self.film} at {self.at:.2f} s of {self.length:.2f}, {self.size[0]} x {self.size[1]}, {self.ms} ms"
+        if self.withheld:
+            t += "\nThe picture stays on this machine: the person has not allowed pictures to reach agents."
+        return t + "\n"
+
+
+class AlchemyFilmPreviewArgs(FilmSpecArgs):
+    at: float = Field(0.0, ge=0, description="The moment to draw, in seconds.")
+    size: int = Field(512, ge=256, le=1024, description="Longest side of the frame, in pixels.")
+
+
+@op("alchemy film preview", "read", AlchemyFilmPreviewArgs, FrameResult,
+    doc="""
+    One frame of a film at any moment, kept nowhere. It is the morph at that
+    time, the look's step and its finish. The pictures are encoded once and
+    kept while only the looks and lanes change, so scrubbing is quick.
+    """,
+    examples=("alchemy film preview --spec " + EXAMPLE_SPEC + " --at 2",))
+def _alchemy_film_preview(a: AlchemyFilmPreviewArgs, ctx: Context) -> FrameResult:
+    import time as _time
+
+    film = _film_mod()
+    f = _film_of(a.film, a.spec, ctx)
+    t0 = _time.perf_counter()
+    try:
+        ready = film.prepared(f, a.size)
+        image = film.to_image(ready.frame(min(a.at, f["length"])))
+    except MemoryError as e:
+        raise ValueError(str(e)) from None
+    out = FrameResult(film=f["name"], at=a.at, length=f["length"], size=[image.width, image.height],
+                      ms=round((_time.perf_counter() - t0) * 1000), withheld=not ctx.pixels)
+    if ctx.pixels:
+        out.attachments.append(Attachment(caption=f"{f['name']} at {a.at:.2f} s", data=_jpeg(image)))
+    return out
+
+
+class FilmMadeResult(Result):
+    id: str
+    path: str
+    frames: int
+    fps: int
+    seconds: float
+    size: list[int]
+
+    def text(self) -> str:
+        return (f"{self.id}  {self.path}\n  {self.frames} frames, {self.seconds:.1f} s at {self.fps} fps, "
+                f"{self.size[0]} x {self.size[1]}\n")
+
+
+class AlchemyFilmMakeArgs(FilmSpecArgs):
+    size: int | None = Field(None, ge=256, le=2048, description="Long side the frames are drawn at. "
+                             "Defaults to the film's.")
+    target: int | None = Field(None, ge=256, le=8192, description="Long side of the video. Past the drawn "
+                               "size, Real-ESRGAN enlarges every frame.")
+    fps: int | None = Field(None, ge=6, le=60, description="Frames a second. Defaults to the film's.")
+    background: bool = Field(False, description="Return a job id at once instead of waiting.")
+
+
+@op("alchemy film make", "effect", AlchemyFilmMakeArgs, FilmMadeResult,
+    doc="""
+    Render a film to an H.264 video in output/edited/video/<date>/. The film
+    is written beside it as JSON, and the ledger records the video as derived
+    from its pictures. With --background it runs as a job, and `job show`
+    reports its progress frame by frame.
+    """,
+    examples=("alchemy film make rites --background",
+              "alchemy film make rites --size 768 --target 1920 --fps 30"))
+def _alchemy_film_make(a: AlchemyFilmMakeArgs, ctx: Context) -> Result:
+    import datetime
+
+    from .effects import run_effect
+
+    try:
+        from .. import ledger as _ledger
+        from .. import paths as _paths
+    except ImportError:                               # pragma: no cover
+        import ledger as _ledger
+        import paths as _paths
+    film = _film_mod()
+    f = _film_of(a.film, a.spec, ctx)
+    folder = _paths.edited_dir("video")
+    path = os.path.join(folder, f"{film.slug(f['name'])}__{datetime.datetime.now().strftime('%H%M%S')}.mp4")
+
+    def compute(progress):
+        made = film.render(f, path, progress, size=a.size, fps=a.fps, target=a.target)
+        with open(os.path.splitext(path)[0] + ".json", "w", encoding="utf-8") as fh:
+            json.dump({"film": f, "made": made}, fh, indent=1)
+        return made
+
+    def record(tx, made):
+        entry = _ledger.record(tx, made["path"], op="alchemy film make",
+                               args={"film": f["name"], "size": a.size, "target": a.target, "fps": made["fps"]},
+                               sources=made["pictures"], derived_from=made["pictures"][0])
+        return FilmMadeResult(id=entry["handle"], path=made["path"], frames=made["frames"], fps=made["fps"],
+                              seconds=made["seconds"], size=made["size"])
+
+    return run_effect(ctx, f"alchemy film make {f['name']}", compute, record, a.background, kind="film")

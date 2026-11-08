@@ -41,6 +41,10 @@ kornia>=0.7
 timm>=1.0
 einops>=0.7
 
+# --- Alchemy's films: the ffmpeg build imageio-ffmpeg ships writes the videos. The package is
+# BSD-2-Clause; the ffmpeg binary in it is a GPL-3.0 build, run as a separate program (LICENSING.md) ---
+imageio-ffmpeg>=0.5
+
 # --- Approximate nearest neighbour search ---
 usearch>=2.8
 

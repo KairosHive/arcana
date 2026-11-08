@@ -63,7 +63,8 @@ LABEL = _ui.field_label(marginBottom="4px", marginTop="10px")
 KNOB_LABEL = _ui.hint(fontSize="11.5px", marginTop="6px", color=_ui.INK)
 SLIDER_TIP = {"placement": "bottom", "always_visible": False}
 SMALL = {"fontSize": "12px"}
-PANEL_VISIBLE = {"display": "flex", "gap": "14px", "flex": "1 1 auto", "minWidth": "0", "minHeight": "0"}
+PANEL_VISIBLE = {"display": "flex", "flexDirection": "column", "flex": "1 1 auto", "minWidth": "0", "minHeight": "0"}
+VIEW = {"display": "flex", "gap": "14px", "flex": "1 1 auto", "minWidth": "0", "minHeight": "0"}
 
 
 # ─────────────────────────── building blocks ───────────────────────────
@@ -192,6 +193,9 @@ def _stage_column():
                              options=[{"label": "keep at full size", "value": 0}]
                              + [{"label": f"keep at {s}", "value": s} for s in (2048, 4096)],
                              value=0, clearable=False, style={**SMALL, "width": "150px"}),
+                html.Button("Add look to film", id="alc-snap", n_clicks=0,
+                            title="This step, as a look on the Video subtab's timeline at its playhead",
+                            style=_ui.button("secondary", padding="5px 11px", fontSize="12px")),
                 html.Button("Keep", id="alc-keep", n_clicks=0,
                             style=_ui.button("primary", padding="6px 14px", fontSize="12.5px")),
             ], style=_ui.row("10px", marginBottom="6px")),
@@ -300,15 +304,22 @@ def _settings_column():
 
 
 def layout() -> html.Div:
+    """Alchemy's two subtabs: Image (one step on one picture) and Video (ui_film: a timeline of
+    pictures morphed through the tokens, with any setting keyed in time)."""
+    try:
+        from . import ui_film as _film
+    except ImportError:                               # pragma: no cover
+        import ui_film as _film
     return html.Div(
         [
             dcc.Store(id="alc-roles", storage_type="local"),
             dcc.Store(id="alc-knob-seed", storage_type="memory"),
             dcc.Store(id="alc-before-key", storage_type="memory"),
             dcc.Store(id="alc-request", storage_type="memory"),
-            _cast_column(),
-            _stage_column(),
-            _settings_column(),
+            dcc.RadioItems(id="alc-subtab", className="alc-subtabs", value="image", inline=True,
+                           options=[{"label": "Image", "value": "image"}, {"label": "Video", "value": "video"}]),
+            html.Div([_cast_column(), _stage_column(), _settings_column()], id="alc-image-view", style=VIEW),
+            _film.layout(),
         ],
         id="alchemy-panel",
         style={"display": "none"},
@@ -417,6 +428,11 @@ def register(app) -> None:
     @app.callback(Output("alchemy-panel", "style"), Input("mode-select", "value"))
     def _show(mode):
         return PANEL_VISIBLE if mode == "alchemy" else {"display": "none"}
+
+    @app.callback(Output("alc-image-view", "style"), Output("alc-video-view", "style"), Input("alc-subtab", "value"))
+    def _subtab(sub):
+        hidden = {"display": "none"}
+        return (hidden, VIEW) if sub == "video" else (VIEW, hidden)
 
     @app.callback(Output("alc-cast", "children"), Output("alc-slots", "children"),
                   *[Output(f"alc-w-wrap-{i}", "style") for i in (1, 2, 3)],

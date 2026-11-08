@@ -188,7 +188,9 @@ def test_the_ops_are_registered_with_their_kinds():
                      "alchemy make": "effect",
                      "alchemy mask presets": "read", "alchemy mask preview": "read",
                      "alchemy recipe list": "read", "alchemy recipe show": "read",
-                     "alchemy recipe save": "write"}
+                     "alchemy recipe save": "write", "alchemy film list": "read",
+                     "alchemy film show": "read", "alchemy film save": "write", "alchemy film delete": "write",
+                     "alchemy film preview": "read", "alchemy film make": "effect"}
 
 
 def test_settings_are_routed_and_strays_refused():

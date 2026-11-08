@@ -39,17 +39,23 @@ except ImportError:                      # loose-script fallback
 # Buttons are sized to their label. Full-width buttons read as banners and make
 # a panel look like a form to fill top-to-bottom rather than a set of choices.
 
-INK = "#ececf0"
-INK_DIM = "#9a9aa2"
-INK_FAINT = "#6c6c74"
-SURFACE = "#1b1b1f"
-SURFACE_2 = "#232329"
-LINE = "#33333b"
+try:
+    from . import ui_style as _ui
+except ImportError:                                   # pragma: no cover
+    import ui_style as _ui
 
-ACCENT = "#00bcd4"
-OK = "#43b581"
-WARN = "#d99a34"
-BAD = "#e05252"
+# Local names for the tokens, kept so the layout code below reads as it did.
+INK = _ui.INK
+INK_DIM = _ui.INK_DIM
+INK_FAINT = _ui.INK_FAINT
+SURFACE = _ui.SURFACE
+SURFACE_2 = _ui.SURFACE_2
+LINE = _ui.LINE
+
+ACCENT = _ui.ACCENT
+OK = _ui.OK
+WARN = _ui.WARN
+BAD = _ui.BAD
 
 CARD = {"backgroundColor": SURFACE, "border": f"1px solid {LINE}",
         "borderRadius": "10px", "padding": "18px 20px", "marginBottom": "14px"}
@@ -71,7 +77,7 @@ def _btn(kind="primary", **extra):
             "fontWeight": "600", "cursor": "pointer", "border": "1px solid transparent",
             "whiteSpace": "nowrap", "width": "auto", "flex": "0 0 auto"}
     if kind == "primary":
-        base |= {"backgroundColor": ACCENT, "color": "#08272c"}
+        base |= {"backgroundColor": ACCENT, "color": _ui.ACCENT_INK}
     elif kind == "secondary":
         base |= {"backgroundColor": "transparent", "color": INK,
                  "border": f"1px solid {LINE}"}
@@ -733,7 +739,7 @@ def dataset_rows() -> list:
                                 "backgroundColor": tone}),
                 html.Span(d.name, style={"fontWeight": "600", "fontSize": "13px",
                                          "color": INK, "minWidth": "150px"}),
-                _pill(d.modality, ACCENT if d.modality == "image" else "#a982d9"),
+                _pill(d.modality, _ui.MODALITY.get(d.modality, ACCENT)),
                 html.Span(f"{h['total']:,} items" if h["total"] else "\u2014",
                           style={"fontSize": "11.5px", "color": INK_DIM,
                                  "minWidth": "80px",
@@ -1126,7 +1132,7 @@ def register(app) -> None:
             return ""
         folder = os.path.expanduser(str(folder).strip().strip('"'))
         if not os.path.isdir(folder):
-            return html.Span("Not a folder: " + folder, style={"color": "#e74c3c"})
+            return html.Span("Not a folder: " + folder, style={"color": _ui.BAD})
         n, sample = scan_media(folder, modality or "image")
         _scanned_count["n"] = n
         # Measure this folder rather than assuming a constant.
@@ -1264,7 +1270,7 @@ def register(app) -> None:
     )
     def _start(n, folder, name, modality, model_id, features, k, vocab):
         def err(text):
-            return no_update, no_update, html.Span(text, style={"color": "#e74c3c"})
+            return no_update, no_update, html.Span(text, style={"color": _ui.BAD})
 
         if not n:
             return no_update, no_update, no_update
@@ -1313,7 +1319,7 @@ def register(app) -> None:
             )
 
         jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
-        return jid, False, html.Span("Started.", style={"color": "#4caf50"})
+        return jid, False, html.Span("Started.", style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),
@@ -1338,7 +1344,7 @@ def register(app) -> None:
         if MANAGER.active():
             return no_update, no_update, html.Span(
                 "Something is already running. Wait for it, or cancel it.",
-                style={"color": "#e74c3c"})
+                style={"color": _ui.BAD})
 
         name, _, modality = str(trig["index"]).partition("::")
         modality = modality or "image"
@@ -1350,7 +1356,7 @@ def register(app) -> None:
         if not root or not os.path.isdir(root):
             return no_update, no_update, html.Span(
                 f"Cannot find {root or 'the folder'} for {name}. If the files moved, "
-                f"relocate the dataset first.", style={"color": "#e74c3c"})
+                f"relocate the dataset first.", style={"color": _ui.BAD})
 
         def job(handle):
             handle.update(fraction=0.0, message="Looking for new files")
@@ -1369,7 +1375,7 @@ def register(app) -> None:
 
         jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
         return jid, False, html.Span(f"Checking {root} for new files…",
-                                     style={"color": "#4caf50"})
+                                     style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-rework-panel", "style"),
@@ -1448,7 +1454,7 @@ def register(app) -> None:
         if MANAGER.active():
             return no_update, no_update, html.Span(
                 "Something is already running. Wait for it, or cancel it.",
-                style={"color": "#e74c3c"})
+                style={"color": _ui.BAD})
 
         name, _, modality = str(pending).partition("::")
         modality = modality or "image"
@@ -1466,7 +1472,7 @@ def register(app) -> None:
             # collection would be laid out from paths pointing at nothing.
             return no_update, no_update, html.Span(
                 f"{health['missing']:,} of {name}'s files are not where the index "
-                f"expects them. Relocate it first.", style={"color": "#e74c3c"})
+                f"expects them. Relocate it first.", style={"color": _ui.BAD})
 
         label_src = None                       # None -> the built-in word list
         if vocab == "folders":
@@ -1492,7 +1498,7 @@ def register(app) -> None:
 
         jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
         return jid, False, html.Span(f"Reworking {name}…",
-                                     style={"color": "#4caf50"})
+                                     style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),
@@ -1515,7 +1521,7 @@ def register(app) -> None:
         if MANAGER.active():
             return no_update, no_update, html.Span(
                 "Something is already running. Wait for it, or cancel it.",
-                style={"color": "#e74c3c"})
+                style={"color": _ui.BAD})
 
         name, _, modality = str(trig["index"]).partition("::")
         modality = modality or "image"
@@ -1536,7 +1542,7 @@ def register(app) -> None:
         jid = MANAGER.submit(job, kind="index", label="Indexing " + name)
         return jid, False, html.Span(
             f"Laying out {name} from the index it already has…",
-            style={"color": "#4caf50"})
+            style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),
@@ -1559,7 +1565,7 @@ def register(app) -> None:
         if MANAGER.active():
             return no_update, no_update, html.Span(
                 "Something is already running. Wait for it, or cancel it.",
-                style={"color": "#e74c3c"})
+                style={"color": _ui.BAD})
 
         name, _, modality = str(trig["index"]).partition("::")
         modality = modality or "image"
@@ -1589,7 +1595,7 @@ def register(app) -> None:
 
         jid = MANAGER.submit(job, kind="index", label="Reading marks for " + name)
         return jid, False, html.Span(f"Re-reading ON1 marks for {name}…",
-                                     style={"color": "#4caf50"})
+                                     style={"color": _ui.OK})
 
     @app.callback(
         [Output("dm-job", "data", allow_duplicate=True),
@@ -1640,7 +1646,7 @@ def register(app) -> None:
     def _poll(_ticks, job_id, refresh):
         hidden = {**CARD, "display": "none"}
 
-        def bar(pct, colour="#00bcd4"):
+        def bar(pct, colour=_ui.ACCENT):
             return {"width": f"{pct}%", "height": "100%",
                     "backgroundColor": colour, "transition": "width .3s"}
 
@@ -1652,16 +1658,16 @@ def register(app) -> None:
         pct = int(round((frac if frac is not None else 0) * 100))
         status = snap["status"]
         if status == "failed":
-            colour, title = "#e74c3c", "Failed"
+            colour, title = _ui.BAD, "Failed"
             msg = snap.get("error") or "Something went wrong."
         elif status == "cancelled":
             colour, title = "#8a6a2b", "Cancelled"
             msg = snap.get("message") or ""
         elif status == "done":
-            colour, title, pct = "#4caf50", "Finished", 100
+            colour, title, pct = _ui.OK, "Finished", 100
             msg = snap.get("message") or "Done."
         else:
-            colour = "#00bcd4"
+            colour = _ui.ACCENT
             title = snap.get("label") or "Working"
             msg = snap.get("message") or ""
 

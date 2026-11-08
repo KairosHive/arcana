@@ -1,7 +1,7 @@
 html, body {
     margin: 0 !important;
     padding: 0 !important;
-    background: #121212 !important;
+    background: var(--arc-bg) !important;
 }
 #_dash-app-content {
     margin: 0 !important;
@@ -9,7 +9,7 @@ html, body {
 .app-container {
     margin: 0 !important;
     padding: 0 !important;
-    background: #121212 !important;
+    background: var(--arc-bg) !important;
 }
 
 html, body {
@@ -39,17 +39,42 @@ body {
    controlling width and spacing.
    ========================================================================== */
 
+/* ---- the palette ----
+   One set of colours for the stylesheet, mirrored from arcana/ui_style.py,
+   which is the source of truth for everything the Python side draws.
+   tests/test_ui_style.py checks the two agree. The --Dash-* lines override
+   Dash 4's own design tokens, which is where the sliders took their purple
+   from: nothing in this file had named it. */
+:root {
+    --arc-bg: #141311;
+    --arc-surface: #1c1a17;
+    --arc-surface-2: #26231f;
+    --arc-line: #38332d;
+    --arc-ink: #ede8df;
+    --arc-ink-dim: #a39c90;
+    --arc-ink-faint: #6f685e;
+    --arc-accent: #c8743f;
+    --arc-target: #8c9a5b;
+    --arc-ok: #7a9a5e;
+    --arc-warn: #d6a74d;
+    --arc-bad: #b5423a;
+
+    --Dash-Fill-Interactive-Strong: var(--arc-accent);
+    --Dash-Fill-Primary-Active: var(--arc-accent);
+    --Dash-Fill-Disabled: var(--arc-line);
+}
+
 /* ---- text fields, number fields, textareas ---- */
 .dash-input-element,
 input.dash-input-element,
 .dash-textarea,
 textarea.dash-textarea {
-    background-color: #2a2a2a !important;
-    background: #2a2a2a !important;
-    color: #f5f5f5 !important;
-    border: 1px solid #444 !important;
+    background-color: var(--arc-surface-2) !important;
+    background: var(--arc-surface-2) !important;
+    color: var(--arc-ink) !important;
+    border: 1px solid var(--arc-line) !important;
     border-radius: 4px !important;
-    caret-color: #00bcd4;
+    caret-color: var(--arc-accent);
 }
 
 .dash-input-container,
@@ -60,7 +85,7 @@ textarea.dash-textarea {
 
 .dash-input-element::placeholder,
 .dash-textarea::placeholder {
-    color: #8a8a8a !important;
+    color: var(--arc-ink-dim) !important;
     opacity: 1;                 /* Firefox dims placeholders by default */
 }
 
@@ -69,15 +94,15 @@ textarea.dash-textarea {
 .dash-input-element:focus-visible,
 .dash-textarea:focus-visible {
     outline: none !important;
-    border-color: #00bcd4 !important;
-    box-shadow: 0 0 0 2px rgba(0, 188, 212, 0.25) !important;
+    border-color: var(--arc-accent) !important;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--arc-accent) 25%, transparent) !important;
 }
 
 /* Chrome paints autofilled fields a hard-coded pale yellow; the huge inset
    shadow is the only way to repaint it. */
 .dash-input-element:-webkit-autofill {
-    -webkit-text-fill-color: #f5f5f5 !important;
-    -webkit-box-shadow: 0 0 0 1000px #2a2a2a inset !important;
+    -webkit-text-fill-color: var(--arc-ink) !important;
+    -webkit-box-shadow: 0 0 0 1000px var(--arc-surface-2) inset !important;
 }
 
 /* ---- radio buttons and checklists ----
@@ -90,14 +115,14 @@ textarea.dash-textarea {
 .dash-checklist .dash-options-list-option,
 .dash-checklist .dash-options-list-option-text,
 .dash-checklist .dash-options-list-option span {
-    color: #f5f5f5 !important;
+    color: var(--arc-ink) !important;
 }
 
 .dash-radioitems .dash-options-list-option.selected,
 .dash-radioitems .dash-options-list-option.selected .dash-options-list-option-text,
 .dash-checklist .dash-options-list-option.selected,
 .dash-checklist .dash-options-list-option.selected .dash-options-list-option-text {
-    color: #ffffff !important;
+    color: var(--arc-ink) !important;
 }
 
 .dash-radioitems .dash-options-list-option,
@@ -107,7 +132,7 @@ textarea.dash-textarea {
 
 .dash-radioitems .dash-options-list-option-checkbox,
 .dash-checklist .dash-options-list-option-checkbox {
-    accent-color: #00bcd4;
+    accent-color: var(--arc-accent);
 }
 
 /* ---- dropdowns ----
@@ -119,11 +144,11 @@ textarea.dash-textarea {
 .dash-dropdown-options .dash-options-list-option,
 .dash-dropdown-options .dash-options-list-option-text,
 .dash-dropdown-options .dash-options-list-option span {
-    color: #111 !important;
+    color: var(--arc-bg) !important;
 }
 
 .dash-dropdown-placeholder {
-    color: #666 !important;
+    color: var(--arc-ink-faint) !important;
 }
 
 /* ── moodboard tool switcher ───────────────────────────────────────────────
@@ -134,10 +159,10 @@ textarea.dash-textarea {
 .tool-switch {
   display: flex;
   gap: 0;
-  border: 1px solid #33333b;
+  border: 1px solid var(--arc-line);
   border-radius: 8px;
   overflow: hidden;
-  background: #16161a;
+  background: var(--arc-surface);
 }
 .tool-switch label {
   flex: 1 1 0;
@@ -145,12 +170,12 @@ textarea.dash-textarea {
   padding: 8px 6px;
   font-size: 12px;
   font-weight: 600;
-  color: #9a9aa2;
+  color: var(--arc-ink-dim);
   cursor: pointer;
   border-bottom: 2px solid transparent;
   transition: background 0.12s, color 0.12s;
 }
-.tool-switch label:hover { background: #1f1f25; color: #ececf0; }
+.tool-switch label:hover { background: var(--arc-surface-2); color: var(--arc-ink); }
 /* The radio itself is only an accessibility anchor; the label is the control. */
 .tool-switch input[type="radio"] {
   position: absolute;
@@ -159,11 +184,11 @@ textarea.dash-textarea {
   height: 0;
 }
 .tool-switch label:has(input:checked) {
-  background: #1b1b1f;
-  color: #ececf0;
+  background: var(--arc-surface);
+  color: var(--arc-ink);
 }
-.tool-switch label:first-of-type:has(input:checked)  { border-bottom-color: #00bcd4; }
-.tool-switch label:last-of-type:has(input:checked)   { border-bottom-color: #e05fd8; }
+.tool-switch label:first-of-type:has(input:checked)  { border-bottom-color: var(--arc-accent); }
+.tool-switch label:last-of-type:has(input:checked)   { border-bottom-color: var(--arc-target); }
 
 /* ---- dropdown triggers ----
    Dash 4 renders dcc.Dropdown as a <button>, and the Skeleton-derived
@@ -181,9 +206,9 @@ button.dash-dropdown {
     text-transform: none !important;
     letter-spacing: normal !important;
     font-weight: 400 !important;
-    background-color: #2a2a2a !important;
-    color: #f0f0f0 !important;
-    border: 1px solid #3d3d3d !important;
+    background-color: var(--arc-surface-2) !important;
+    color: var(--arc-ink) !important;
+    border: 1px solid var(--arc-line) !important;
     border-radius: 6px !important;
     height: auto !important;
     min-height: 30px !important;
@@ -192,12 +217,12 @@ button.dash-dropdown {
 }
 
 button.dash-dropdown:hover {
-    border-color: #00bcd4 !important;
-    background-color: #303030 !important;
+    border-color: var(--arc-accent) !important;
+    background-color: var(--arc-surface-2) !important;
 }
 
 button.dash-dropdown:focus-visible {
-    outline: 2px solid #00bcd4 !important;
+    outline: 2px solid var(--arc-accent) !important;
     outline-offset: 1px;
 }
 
@@ -206,7 +231,7 @@ button.dash-dropdown:focus-visible {
 button.dash-dropdown .dash-dropdown-value,
 button.dash-dropdown .dash-dropdown-value-item,
 button.dash-dropdown .dash-dropdown-value-item span {
-    color: #f0f0f0 !important;
+    color: var(--arc-ink) !important;
     text-transform: none !important;
     letter-spacing: normal !important;
     overflow: hidden;
@@ -215,7 +240,7 @@ button.dash-dropdown .dash-dropdown-value-item span {
 }
 
 button.dash-dropdown .dash-dropdown-trigger-icon {
-    color: #9a9aa2;
+    color: var(--arc-ink-dim);
     flex: none;
 }
 
@@ -263,15 +288,15 @@ body.arc-moodboard #main-row > #left-column {
     top: 0;
     bottom: 0;
     width: 1px;
-    background: #333;
+    background: var(--arc-line);
 }
 
 .arc-splitter:hover {
-    background: rgba(0, 188, 212, 0.22);
+    background: color-mix(in srgb, var(--arc-accent) 22%, transparent);
 }
 
 .arc-splitter:hover::after {
-    background: #00bcd4;
+    background: var(--arc-accent);
 }
 
 /* While dragging, stop the pointer selecting text under it and keep the
@@ -282,7 +307,7 @@ body.arc-resizing {
 }
 
 body.arc-resizing .arc-splitter {
-    background: rgba(0, 188, 212, 0.3);
+    background: color-mix(in srgb, var(--arc-accent) 30%, transparent);
 }
 
 /* ---- slider tooltips ----
@@ -291,9 +316,9 @@ body.arc-resizing .arc-splitter {
    Both are set here rather than only the colour, so it does not depend on
    which of the two a future Dash version changes. */
 .dash-slider-tooltip {
-    background-color: #1e1e28 !important;
-    color: #f0f0f0 !important;
-    border: 1px solid #3d3d4a !important;
+    background-color: var(--arc-surface) !important;
+    color: var(--arc-ink) !important;
+    border: 1px solid var(--arc-line) !important;
     border-radius: 4px !important;
     padding: 2px 7px !important;
     font-size: 11px !important;
@@ -337,15 +362,15 @@ body.arc-chrome-folded #arc-header-row {
     font-size: 11px;
     line-height: 18px;
     letter-spacing: 0.4px;
-    color: #9a9aa2;
-    background: #1a1a22;
-    border: 1px solid #33333f;
+    color: var(--arc-ink-dim);
+    background: var(--arc-surface);
+    border: 1px solid var(--arc-line);
     border-radius: 10px;
     cursor: pointer;
     font-family: inherit;
 }
 
 #arc-fold:hover {
-    color: #00bcd4;
-    border-color: #00bcd4;
+    color: var(--arc-accent);
+    border-color: var(--arc-accent);
 }

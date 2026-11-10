@@ -96,6 +96,8 @@ DEPTH = 2                                    # a film in a film in a film, and n
 TRACK_EVERY = 0.5                            # seconds of a clip between two readings of a model's mask
 TRACK_SIDE = 192                             # the long side the movement between frames is read at
 TEMPORAL = ("auto", "frame", "keys")
+KEY_MOVE = 0.06                              # a key interval is halved while the clip moves more than this
+KEY_LEAST = 0.125                            # share of the frame across it, down to this many seconds
 REFINE_KEYS = ("feather", "grow", "follow", "ragged", "amount")
 # The numbers of each geometric layer a lane can move, in the order its source line writes them.
 MOVING = {"spot": ("x", "y", "r"), "gradient": ("angle",), "band": ("y", "height"),
@@ -693,21 +695,48 @@ class Film:
         """A model's map on the frame of a playing clip: read on the clip every TRACK_EVERY seconds,
         and each of the two readings around this frame moved onto it along the clip's movement. None
         when the movement cannot be read (no OpenCV), which leaves the two ends to cross-fade."""
+        q = self.stops[k]
+        clip = self.inner[q["key"]]
+        try:
+            tau, ta, tb, u = self._around(k, s, TRACK_EVERY)
+            now = _grey(clip.frame(tau))
+            return _mixed(_carry(*self._reading(q["key"], clip, ta, kind, arg), now),
+                          _carry(*self._reading(q["key"], clip, tb, kind, arg), now), u)
+        except ImportError:
+            return None
+
+    def _around(self, k: int, s: float, every: float):
+        """Where a playing clip is at s along its passage, the two key times around that moment and how
+        far between them it lies: (tau, before, after, u). Keys sit `every` seconds apart, and closer
+        where the clip moves fast: an interval across which the picture moves more than KEY_MOVE of
+        the frame is halved, down to KEY_LEAST seconds, since a result carried further than that no
+        longer lands where it belongs."""
         q, nxt = self.stops[k], self.stops[k + 1]
         clip = self.inner[q["key"]]
         lo, hi = float(q["at"]), float(nxt["at"])
         tau = lo + (hi - lo) * s
-        n = max(1, int(np.ceil((hi - lo) / TRACK_EVERY - 1e-9)))
-        step = (hi - lo) / n
-        i = min(int((tau - lo) / step), n - 1)
-        u = min(max((tau - lo) / step - i, 0.0), 1.0)
-        now = _grey(clip.frame(tau))
-        try:
-            a = _carried(*self._reading(q["key"], clip, lo + i * step, kind, arg), now)
-            b = _carried(*self._reading(q["key"], clip, lo + (i + 1) * step, kind, arg), now)
-        except ImportError:
-            return None
-        return (1 - u) * a + u * b
+        grids = self.__dict__.setdefault("_key_times", {})
+        name = (q["key"], lo, hi, round(every, 3))
+        if name not in grids:
+            n = max(1, int(np.ceil((hi - lo) / every - 1e-9)))
+            times = [lo + (hi - lo) * j / n for j in range(n + 1)]
+            greys = {x: _grey(clip.still(x)) for x in times}
+            for _ in range(3):
+                out = [times[0]]
+                for a, b in zip(times, times[1:]):
+                    if b - a > KEY_LEAST * 1.5 and _moved(greys[a], greys[b]) > KEY_MOVE:
+                        mid = (a + b) / 2
+                        greys[mid] = _grey(clip.still(mid))
+                        out.append(mid)
+                    out.append(b)
+                if len(out) == len(times):
+                    break
+                times = out
+            grids[name] = times
+        times = grids[name]
+        i = min(max(int(np.searchsorted(times, tau, side="right")) - 1, 0), len(times) - 2)
+        ta, tb = times[i], times[i + 1]
+        return tau, ta, tb, min(max((tau - ta) / max(tb - ta, 1e-9), 0.0), 1.0)
 
     def _reading(self, key: int, clip: "Clip", at: float, kind, arg):
         """(the model's map, the grey frame it was read on) at a moment of a clip, kept."""
@@ -763,21 +792,14 @@ class Film:
         each is. Something that enters the shot between two keys comes in with the later key's look.
         Adding the look's change to the frame itself was tried first, and let such a thing show
         through unstyled (a car crossing a quilted street). None when movement cannot be read."""
-        q, nxt = self.stops[k], self.stops[k + 1]
-        clip = self.inner[q["key"]]
-        lo, hi = float(q["at"]), float(nxt["at"])
-        tau = lo + (hi - lo) * s
-        n = max(1, int(np.ceil((hi - lo) / self.spec["key_every"] - 1e-9)))
-        step = (hi - lo) / n
-        i = min(int((tau - lo) / step), n - 1)
-        u = min(max((tau - lo) / step - i, 0.0), 1.0)
-        now = _grey(c)
+        clip = self.inner[self.stops[k]["key"]]
         try:
-            a = _carried(*self._styled(k, clip, lo + i * step), now)
-            b = _carried(*self._styled(k, clip, lo + (i + 1) * step), now)
+            tau, ta, tb, u = self._around(k, s, self.spec["key_every"])
+            now = _grey(c)
+            return np.clip(_mixed(_carry(*self._styled(k, clip, ta), now),
+                                  _carry(*self._styled(k, clip, tb), now), u), 0, 1)
         except ImportError:
             return None
-        return np.clip((1 - u) * a + u * b, 0, 1)
 
     def _styled(self, k: int, clip: "Clip", at: float):
         """(the look's result, the grey frame it was run on) at a key time of a clip, kept while the look there
@@ -857,6 +879,48 @@ def _grey(frame) -> np.ndarray:
     k = TRACK_SIDE / max(h, w)
     size = (max(8, round(w * k)), max(8, round(h * k)))
     return np.asarray(to_image(frame).convert("L").resize(size, Image.BILINEAR))
+
+
+def _moved(a: np.ndarray, b: np.ndarray) -> float:
+    """How far the picture moves between two grey frames, as a share of the frame's long side: the
+    middle of the flow's length over the frame."""
+    import cv2
+
+    flow = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM).calc(a, b, None)
+    return float(np.median(np.hypot(flow[..., 0], flow[..., 1]))) / max(a.shape)
+
+
+def _mixed(a, b, u: float) -> np.ndarray:
+    """Two carried results mixed by how near each key is and by how well each landed, place by place:
+    where one key's frame does not match this frame once moved (something crossed, or turned), the
+    other key answers there, so the mix does not show the two as ghosts of each other."""
+    (ra, fa), (rb, fb) = a, b
+    wa, wb = (1 - u) * fa + 1e-3, u * fb + 1e-3
+    if ra.ndim == 3:
+        wa, wb = wa[..., None], wb[..., None]
+    return (wa * ra + wb * rb) / (wa + wb)
+
+
+def _carry(reading: np.ndarray, was: np.ndarray, now: np.ndarray):
+    """(the reading moved onto `now`, how well it landed): the second is 0..1 at each place, from how
+    closely the frame it was read on matches this frame once moved the same way."""
+    import cv2
+
+    H, W = reading.shape[:2]
+    if was.shape != now.shape or np.array_equal(was, now):
+        return reading, np.ones((H, W), np.float32)
+    flow = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM).calc(now, was, None)
+    h, w = now.shape
+    xs, ys = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    landed = cv2.remap(was, xs + flow[..., 0], ys + flow[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    miss = cv2.GaussianBlur(np.abs(landed.astype(np.float32) - now.astype(np.float32)), (0, 0), 2.0)
+    fit = cv2.resize(np.exp(-miss / 10.0), (W, H), interpolation=cv2.INTER_LINEAR)
+    fx = cv2.resize(flow[..., 0], (W, H), interpolation=cv2.INTER_LINEAR) * (W / w)
+    fy = cv2.resize(flow[..., 1], (W, H), interpolation=cv2.INTER_LINEAR) * (H / h)
+    xs, ys = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))
+    out = cv2.remap(np.ascontiguousarray(reading, np.float32), xs + fx, ys + fy, cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_REPLICATE)
+    return out, fit.astype(np.float32)
 
 
 def _carried(reading: np.ndarray, was: np.ndarray, now: np.ndarray) -> np.ndarray:

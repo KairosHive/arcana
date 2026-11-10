@@ -1160,10 +1160,27 @@ video, then tracked masks and propagated style, then phase 9.
 - `video.frame_at` returned the frame almost a second after the time asked,
   because it read at one frame a second. It now reads at the file's own
   rate.
+- Key times follow the movement. Keys start `key_every` seconds apart, and an
+  interval across which the picture moves more than 6% of the frame is
+  halved, down to 0.125 s. Two carried keys are mixed place by place by how
+  well each landed, so where one key's frame no longer matches (something
+  crossed, a head turned) the other answers there.
+- Measured with ControlNet (8 steps) on a handheld talking-head clip,
+  512 px, 20 frames. The measure is the change between frames once the
+  clip's own movement is taken out, in levels of 255. On every frame the look
+  changed 66.2 and took 98 s. Carried from keys it changed 23.4 and took 43 s.
+  The clip itself changes 8.7 by this measure. On a slow night street clip,
+  per frame flickered 16.1 against the clip's 2.7, and carried 3.3.
+- Measured masks on the same clip against the model run on every frame. The
+  subject mask tracked from readings every half second overlapped it by
+  0.993 on average (lowest 0.966), and the old cross-fade of the two ends by
+  0.862. A mask read from the word "glasses" overlapped it by 0.829 (lowest
+  0.121), and the cross-fade by 0.385. The per-frame detector itself changes
+  between neighbouring frames, which lowers that reference.
 - Open. SAM 2's own video propagation, warped noise and previous-frame
   conditioning (levels 2 and 3 of 3.4) and a video model are still to build.
-  The carried look was measured with a patch method and has not been run with
-  a diffusion method. The audio lane has no page control. Sound from a clip inside a
+  Carried looks still change on what they cover about three times as much as
+  the clip does on fast footage. The audio lane has no page control. Sound from a clip inside a
   held film is left out. The render reads originals at the film's size, and
   scrubbing reads the same files.
 

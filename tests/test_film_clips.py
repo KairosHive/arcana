@@ -225,6 +225,16 @@ def test_a_look_runs_on_key_frames_of_a_clip_and_is_carried_between_them(ds, mov
         F.normalised(_spec(moving, pictures=pictures, temporal="often"))
 
 
+def test_two_carried_keys_mix_by_how_well_each_landed():
+    a = np.full((4, 4, 3), 0.2, np.float32)
+    b = np.full((4, 4, 3), 0.8, np.float32)
+    good, bad = np.ones((4, 4), np.float32), np.zeros((4, 4), np.float32)
+    assert np.allclose(F._mixed((a, good), (b, good), 0.25), 0.35, atol=1e-3)     # by nearness alone
+    bad[:2] = 1.0                                                                  # b landed on the top half only
+    got = F._mixed((a, good), (b, bad), 0.5)
+    assert np.allclose(got[:2], 0.5, atol=1e-3) and np.allclose(got[2:], 0.2, atol=1e-2)
+
+
 def test_the_timeline_lists_a_clip_with_its_length_and_lays_one_down(ds, clip):
     from arcana import ui_film as U
     m = U.meta(_spec(clip))

@@ -159,6 +159,7 @@ class BoardRow(BaseModel):
     name: str
     author: str
     count: int
+    kind: str = "board"
     missing: int = 0
     sections: int = 0
     updated: float = 0
@@ -180,7 +181,8 @@ class BoardListResult(Result):
                 bits.append(f"{b.sections} section{'s' if b.sections != 1 else ''}")
             if b.missing:
                 bits.append(f"{b.missing} missing")
-            lines.append(f"{b.slug:<{width}}{b.name}  ·  by {b.author}  ·  {', '.join(bits)}  ·  {when}")
+            kind = "  ·  set" if b.kind == "set" else ""
+            lines.append(f"{b.slug:<{width}}{b.name}  ·  by {b.author}{kind}  ·  {', '.join(bits)}  ·  {when}")
         return "\n".join(lines) + "\n"
 
 
@@ -188,6 +190,7 @@ def row(rec: dict) -> BoardRow:
     here, gone = _boards.present(rec)
     return BoardRow(slug=rec["slug"], name=rec.get("name", rec["slug"]),
                     author=rec.get("author", "person"), count=len(_boards.item_paths(rec)),
+                    kind=rec.get("kind") or "board",
                     missing=len(gone), sections=len(rec.get("sections") or []),
                     updated=float(rec.get("updated") or 0), dataset=rec.get("dataset") or "")
 
@@ -704,19 +707,22 @@ class BoardSetArgs(Args):
     brief: str | None = Field(None, description="The words that were asked for.")
     concept: str | None = Field(None, description="One paragraph on what the board argues.")
     dataset: str | None = Field(None, description="The dataset it draws on.")
+    kind: Literal["board", "set"] | None = Field(None, description="board for a moodboard, set for pictures "
+                                                 "gathered by searches, which Alchemy's labels and LoRAs read.")
 
 
 @op("board set", "write", BoardSetArgs, BoardWriteResult,
     doc="""
     Change a board's own fields. They are its name, the brief it answers, its
-    concept, and the dataset it draws on.
+    concept, the dataset it draws on, and its kind. Changing the kind moves a
+    moodboard onto the shelf of sets, or a set onto the shelf of boards.
     """,
-    examples=('board set monsoon --concept "Rain as a weight the city carries"',))
+    examples=('board set monsoon --concept "Rain as a weight the city carries"', "board set monsoon --kind board"))
 def _board_set(a: BoardSetArgs, ctx: Context) -> BoardWriteResult:
     rec = load(a.board)
-    changed = [f for f in ("name", "brief", "concept", "dataset") if getattr(a, f) is not None]
+    changed = [f for f in ("name", "brief", "concept", "dataset", "kind") if getattr(a, f) is not None]
     if not changed:
-        raise ValueError("Give at least one of --name, --brief, --concept, --dataset.")
+        raise ValueError("Give at least one of --name, --brief, --concept, --dataset, --kind.")
     for f in changed:
         rec[f] = getattr(a, f)
     put(ctx, rec)

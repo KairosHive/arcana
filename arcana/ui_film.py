@@ -109,6 +109,10 @@ def lane_meta(spec: dict) -> tuple[list, dict]:
     if most_materials:
         meta["zoom"] = {"label": "material zoom", "lo": 0.5, "hi": 4, "step": 0.25, "group": "pictures",
                         "doc": "how large the materials are drawn: 2 shows half of each, twice as large"}
+    if methods - {None, "none"}:
+        meta["amount"] = {"label": "look · how much shows", "lo": 0, "hi": 1, "step": 0.05, "group": "method",
+                          "doc": "how much of the look's method covers the morph: 0 the morph alone, 1 the whole "
+                                 "look. A slow rise lays a texture over the film bit by bit"}
     for key, group, label, lo, hi, step, doc in _finish.SPEC:
         meta[f"finish.{key}"] = {"label": f"finish · {label}", "lo": lo, "hi": hi, "step": step, "group": "finish",
                                  "doc": doc}
@@ -184,6 +188,8 @@ def value_at(spec: dict, path: str, t: float, lo: float):
     try:
         if path == "zoom":
             return float(s.get("zoom", 1.0))
+        if path == "amount":
+            return float(s.get("amount", 1.0))
         if head in ("knobs", "finish"):
             v = (s.get(head) or {}).get(rest)
             if v is None and head == "finish":
@@ -233,8 +239,20 @@ def meta(spec: dict) -> dict:
         from .alchemy.inputs import resolve
     except ImportError:                               # pragma: no cover
         from alchemy.inputs import resolve
+    film = _film()
     pictures = []
     for p in sorted(s.get("pictures") or [], key=lambda p: float(p["t"])):
+        if film.is_film(p.get("ref", "")):
+            name = str(p["ref"])[len(film.FILM_REF):]
+            q = dict(p)
+            try:
+                film._film_key(q, 0)
+                dur = film.span(q)
+            except (ValueError, KeyError, TypeError):
+                dur = 0.0
+            pictures.append({"t": float(p["t"]), "path": "", "name": name, "film": name, "dur": dur,
+                             "in": q.get("in"), "out": q.get("out"), "speed": q.get("speed")})
+            continue
         try:
             pictures.append({"t": float(p["t"]), "path": resolve(p["ref"]), "name": os.path.basename(str(p["ref"]))})
         except ValueError:
@@ -246,7 +264,7 @@ def meta(spec: dict) -> dict:
         label = "morph only" if m == "none" else (_methods.get(m).label if m in _methods.METHODS else m)
         looks.append({"t": float(k["t"]), "label": label})
     n_pics = len(s.get("pictures") or [])
-    length = f["length"] if f else max([float(p["t"]) for p in s.get("pictures") or []] + [GAP])
+    length = f["length"] if f else max([p["t"] + p.get("dur", 0.0) for p in pictures] + [GAP])
     return {"length": length, "lanes": lanes, "laneOptions": options, "pictures": pictures, "looks": looks,
             "ok": f is not None, "status": "" if f or n_pics < 2 else why,
             "empty": "" if n_pics >= 2 else
@@ -265,14 +283,106 @@ def add_picture(spec: dict, ref: str, t: float) -> tuple[dict, float]:
         t = 0.0
     elif round(t, 3) in taken:
         t = float(pics[-1]["t"]) + GAP
-    s["pictures"] = pics + [{"t": round(t, 3), "ref": ref, "ease": "linear"}]
+    film = _film()
+    key = {"t": round(t, 3), "ref": ref, "ease": "linear"}
+    if film.is_film(ref):
+        film._film_key(key, 0)
+    if pics:
+        # Where a film would run into the next key, or a picture lands while a film plays, the key goes
+        # after everything.
+        end = max(float(p["t"]) + _span(p) for p in pics)
+        nxt = [float(p["t"]) for p in pics if float(p["t"]) > t]
+        inside = any(float(p["t"]) < t <= float(p["t"]) + _span(p) for p in pics)
+        if inside or (nxt and t + film.span(key) >= min(nxt)):
+            t = end + GAP
+            key["t"] = round(t, 3)
+    s["pictures"] = pics + [key]
     if t >= float(s.get("length") or 0):
         s.pop("length", None)
     return s, t
 
 
-def spaced(spec: dict, shape: str) -> dict:
-    return _film().spaced(full(spec), shape)
+def _span(p: dict) -> float:
+    film = _film()
+    if not film.is_film(p.get("ref", "")):
+        return 0.0
+    q = dict(p)
+    try:
+        film._film_key(q, 0)
+        return film.span(q)
+    except (ValueError, KeyError, TypeError):
+        return 0.0
+
+
+def place_series(spec: dict, refs: list, t: float, every: float = GAP, back: bool = False) -> tuple[dict, float]:
+    """Pictures onto the picture lane one after another from time t, `every` seconds apart, moving any
+    key already after t later by the room they take. With `back`, the first picture comes again at the
+    end, so the series closes on where it began. Returns the film and the time after the series."""
+    s = full(spec)
+    refs = [r for r in refs if r]
+    if not refs:
+        raise ValueError("Give at least one picture to place.")
+    if back and len(refs) > 1:
+        refs = refs + [refs[0]]
+    t = round(max(float(t or 0.0), 0.0), 3)
+    every = max(float(every or GAP), 0.2)
+    pics = sorted(s.get("pictures") or [], key=lambda p: float(p["t"]))
+    room = every * len(refs)
+    kept = [p for p in pics if float(p["t"]) < t - 1e-6]
+    later = [{**p, "t": round(float(p["t"]) + room, 3)} for p in pics if float(p["t"]) >= t - 1e-6]
+    if kept and float(kept[-1]["t"]) + _span(kept[-1]) >= t:
+        t = round(float(kept[-1]["t"]) + _span(kept[-1]) + every, 3)     # after the film playing there
+    new = [{"t": round(t + i * every, 3), "ref": r, "ease": "linear"} for i, r in enumerate(refs)]
+    s["pictures"] = kept + new + later
+    s.pop("length", None)
+    return s, round(t + room, 3)
+
+
+LANE_SHAPES = [("rise", "rise", "from the first value to the second"),
+               ("fall", "fall", "from the second value back to the first"),
+               ("swell", "swell", "up to the second value at the middle, and back"),
+               ("dip", "dip", "down to the first value at the middle, and back"),
+               ("wave", "wave", "back and forth, a number of times"),
+               ("steps", "steps", "in a number of steps, each held, then a cut")]
+
+
+def shape_lane(spec: dict, path: str, shape: str, lo: float, hi: float, start: float, end: float,
+               count: int = 3, ease: str = "smooth") -> dict:
+    """A lane's keys between start and end replaced by a whole curve: rise, fall, swell, dip, wave or
+    steps between the values lo and hi. Keys outside that span stay."""
+    _film().check_path(path)
+    start, end = float(start), float(end)
+    if end - start < 0.05:
+        raise ValueError("A shape needs a span: end after start.")
+    count = max(1, min(int(count or 1), 64))
+    lo, hi = float(lo), float(hi)
+    if shape == "rise":
+        pts = [(0, lo), (1, hi)]
+    elif shape == "fall":
+        pts = [(0, hi), (1, lo)]
+    elif shape == "swell":
+        pts = [(0, lo), (0.5, hi), (1, lo)]
+    elif shape == "dip":
+        pts = [(0, hi), (0.5, lo), (1, hi)]
+    elif shape == "wave":
+        pts = [(i / (2 * count), lo if i % 2 == 0 else hi) for i in range(2 * count + 1)]
+    elif shape == "steps":
+        n = max(count, 2)
+        pts = [(i / n, lo + (hi - lo) * i / (n - 1)) for i in range(n)] + [(1, hi)]
+    else:
+        raise ValueError(f"A lane's shape is one of {', '.join(k for k, _, _ in LANE_SHAPES)}.")
+    curve = "hold" if shape == "steps" else ease
+    keys = [{"t": round(start + (end - start) * u, 3), "v": round(v, 4), "ease": curve} for u, v in pts]
+    keys[-1]["ease"] = "linear"
+    s = full(spec)
+    lanes = dict(s.get("lanes") or {})
+    old = [k for k in lanes.get(path) or [] if not start - 1e-6 <= float(k["t"]) <= end + 1e-6]
+    lanes[path] = sorted(old + keys, key=lambda k: float(k["t"]))
+    return {**s, "lanes": lanes}
+
+
+def spaced(spec: dict, shape: str, by: str = "time") -> dict:
+    return _film().spaced(full(spec), shape, by=by)
 
 
 def add_lane(spec: dict, path: str, t: float) -> dict:

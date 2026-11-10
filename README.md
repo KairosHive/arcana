@@ -66,6 +66,36 @@ renamed.
 It is meant for people with more images than they can remember — photographers,
 researchers, artists, anyone with an archive.
 
+## Learning from a set
+
+A search for *ice* or *water reflections* gathers a few hundred pictures in
+seconds, and those pictures can teach Alchemy a material.
+
+**Sets.** In Search, **Save to a set** puts the selected results, or all of them,
+into a named set. A set keeps the pictures where they are and records the
+searches that filled it, so it can grow over several searches. Collections stay
+your moodboards, and sets sit on their own shelf in the header's picker. **Copy
+the files out** exports a set to `output/search/<name>` for other tools.
+
+**IP labels.** An IP label is a named position in the space Stable Diffusion's
+IP-Adapter reads, measured as the centre of a set's pictures, of the best
+matches for some words, or of one picture. A dataset indexed with CLIP
+ViT-H/14 already holds each picture's IP-Adapter vector, so a label of a few
+hundred pictures takes about a second. In Alchemy, the IP-Adapter, ControlNet
+and texture LoRA methods draw from a label in place of a material picture. They
+mix two labels, move a material picture toward a label, push a label further
+from the average picture, or start from one of its members. A film lane on
+`mix` walks from one label to the other, and a label searches a ViT-H dataset
+for more pictures like it.
+
+**Drawing on a set.** A set's IP label carries its style everywhere a material
+goes. "Picture in a material" redraws a whole picture in it, the Generate tab
+draws new material from it, and "material on a thing" puts it on one named
+thing. That last one uses FLUX.2 klein, shown a swatch drawn from the set's own
+pictures. Training a LoRA on a set (`lora train`) still works from the command
+line, but its menu entries are hidden. In the tests so far a learned look did
+not beat the label, and LORA_ROADMAP.md says what would bring it back.
+
 ## Demo — search mode
 
 ![image](https://github.com/user-attachments/assets/dd46c1b2-d8db-4417-b173-a9872e01a927)

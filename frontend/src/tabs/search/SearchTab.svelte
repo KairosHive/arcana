@@ -27,6 +27,7 @@
   import SplitPane from '../../lib/ui/SplitPane.svelte'
   import { addToCollection } from '../../lib/stores/app.svelte'
   import { previewUrl, filmVideoUrl } from '../../lib/api/media'
+  import { learn, loadSets, loadLabels, loadAxes, saveToSet, exportSet, makeLabel } from '../../lib/stores/learn.svelte'
 
   /**
    * Prompt Search and Generate Story share this tab: the map on the left with
@@ -119,6 +120,22 @@
       watchJob(r.job, (j) => { if (j.message) acrossNote = j.message }, async (j) => { embedding = false; acrossNote = j.status === 'done' ? (j.result_text || 'Embedded.') : (j.error || `Ended: ${j.status}.`); await loadSpace(app.dataset) })
     } catch (e) { embedding = false; acrossNote = reason(e) }
   }
+  // An IP label searched in place of words: its position in CLIP ViT-H/14, so a ViT-H dataset only.
+  let byLabel = $state('none')
+  const labelOptions = $derived([{ value: 'none', label: 'words' }, ...learn.labels.map((l) => ({ value: l.slug, label: `label: ${l.name}` })),
+    ...learn.axes.map((a) => ({ value: 'axis:' + a.slug, label: `sort by: ${a.name}` }))])
+  const vith = $derived((current.dataset?.dim ?? 0) === 1024)
+  $effect(() => { if (visible && mode === 'prompt') { void loadSets(); void loadLabels(); void loadAxes() } })
+  // Alchemy's Search on a label: take it, and search at once when the dataset can.
+  $effect(() => {
+    const want = learn.searchLabel
+    if (!want || !visible || mode !== 'prompt') return
+    learn.searchLabel = ''
+    byLabel = want
+    if (vith) void run()
+    else toast('IP labels search a dataset indexed with CLIP ViT-H/14. Choose one in the header.', 'warn')
+  })
+  const datasetName = () => (app.dataset || '').split('::')[0]
   let groupTwins = $state(true)
   let thresh = $state(0.08)
   let spectrogram = $state(false)
@@ -139,17 +156,20 @@
   async function run() {
     if (!app.dataset) { toast('Choose a dataset above to begin.', 'warn'); return }
     const like = across && byCollection ? app.collection.items.slice(0, 8) : []
-    if (!text.trim() && !like.length) return
+    const labelled = mode === 'prompt' && byLabel !== 'none'
+    if (!text.trim() && !like.length && !labelled) return
     searching = true; clicked = null; saveStatus = ''
     try {
-      if (mode === 'prompt' && across) {
+      if (mode === 'prompt' && across && !labelled) {
         const r = await post('/api/across', { dataset: app.dataset, text, like, k: Math.max(k, 4) })
         groups = r.groups; hits = r.rows; understood = []; acrossNote = `Searched for ${r.query}.`
         frames = Object.fromEntries(r.groups.map((g: Group) => [g.gid, 0]))
         selected = Object.fromEntries(r.groups.map((g: Group) => [g.gid, false]))
         scenes = []
       } else if (mode === 'prompt') {
-        const r = await post('/api/search', { ...body(), text, k, group: groupTwins, thresh, level, minSeconds, balance, motion: motionText, return: give, tags: moving })
+        const r = await post('/api/search', { ...body(), text, label: labelled ? byLabel : undefined, k, group: groupTwins, thresh, level, minSeconds, balance, motion: motionText, return: give, tags: moving })
+        if (labelled && !setName.trim()) setName = learn.labels.find((l) => l.slug === byLabel)?.name ?? ''
+        else if (!setName.trim() && setChoice === NEW) setName = text.trim()
         groups = r.groups; hits = r.rows; understood = r.understood ?? []
         frames = Object.fromEntries(r.groups.map((g: Group) => [g.gid, 0]))
         selected = Object.fromEntries(r.groups.map((g: Group) => [g.gid, false]))
@@ -197,14 +217,42 @@
     } catch (e) { cutting = false; cutNote = reason(e) }
   }
 
-  async function saveSelected() {
-    const paths = groups.filter((g) => selected[g.gid]).map(currentPath)
-    if (clicked && selected.__clicked) paths.push(clicked.path)
-    if (!paths.length) { saveStatus = 'No images selected.'; saveTone = 'warn'; return }
+  // ---- saving into a set ----
+  const NEW = '__new'
+  let setChoice = $state(NEW)
+  let setName = $state('')
+  let exportFolder = $state('')
+  let savedSet = $state('')
+  const setOptions = $derived([{ value: NEW, label: 'New set…' }, ...learn.sets.map((x) => ({ value: x.slug, label: `${x.name}  ·  ${x.count}` }))])
+  // Every result, twins included: asking for 200 results means 200 pictures in the set.
+  const allPaths = () => groups.flatMap((g) => g.paths)
+  const nAll = $derived(groups.reduce((n, g) => n + g.paths.length, 0))
+  async function addToSet(all: boolean) {
+    const paths = all ? allPaths() : groups.filter((g) => selected[g.gid]).map(currentPath)
+    if (!all && clicked && selected.__clicked) paths.push(clicked.path)
+    if (!paths.length) { saveStatus = all ? 'Search first.' : 'No pictures selected.'; saveTone = 'warn'; return }
+    const existing = learn.sets.find((x) => x.slug === setChoice)
+    const name = existing ? existing.name : setName.trim()
+    if (!name) { saveStatus = 'Name the new set.'; saveTone = 'warn'; return }
+    const what = byLabel !== 'none' ? `label: ${byLabel}` : text
     try {
-      const r = await post('/api/save', { paths, folder: saveFolder, prompt: text })
-      saveStatus = r.message; saveTone = 'ok'
+      saveStatus = await saveToSet(name, paths, { text: what, dataset: datasetName(), k }, existing?.slug)
+      saveTone = 'ok'
+      savedSet = existing?.slug ?? learn.sets.find((x) => x.name === name)?.slug ?? ''
+      if (savedSet) setChoice = savedSet
     } catch (e) { saveStatus = reason(e); saveTone = 'bad' }
+  }
+  const targetSet = $derived(setChoice !== NEW ? setChoice : savedSet)
+  async function labelFromSet() {
+    const x = learn.sets.find((s) => s.slug === targetSet)
+    if (!x) return
+    saveStatus = `Measuring the IP label "${x.name}"…`; saveTone = 'dim'
+    const lab = await makeLabel({ name: x.name, set: x.slug })
+    if (lab) { saveStatus = `IP label "${lab.name}" made from ${lab.pictures} pictures. Alchemy's diffusion methods list it, and Search takes it in place of words.`; saveTone = 'ok' }
+  }
+  async function exportFiles() {
+    if (!targetSet) return
+    try { saveStatus = await exportSet(targetSet, exportFolder); saveTone = 'ok' } catch (e) { saveStatus = reason(e); saveTone = 'bad' }
   }
 
   async function saveStory() {
@@ -251,13 +299,18 @@
         <div class="row nowrap">
           <div class="grow">
             {#if mode === 'prompt'}
-              <TextInput bind:value={text} placeholder="Describe what you are looking for…" onenter={run} disabled={!app.dataset} />
+              <TextInput bind:value={text} placeholder={byLabel !== 'none' ? 'Searching by the IP label, not by words' : 'Describe what you are looking for…'} onenter={run} disabled={!app.dataset || byLabel !== 'none'} />
             {:else}
               <TextArea bind:value={text} placeholder="One scene per line." rows={3} disabled={!app.dataset} />
             {/if}
           </div>
+          {#if mode === 'prompt' && caps.can('search.labels') && (learn.labels.length || learn.axes.length)}
+            <span title={vith ? 'Search by words, or by an IP label: the pictures nearest its position' : 'IP labels search datasets indexed with CLIP ViT-H/14 only'}>
+              <Select bind:value={byLabel} options={labelOptions} size="md" width="150px" disabled={!vith} />
+            </span>
+          {/if}
           {#if mode === 'prompt'}<NumberInput bind:value={k} min={1} max={1000} suffix="results" />{/if}
-          <Button kind="primary" onclick={run} busy={searching} disabled={!app.dataset || (!text.trim() && !(across && byCollection && app.collection.items.length))}>{mode === 'prompt' ? 'Search' : 'Generate Story'}</Button>
+          <Button kind="primary" onclick={run} busy={searching} disabled={!app.dataset || (!text.trim() && !(across && byCollection && app.collection.items.length) && !(mode === 'prompt' && byLabel !== 'none'))}>{mode === 'prompt' ? 'Search' : 'Generate Story'}</Button>
           <ModalityTag feature={mode === 'prompt' ? 'search.text' : 'story.search'} />
         </div>
         {#if marks.has}
@@ -355,30 +408,50 @@
         {/if}
       </div>
 
-      <Disclosure label="Save" note={mode === 'prompt' ? 'selected pictures to output/search' : 'the story to output/stories'} level={1}>
-        <div class="row nowrap">
-          <div class="grow"><TextInput bind:value={saveFolder} placeholder={mode === 'prompt' ? 'Folder name under output/search (optional)' : 'Folder name under output/stories (optional)'} /></div>
-          {#if mode === 'prompt'}
-            <Button kind="success" onclick={saveSelected} disabled={!nSelected}>Save selected</Button>
-          {:else}
-            <Button kind="success" onclick={saveStory} disabled={!scenes.length}>Save story</Button>
-          {/if}
-        </div>
-        <Status text={saveStatus} tone={saveTone} />
-        {#if caps.can('search.cut')}
-          <div class="row">
-            <Button kind="primary" onclick={cut} busy={cutting} disabled={cutting || (mode === 'prompt' ? !nSelected : !scenes.length)}>{mode === 'prompt' ? 'Cut selected together' : 'Make a rough cut'}</Button>
-            <ModalityTag feature="search.cut" />
-            {#if cutNote}<span class="dim small">{cutNote}</span>{/if}
+      {#if mode === 'prompt' && caps.can('search.sets')}
+        <Disclosure label="Save to a set" note="pictures gathered by searches, for IP labels and LoRAs in Alchemy" level={1}>
+          <div class="save">
+            <div class="row nowrap">
+              <Select bind:value={setChoice} options={setOptions} width="200px" />
+              {#if setChoice === NEW}<div class="grow"><TextInput bind:value={setName} placeholder="The new set's name, e.g. ice" /></div>{:else}<span class="grow"></span>{/if}
+              <Button onclick={() => addToSet(false)} disabled={!nSelected}>Add selected ({nSelected})</Button>
+              <Button kind="success" onclick={() => addToSet(true)} disabled={!groups.length}>Add all {nAll}</Button>
+            </div>
+            <p class="dim small">A set holds the pictures where they are and remembers the searches that filled it. Twins already in the set are skipped. Collections stay your moodboards.</p>
+            {#if targetSet}
+              <div class="row nowrap">
+                <Button size="sm" onclick={labelFromSet} busy={learn.labelBusy} disabled={learn.labelBusy}>Make an IP label from this set</Button>
+                <span class="grow"></span>
+                <TextInput bind:value={exportFolder} placeholder="Folder under output/search" size="sm" />
+                <Button size="sm" kind="ghost" onclick={exportFiles}>Copy the files out</Button>
+              </div>
+            {/if}
+            <Status text={saveStatus} tone={saveTone} />
           </div>
-          {#if cutVideo}
-            {#key cutVideo}
-              <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="cut" src={cutVideo} controls playsinline></video>
-            {/key}
-          {/if}
+        </Disclosure>
+      {:else if mode === 'story'}
+        <Disclosure label="Save" note="the story to output/stories" level={1}>
+          <div class="row nowrap">
+            <div class="grow"><TextInput bind:value={saveFolder} placeholder="Folder name under output/stories (optional)" /></div>
+            <span title={caps.why('story.save')}><Button kind="success" onclick={saveStory} disabled={!scenes.length || !caps.can('story.save')}>Save story</Button></span>
+            <ModalityTag feature="story.save" />
+          </div>
+          <Status text={saveStatus} tone={saveTone} />
+        </Disclosure>
+      {/if}
+      {#if caps.can('search.cut')}
+        <div class="row">
+          <Button kind="primary" onclick={cut} busy={cutting} disabled={cutting || (mode === 'prompt' ? !nSelected : !scenes.length)}>{mode === 'prompt' ? 'Cut selected together' : 'Make a rough cut'}</Button>
+          <ModalityTag feature="search.cut" />
+          {#if cutNote}<span class="dim small">{cutNote}</span>{/if}
+        </div>
+        {#if cutVideo}
+          {#key cutVideo}
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video class="cut" src={cutVideo} controls playsinline></video>
+          {/key}
         {/if}
-      </Disclosure>
+      {/if}
     </div>
   {/snippet}
 </SplitPane>
@@ -393,6 +466,8 @@
   .thresh { display: inline-flex; align-items: center; gap: 6px; }
   .poetry { display: inline-flex; align-items: center; gap: 10px; }
   .small { font-size: var(--fs-xs); }
+  .save { display: flex; flex-direction: column; gap: 8px; }
+  .save p { margin: 0; }
   .results { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
   .scene { display: flex; flex-direction: column; gap: 6px; }
   .scene-t { font-size: var(--fs-md); color: var(--arc-warn); font-weight: 600; }

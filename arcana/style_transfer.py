@@ -229,6 +229,7 @@ def _sd_pipe(kind: str):
     hit = _PIPE_CACHE.get(kind)
     if hit is not None:
         return hit
+    _park_editor()
 
     import torch
     from diffusers import StableDiffusionImg2ImgPipeline
@@ -266,6 +267,58 @@ def _sd_pipe(kind: str):
 
     _PIPE_CACHE[kind] = pipe
     return pipe
+
+
+def _ip_inputs(pipe, src, ip_embed=None, toward: float = 1.0, guidance: float = 5.0, against=None,
+               second=None, split=None, size=None) -> dict:
+    """
+    What the pipeline's IP-Adapter reads: the source picture, or a vector.
+
+    `ip_embed` is a position in the adapter's space (an IP label, ip_labels.py),
+    handed over as the adapter's own image embedding. With a source picture as
+    well, `toward` moves from the picture's own vector (0) to the label's (1),
+    and past 1 beyond it. The unconditional half is zeros, which is what the
+    pipeline makes for a picture, placed first, as it splits the pair.
+    """
+    if ip_embed is None:
+        return {"ip_adapter_image": src}
+    import torch
+
+    v = np.asarray(ip_embed, np.float32)
+    if src is not None and toward != 1.0:
+        from . import ip_labels as _labels
+
+        proc = getattr(pipe, "feature_extractor", None)
+        if proc is None:
+            from transformers import CLIPImageProcessor
+            proc = CLIPImageProcessor()
+        enc = pipe.image_encoder
+        px = proc(images=src, return_tensors="pt").pixel_values.to(enc.device, enc.dtype)
+        with torch.no_grad():
+            own = enc(pixel_values=px).image_embeds[0].float().cpu().numpy()
+        v = _labels.toward(own, v, toward)
+    dt, dev = pipe.unet.dtype, pipe.unet.device
+    vecs = [v] if second is None or split is None else [v, np.asarray(second, np.float32)]
+    emb = torch.tensor(np.stack(vecs), dtype=dt, device=dev).view(1, len(vecs), -1)
+    if guidance > 1.0:
+        # The unconditional half: zeros, as the pipeline makes for a picture, or a material to steer away
+        # from (latent-lab's `against`), placed first as the pipeline splits the pair.
+        neg = torch.zeros_like(emb) if against is None else \
+            torch.tensor(np.asarray(against, np.float32), dtype=dt, device=dev).view(1, 1, -1).expand_as(emb).clone()
+        emb = torch.cat([neg, emb])
+    out = {"ip_adapter_image_embeds": [emb]}
+    if len(vecs) == 2:
+        # Two materials in one pass, each through its own attention mask: the first where `split` is high, the
+        # second where it is low (diffusers' IP-Adapter masking).
+        from diffusers.image_processor import IPAdapterMaskProcessor
+
+        w, h = size
+        m = np.clip(np.asarray(split, np.float32), 0, 1)
+        ims = [Image.fromarray((m * 255).astype(np.uint8)), Image.fromarray(((1 - m) * 255).astype(np.uint8))]
+        masks = IPAdapterMaskProcessor().preprocess(ims, height=h, width=w)
+        out["cross_attention_kwargs"] = {"ip_adapter_masks": [masks.reshape(1, masks.shape[0], masks.shape[2],
+                                                                            masks.shape[3])]}
+    return out
 
 
 def _fit_for_diffusion(img: Image.Image, max_side: int = 768) -> Image.Image:
@@ -314,7 +367,8 @@ def img2img_transfer(source, target, strength: float = 0.45, steps: int = 4,
 
 def ip_adapter_transfer(source, target, scale: float = 0.7, strength: float = 0.45,
                         steps: int = 12, guidance: float = 5.0, seed: int = 2222,
-                        prompt: str = "", progress=None) -> Image.Image:
+                        prompt: str = "", progress=None, ip_embed=None,
+                        toward: float = 1.0) -> Image.Image:
     """
     Restyle the target conditioned on the source IMAGE.
 
@@ -332,7 +386,9 @@ def ip_adapter_transfer(source, target, scale: float = 0.7, strength: float = 0.
 
     tgt = _load_rgb(target)
     init = _fit_for_diffusion(tgt)
-    src = _load_rgb(source)
+    src = _load_rgb(source) if source is not None else None
+    if src is None and ip_embed is None:
+        raise ValueError("IP-Adapter needs a material picture or an IP label.")
 
     if progress:
         progress(0.15, "Loading the adapter")
@@ -345,7 +401,7 @@ def ip_adapter_transfer(source, target, scale: float = 0.7, strength: float = 0.
         prompt=prompt or "",
         negative_prompt="text, letters, watermark, logo, lowres",
         image=init,
-        ip_adapter_image=src,
+        **_ip_inputs(pipe, src, ip_embed, toward, guidance),
         strength=float(np.clip(strength, 0.05, 0.95)),
         num_inference_steps=int(max(1, steps)),
         guidance_scale=guidance,
@@ -451,6 +507,71 @@ def control_map(kind: str, image) -> Image.Image:
 
 
 _CN_CACHE: dict = {}
+_T2I_CACHE: dict = {}
+
+
+def _park_editor() -> None:
+    """The material editor's image model off the card (alchemy/editor.py) before a Stable Diffusion
+    pipeline loads: FLUX.2 klein's 8 GB and SD 1.5 do not share a 16 GB card comfortably."""
+    try:
+        from .alchemy import editor as _editor
+        _editor.park()
+    except Exception:
+        pass
+
+
+SWATCH_PROMPT = "a close-up photograph of a weathered natural surface, richly detailed"
+_SWATCHES: "collections.OrderedDict" = None
+
+
+def drawn_swatch(ip_embed=None, words: str = "", seed: int = 0, size: int = 512):
+    """A material drawn from nothing for the material editor: at an IP label's place, from words, or both.
+    Kept, so the same settings show the editor the same material while only the edit's knobs move."""
+    import collections
+    import hashlib
+
+    global _SWATCHES
+    if _SWATCHES is None:
+        _SWATCHES = collections.OrderedDict()
+    words = (words or "").strip()
+    v = None if ip_embed is None else np.asarray(ip_embed, np.float32)
+    key = hashlib.md5((words + f"|{seed}|{size}|").encode() + (b"" if v is None else v.round(4).tobytes())).hexdigest()
+    hit = _SWATCHES.get(key)
+    if hit is not None:
+        _SWATCHES.move_to_end(key)
+        return hit
+    prompt = f"a close-up photograph of {words}, richly detailed" if words else SWATCH_PROMPT
+    if v is None:
+        v, scale = np.zeros(1024, np.float32), 0.0              # words alone: the adapter says nothing
+    else:
+        scale = 0.9 if not words else 0.7                       # with words, the label leaves them room
+    out = label_swatch(v, seed=seed, size=size, scale=scale, prompt=prompt)
+    _SWATCHES[key] = out
+    while len(_SWATCHES) > 16:
+        _SWATCHES.popitem(last=False)
+    return out
+
+
+def label_swatch(ip_embed, seed: int = 0, size: int = 512, steps: int = 25, scale: float = 0.9,
+                 prompt: str = SWATCH_PROMPT):
+    """A material drawn from nothing by Stable Diffusion 1.5 at a place in IP space (an IP label):
+    what latent-lab's editor was shown as its "space" swatch. The text-to-image pipeline shares every
+    weight with the IP-Adapter one, so it costs no memory of its own."""
+    import torch
+    from diffusers import StableDiffusionPipeline
+
+    pipe = _T2I_CACHE.get("t2i")
+    if pipe is None:
+        base = _sd_pipe("ip_adapter")
+        pipe = StableDiffusionPipeline(**{k: v for k, v in base.components.items()})
+        pipe.set_progress_bar_config(disable=True)
+        _T2I_CACHE["t2i"] = pipe
+    pipe.set_ip_adapter_scale(float(scale))
+    guidance = 5.0
+    return pipe(prompt=prompt, negative_prompt="text, letters, watermark, logo, lowres",
+                **_ip_inputs(pipe, None, ip_embed, 1.0, guidance), num_inference_steps=int(steps),
+                guidance_scale=guidance, height=size, width=size,
+                generator=torch.Generator(pipe.unet.device).manual_seed(int(seed))).images[0]
 
 
 def _controlnet_pipe(kind: str):
@@ -462,6 +583,7 @@ def _controlnet_pipe(kind: str):
     hit = _CN_CACHE.get(kind)
     if hit is not None:
         return hit
+    _park_editor()
 
     import torch
     from diffusers import (ControlNetModel,
@@ -523,7 +645,8 @@ def controlnet_transfer(source, target, control: str = "depth",
                         guidance: float = 5.0, seed: int = 2222,
                         prompt: str = "", progress=None,
                         lora: str | None = None, lora_weight: float = 1.4,
-                        avoid: str = ""):
+                        avoid: str = "", ip_embed=None, toward: float = 1.0, against=None,
+                        second=None, split=None):
     """
     Apply the look of the source while the target's geometry holds it in place.
 
@@ -541,7 +664,9 @@ def controlnet_transfer(source, target, control: str = "depth",
     `lora` puts a texture LoRA (loras.py) under the drawing at `lora_weight`,
     and `source` may then be None: the LoRA and the prompt carry the look
     alone, as latent-lab's transform mode drew it. `avoid` adds words to the
-    negative prompt.
+    negative prompt. `ip_embed` steers by a position in the adapter's space (an
+    IP label) instead of the source picture; with a source as well, `toward`
+    moves from the source's look to the label's.
 
     Returns (image, map) so the caller can show what the geometry actually was.
     """
@@ -552,12 +677,12 @@ def controlnet_transfer(source, target, control: str = "depth",
 
     tgt = _load_rgb(target)
     init = _fit_for_diffusion(tgt)
-    if source is None:
+    if source is None and ip_embed is None:
         # The adapter is part of the cached pipeline and wants an image; at
         # scale 0 it reads one and adds nothing.
         src, scale = init, 0.0
     else:
-        src = _load_rgb(source)
+        src = _load_rgb(source) if source is not None else None
 
     if progress:
         progress(0.1, f"Building the {control} map")
@@ -576,7 +701,7 @@ def controlnet_transfer(source, target, control: str = "depth",
         negative_prompt=", ".join(w for w in ("text, letters, watermark, logo, lowres", avoid) if w),
         image=init,
         control_image=cmap,
-        ip_adapter_image=src,
+        **_ip_inputs(pipe, src, ip_embed, toward, guidance, against, second, split, init.size),
         strength=float(np.clip(strength, 0.05, 0.95)),
         num_inference_steps=int(max(1, steps)),
         guidance_scale=guidance,

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { post, reason } from '../../lib/api/client'
+  import { app } from '../../lib/stores/app.svelte'
   import { toast } from '../../lib/stores/toast.svelte'
   import { catalog, step, method, chooseMethod, applyRecipe, applies, resetFinish, coverageFor, materials, controls, WORDS, CUSTOM, type Knob as KnobT } from './alchemy.svelte'
   import Knob from './Knob.svelte'
@@ -26,7 +27,8 @@
   let recipeDoc = $state('')
   let recipeName = $state('')
   let recipeStatus = $state('')
-  const recipeOptions = $derived(cat.recipes.map((r) => ({ value: r.name, label: `${r.group} · ${r.name}` })))
+  // Grouped by what a recipe does, in the order the groups are declared; your own recipes last.
+  const recipeOptions = $derived(cat.recipes.map((r) => ({ value: r.name, label: r.name, group: r.own ? 'yours' : r.group })))
   $effect(() => { recipeDoc = cat.recipes.find((r) => r.name === recipe)?.doc ?? '' })
 
   async function apply() {
@@ -43,10 +45,15 @@
     } catch (e) { recipeStatus = reason(e) }
   }
 
-  const methodOptions = $derived(cat.methods.filter((x) => x.family === step.family).map((x) => ({ value: x.id, label: x.label + (x.cost !== 'live' ? '  (seconds)' : '') })))
+  // A method that needs a graphics card this build cannot use is shown, and marked, but cannot be chosen.
+  // Unlisted methods (superseded ones) stay out of the menu, except the one a film or saved step opened.
+  const methodOptions = $derived(cat.methods.filter((x) => x.family === step.family && (x.listed !== false || x.id === step.method)).map((x) => {
+    const noGpu = x.needs.includes('gpu') && !app.hardware.gpu
+    return { value: x.id, label: x.label + (noGpu ? '  (needs a GPU)' : x.cost !== 'live' ? '  (seconds)' : ''), disabled: noGpu }
+  }))
   function pickFamily(f: string) {
     step.family = f
-    const first = cat.methods.find((x) => x.family === f)
+    const first = cat.methods.find((x) => x.family === f && x.listed !== false)
     if (m?.family !== f && first) chooseMethod(first.id)
     onchange()
   }
@@ -59,7 +66,7 @@
   })
   const sections = $derived.by(() => {
     const parts: Record<string, KnobT[]> = { main: [], more: [], looks: [] }
-    for (const k of m?.knobs ?? []) if (step.knobs[k.key] !== undefined && applies(k, step.knobs)) parts[k.section].push(k)
+    for (const k of m?.knobs ?? []) if (step.knobs[k.key] !== undefined && applies(k, { ...step.knobs, _materials: materials().length })) parts[k.section].push(k)
     return parts
   })
 
@@ -119,7 +126,7 @@
       {/each}
     </div>
     <p class="hint">{cat.families.find((f) => f.id === step.family)?.doc}</p>
-    <Select value={step.method} options={methodOptions} size="sm" onchange={(v) => { chooseMethod(String(v), step.knobs); onchange() }} />
+    <Select value={step.method} options={methodOptions} size="sm" onchange={(v) => { chooseMethod(String(v)); onchange() }} />
     <p class="hint">{methodDoc}</p>
     {#each sections.main as k, i (k.key)}
       <Knob knob={k} bind:value={step.knobs[k.key]} lead={i === 0} onchange={onchange} />

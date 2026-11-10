@@ -31,12 +31,14 @@ class Node(BaseModel):
     count: int = 0
     path: str = ""
     group: str = ""
+    author: str = ""
     folders: list["Node"] = Field(default_factory=list)
     items: list["Node"] = Field(default_factory=list)
 
     def lines(self, depth: int = 0) -> list[str]:
         pad = "  " * depth
-        head = f"{pad}{self.shown}  [{self.id}]" + (f"  {self.count}" if self.count else "")
+        head = f"{pad}{self.shown}  [{self.id}]" + (f"  {self.count}" if self.count else "") + \
+            ("  (by an agent)" if self.author == "agent" else "")
         out = [head]
         for f in self.folders:
             out += f.lines(depth + 1)
@@ -68,7 +70,7 @@ class ArchiveListResult(Result):
 
 def _node(d: dict) -> Node:
     return Node(id=d["id"], kind=d["kind"], shown=d["shown"], count=int(d.get("count") or 0), path=d.get("path", ""),
-                group=d.get("group", ""), folders=[_node(f) for f in d.get("folders") or []],
+                group=d.get("group", ""), author=d.get("author", "") or "", folders=[_node(f) for f in d.get("folders") or []],
                 items=[_node(i) for i in d.get("items") or []])
 
 
@@ -80,8 +82,9 @@ class ArchiveListArgs(Args):
     doc="""
     Everything kept, as one tree by kind.
 
-    The kinds are collections, films, videos, stories, pictures made, search
-    saves, imports and exports. It lists the person's folders inside each kind
+    The kinds are collections, sets, IP labels, LoRAs, board pages, films,
+    videos, stories, pictures made, contact sheets, files copied from search,
+    imports and exports. Boards an agent made are marked. It lists the person's folders inside each kind
     and what the trash holds. Each thing comes with the id the other archive
     ops take.
     """,
@@ -102,6 +105,7 @@ class ArchiveShowResult(Result):
     name: str
     path: str
     contents: list[str] = Field(default_factory=list)
+    detail: dict = Field(default_factory=dict)
 
     def text(self) -> str:
         out = f"{self.name}  [{self.id}]  {self.kind}\n  {self.path}\n"
@@ -116,7 +120,24 @@ class ArchiveShowArgs(Args):
 def contents_of(it: dict) -> list[str]:
     """The pictures a thing holds, in order: a collection's, a story's or a saved search's frames, or
     the file itself."""
-    if it["kind"] == "collections":
+    if it["kind"] == "pages":
+        return [p for p in it.get("files") or [] if os.path.splitext(p)[1].lower() in _cat.PICTURE_EXT]
+    if it["kind"] == "stories":
+        return [s.get("poetry") or s.get("original") for s in story_scenes(it["path"]) if s.get("poetry") or s.get("original")]
+    if it["kind"] == "labels":
+        try:
+            from .. import ip_labels as _labels
+        except ImportError:                           # pragma: no cover
+            import ip_labels as _labels
+        return _labels.load(it["id"].split(":", 1)[1]).nearest(48)
+    if it["kind"] == "loras":
+        try:
+            from .. import lora_train as _train
+        except ImportError:                           # pragma: no cover
+            import lora_train as _train
+        run = next((r for r in _train.runs() if r["name"] == it["id"].split(":", 1)[1]), None)
+        return [c["sheet"] for c in (run or {}).get("checkpoints", []) if c.get("sheet")]
+    if it["kind"] in _cat.BOARD_KINDS:
         try:
             from .. import boards as _boards
         except ImportError:                           # pragma: no cover
@@ -137,6 +158,91 @@ def contents_of(it: dict) -> list[str]:
     return [it["path"]]
 
 
+def story_scenes(folder: str) -> list[dict]:
+    """A saved story as its scenes: each sentence of story.txt with the picture found for it and, when
+    poetry was injected, the picture drawn from it. Pictures are matched by their two-digit number."""
+    import re
+
+    lines = []
+    try:
+        with open(os.path.join(folder, "story.txt"), encoding="utf-8") as fh:
+            lines = [re.sub(r"^\s*\d+\.\s*", "", ln).strip() for ln in fh if ln.strip()]
+    except OSError:
+        pass
+
+    def numbered(sub):
+        # The picture saved with the story is NN_original / NN_poetry; a folder that also holds an
+        # earlier poetry pass (NN_<file>_<sentence>_poetry.png) keeps those as leftovers, so the
+        # exact name wins and the rest only fill numbers it lacks.
+        d = os.path.join(folder, sub)
+        out, exact = {}, {}
+        if os.path.isdir(d):
+            for f in sorted(os.listdir(d)):
+                m = re.match(r"(\d+)_(original|poetry)?", f)
+                if m and os.path.splitext(f)[1].lower() in _cat.PICTURE_EXT:
+                    n = int(m.group(1))
+                    out.setdefault(n, os.path.join(d, f))
+                    if m.group(2) and re.fullmatch(r"\d+_(original|poetry)\.\w+", f):
+                        exact[n] = os.path.join(d, f)
+        return {**out, **exact}
+
+    originals = numbered("original")
+    poetry = {**numbered("poetry_injected"), **numbered("poetry")}
+    n = max([len(lines)] + [k + 1 for k in (*originals, *poetry)])
+    return [{"n": i + 1, "text": lines[i] if i < len(lines) else "", "original": originals.get(i),
+             "poetry": poetry.get(i)} for i in range(n)]
+
+
+def detail_of(it: dict) -> dict:
+    """What a thing is beyond its pictures: a story's sentences, the searches behind a set or a
+    copied search, a label's origin, a LoRA's checkpoints, a board page's files."""
+    import json
+
+    kind = it["kind"]
+    if kind == "stories":
+        return {"scenes": story_scenes(it["path"])}
+    if kind in _cat.BOARD_KINDS:
+        try:
+            from .. import boards as _boards
+        except ImportError:                           # pragma: no cover
+            import boards as _boards
+        rec = _boards.load(it["id"].split(":", 1)[1]) or {}
+        return {k: rec.get(k) for k in ("author", "brief", "concept", "dataset", "queries") if rec.get(k)}
+    if kind == "searches":
+        try:
+            with open(os.path.join(it["path"], "search.json"), encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            name = os.path.basename(it["path"])
+            date, _, words = name.partition(" ")
+            if len(date) == 10 and date[4] == "-" and words:
+                return {"queries": [{"text": words, "dataset": "", "k": 0}], "date": date, "guessed": True}
+            return {"queries": [{"text": name, "dataset": "", "k": 0}], "guessed": True}
+    if kind == "labels":
+        try:
+            from .. import ip_labels as _labels
+        except ImportError:                           # pragma: no cover
+            import ip_labels as _labels
+        row = _labels.load(it["id"].split(":", 1)[1]).public()
+        return {"origin": row["origin"], "tightness": row["tightness"], "members": row["members"]}
+    if kind == "loras":
+        try:
+            from .. import lora_train as _train
+            from .. import loras as _loras
+        except ImportError:                           # pragma: no cover
+            import lora_train as _train
+            import loras as _loras
+        name = it["id"].split(":", 1)[1]
+        run = next((r for r in _train.runs() if r["name"] == name), {"checkpoints": []})
+        cps = run["checkpoints"]
+        last = cps[-1]["name"] if cps else None
+        return {"checkpoints": [{k: c.get(k) for k in ("name", "step", "sheet")} for c in cps],
+                "trigger": cps[-1].get("trigger") if cps else None, "prompt": _loras.prompt(last) if last else None}
+    if kind == "pages":
+        return {"slug": it["id"].split(":", 1)[1], "files": it.get("files") or [], "author": it.get("author") or ""}
+    return {}
+
+
 @op("archive show", "read", ArchiveShowArgs, ArchiveShowResult,
     doc="""
     One thing in the archive. It comes with its name, where it lives on disk
@@ -147,7 +253,7 @@ def _archive_show(a: ArchiveShowArgs, ctx: Context) -> ArchiveShowResult:
     data = _cat.read()
     it = _cat.find(a.id)
     return ArchiveShowResult(id=it["id"], kind=it["kind"], name=data["names"].get(it["id"]) or it["name"],
-                             path=it["path"], contents=contents_of(it))
+                             path=it["path"], contents=contents_of(it), detail=detail_of(it))
 
 
 class ArchiveRenameArgs(Args):

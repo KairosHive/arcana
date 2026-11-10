@@ -304,7 +304,38 @@ def _search():
     data = body()
     name, dim, modality = parse_dataset(data.get("dataset"))
     text = (data.get("text") or "").strip()
-    if not text:
+    label = (data.get("label") or "").strip()
+    if label.startswith("axis:"):
+        # A concept axis sorts the dataset: the pictures furthest along it first.
+        from .. import ip_labels as _labels
+        k = max(1, min(1000, int(data.get("k") or 4)))
+        df = load_data(name, n_dim=dim, modality=modality)
+        index, idx2path = load_index(name, modality=modality)
+        stars, colours, f_from, f_to, filtering = _filter(data)
+        allowed = _core.keys_where(idx2path, _core.marks_mask(df, stars, colours, f_from, f_to)) if filtering else None
+        try:
+            ranked = _labels.rank_along(name, label[5:], k, allowed)
+        except ValueError as e:
+            raise BadRequest(str(e))
+        results = [(key, path, 1.0 - proj) for key, path, proj in ranked]
+        keys = [r[0] for r in results]
+        paths = [r[1] for r in results]
+        groups = _groups(keys, paths, index, bool(data.get("group", True)), data.get("thresh"))
+        marks = _marks_lookup(df)
+        rows_by_key = {kk: i for i, kk in enumerate(idx2path.keys())}
+        dist_by_key = {r[0]: r[2] for r in results}
+        for g in groups:
+            g["marks"] = [marks.get(p) for p in g["paths"]]
+            g["rows"] = [rows_by_key[kk] for kk in g.get("keys", []) if kk in rows_by_key]
+            g["scores"] = [round(float(dist_by_key.get(kk, 0.0)), 4) for kk in g.get("keys", [])]
+        return jsonify({"groups": groups, "rows": _rows_for(keys, idx2path), "modality": modality, "k": k})
+    if label and label != "none":
+        # An IP label searched in place of words: its position is a ViT-H image vector, so it
+        # searches a ViT-H dataset by picture likeness.
+        from .. import ip_labels as _labels
+        lab = _labels.load(label)
+        text = _labels.point(lab, push=float(data.get("push") or 1.0))
+    elif not text:
         raise BadRequest("Describe what you are looking for first.")
     k = max(1, min(1000, int(data.get("k") or 4)))
     df = load_data(name, n_dim=dim, modality=modality)
@@ -315,6 +346,10 @@ def _search():
         keep = _core.marks_mask(df, stars, colours, f_from, f_to)
         if keep.any():
             allowed = _core.keys_where(idx2path, keep)
+    if not isinstance(text, str) and int(index.ndim) != len(text):
+        raise BadRequest(f"IP labels live in CLIP ViT-H/14's {len(text)} numbers and this dataset was "
+                         f"indexed with a {index.ndim}-number CLIP. Search with a label in a dataset "
+                         f"indexed with ViT-H/14.")
     level = None
     sections = _video_index.load_sections(name, _media.DB_DIR) if modality == "video" else None
     if sections is not None:
@@ -341,7 +376,7 @@ def _search():
         wide = _core.search(index, idx2path, text, len(idx2path), modality=modality, allowed=allowed)
         motion = _video_index.load_motion(name, _media.DB_DIR) if balance > 0 else None
         if motion:
-            wide, understood = _video_index.rank_with_motion(wide, motion, moving or text, balance)
+            wide, understood = _video_index.rank_with_motion(wide, motion, moving or (text if isinstance(text, str) else ""), balance)
             if moving and not understood:
                 raise BadRequest("No movement word in that. Try: " + ", ".join(_motion.vocabulary()) + ".")
         if data.get("return") == "videos":
@@ -446,6 +481,11 @@ def _save():
             n += 1
         except Exception as e:
             print(f"[save] could not save {full}: {e}")
+    import json
+    import time
+    with open(os.path.join(save_dir, "search.json"), "w", encoding="utf-8") as fh:
+        json.dump({"queries": [{"text": data.get("prompt") or "", "dataset": data.get("dataset") or "", "k": len(paths),
+                                "added": n, "when": time.time()}]}, fh, indent=1)
     _media.register_media_root(_paths.subdir("output"))
     return jsonify({"saved": n, "folder": save_dir, "message": f"{n} files saved successfully to {save_dir}."})
 

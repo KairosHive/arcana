@@ -33,7 +33,7 @@ CLIPS = (VIDEO,)
 BOTH = (IMAGE, AUDIO)
 ALL = (IMAGE, AUDIO, VIDEO)
 
-TABS = ("datasets", "prompt", "story", "moodboard", "alchemy", "archive", "agent")
+TABS = ("datasets", "prompt", "story", "moodboard", "alchemy", "generate", "archive", "agent")
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,8 @@ FEATURES: tuple[Feature, ...] = (
             ops=("search across",)),
     Feature("search.marks", ("prompt", "story"), "Stars, colour tags and dates", "dataset", PHOTO),
     Feature("search.spectrogram", ("prompt", "story"), "Spectrogram", "dataset", SOUND),
-    Feature("search.save", ("prompt",), "Save selected", "dataset", BOTH),
+    Feature("search.sets", ("prompt",), "Save to a set", "dataset", ops=("set save",)),
+    Feature("search.labels", ("prompt",), "Search by an IP label or sort along an axis", "dataset", PHOTO),
     Feature("story.search", ("story",), "Story, one search per line", "dataset", ALL),
     Feature("story.poetry", ("story",), "Inject Poetry", "dataset", ops=("generate",)),
     Feature("story.save", ("story",), "Save story", "dataset", PHOTO),
@@ -82,6 +83,9 @@ FEATURES: tuple[Feature, ...] = (
     Feature("alchemy.mask", ("alchemy",), "Masks", "item", ops=("alchemy mask preview",)),
     Feature("alchemy.film", ("alchemy",), "Film", "item", ops=("alchemy film preview", "alchemy film make")),
     Feature("alchemy.pattern", ("alchemy",), "Pattern", "item", ops=("pattern make",)),
+    Feature("alchemy.learn", ("alchemy",), "IP labels and axes", "item", PHOTO),
+    # ── Generate
+    Feature("generate.material", ("generate",), "New material from places in the archive", "none", PHOTO),
     # ── Archive and Agent
     Feature("archive.tree", ("archive",), "What Arcana has made", "none", (IMAGE, AUDIO, VIDEO)),
     Feature("agent.terminal", ("agent",), "Agent", "none", (IMAGE, AUDIO, VIDEO)),

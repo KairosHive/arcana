@@ -427,7 +427,7 @@ def build(spec, sc: Scene):
     layers = [l for l in spec.layers if str(l).strip() and str(l).strip() != "none"]
     m = None
     for i, line in enumerate(layers):
-        got, region = source(line, sc, spec.seed + i)
+        got, region = source(line, sc, int(spec.seed) + i)
         cov = spec.coverage[i] if i < len(spec.coverage) else None
         if region:
             layer = np.clip(got, 0, 1).astype(np.float32)
@@ -450,7 +450,7 @@ def build(spec, sc: Scene):
         snapped = np.clip(guided(m, sc.lum, max(8.0 * s, 4.0)), 0, 1)
         m = (1 - spec.follow) * m + spec.follow * snapped
     if spec.ragged > 0:
-        n = growth(sc.H, sc.W, 6.0 * s, spec.seed + 99)
+        n = growth(sc.H, sc.W, 6.0 * s, int(spec.seed) + 99)
         n = n / (np.abs(n).max() + 1e-6)
         m = smoothstep((m - 0.5 + spec.ragged * 0.6 * n) / 0.08 + 0.5)
     if spec.feather > 0:

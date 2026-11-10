@@ -136,27 +136,16 @@
             </Disclosure>
           </Card>
 
-          {#if roles.reference || roles.target}
-            <Card title="Roles" level={1} accent="var(--arc-accent)">
+          {#if roles.reference}
+            <Card title="Reference" level={1} accent="var(--arc-accent)">
               <div class="roles">
                 <div class="role">
-                  <span class="caps ref">Reference</span>
-                  {#if roles.reference}
-                    <img class="pic ref" src={previewUrl(roles.reference, 300)} alt="" />
-                    <img class="sw" src={paletteUrl(roles.reference, nColors, 200, 16)} alt="" />
-                    <span class="fn faint ellipsis">{basename(roles.reference)}</span>
-                  {:else}<div class="none">Not selected</div>{/if}
-                </div>
-                <div class="role">
-                  <span class="caps tgt">Target</span>
-                  {#if roles.target}
-                    <img class="pic tgt" src={previewUrl(roles.target, 300)} alt="" />
-                    <img class="sw" src={paletteUrl(roles.target, nColors, 200, 16)} alt="" />
-                    <span class="fn faint ellipsis">{basename(roles.target)}</span>
-                  {:else}<div class="none">Not selected</div>{/if}
+                  <img class="pic ref" src={previewUrl(roles.reference, 300)} alt="" />
+                  <img class="sw" src={paletteUrl(roles.reference, nColors, 200, 16)} alt="" />
+                  <span class="fn faint ellipsis">{basename(roles.reference)}</span>
                 </div>
               </div>
-              <p class="hint">The target receives the reference's colours through the colour transfer op, or on the Alchemy tab. Both are saved with the board.</p>
+              <p class="hint">The similarity search starts from this picture. To move its colours onto another picture, use the Alchemy tab.</p>
             </Card>
           {/if}
         </div>
@@ -198,9 +187,9 @@
   .feat.off { opacity: 0.6; }
   .roles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .role { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-  .ref { color: var(--arc-accent); } .tgt { color: var(--arc-target); }
+  .ref { color: var(--arc-accent); }
   .pic { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--r-md); border: 2px solid var(--arc-line); }
-  .pic.ref { border-color: var(--arc-accent); } .pic.tgt { border-color: var(--arc-target); }
+  .pic.ref { border-color: var(--arc-accent); }
   .sw { width: 100%; height: 14px; border-radius: var(--r-sm); }
   .fn { font-size: var(--fs-2xs); }
   .none { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--arc-line); border-radius: var(--r-md); color: var(--arc-ink-faint); font-style: italic; font-size: var(--fs-sm); }

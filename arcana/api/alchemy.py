@@ -7,7 +7,7 @@
 #   POST /api/alchemy/recipe {controls, name}          -> saves a recipe
 #   POST /api/film/meta {spec}             the timeline's lanes, length and labels
 #   POST /api/film/add {spec, ref, t}      a picture at the playhead
-#   POST /api/film/space {spec, shape}
+#   POST /api/film/space {spec, shape, by}  by time or by how much the picture changes
 #   POST /api/film/lane {spec, path, t}
 #   POST /api/film/look {spec, t, controls}  the Image subtab's step as a look
 #   POST /api/film/frame {spec, at, size}  one frame as a data URL
@@ -142,7 +142,8 @@ def _film_add():
 def _space():
     data = body()
     try:
-        return jsonify({"spec": _film.spaced(data.get("spec") or {}, data.get("shape") or "even")})
+        return jsonify({"spec": _film.spaced(data.get("spec") or {}, data.get("shape") or "even",
+                                             data.get("by") or "time")})
     except (ValueError, KeyError, TypeError) as e:
         raise BadRequest(str(e))
 
@@ -229,6 +230,54 @@ def _render():
     if data.get("fps"):
         args["fps"] = int(data["fps"])
     return jsonify(dump(call("alchemy film make", args)))
+
+
+@bp.post("/film/shape")
+def _film_shape():
+    data = body()
+    try:
+        spec = _film.shape_lane(data.get("spec") or {}, data["path"], data.get("shape") or "rise",
+                                float(data["lo"]), float(data["hi"]), float(data["start"]), float(data["end"]),
+                                int(data.get("count") or 3), data.get("ease") or "smooth")
+    except (ValueError, KeyError, TypeError) as e:
+        raise BadRequest(str(e))
+    return jsonify({"spec": spec})
+
+
+@bp.post("/film/series")
+def _film_series():
+    """Pictures placed one after another from a time, such as a picture's derivatives after it."""
+    data = body()
+    try:
+        spec, t = _film.place_series(data.get("spec") or {}, list(data.get("refs") or []),
+                                     float(data.get("t") or 0.0), float(data.get("every") or _film.GAP),
+                                     bool(data.get("back")))
+    except (ValueError, TypeError) as e:
+        raise BadRequest(str(e))
+    return jsonify({"spec": spec, "t": t})
+
+
+@bp.post("/film/derive")
+def _film_derive():
+    """Derivatives of one picture from the Image subtab's step, as a background job."""
+    data = body()
+    args = _ia.settings(_controls(data))
+    if not data.get("picture"):
+        raise BadRequest("Choose the picture to derive from: click it on the picture lane.")
+    args["picture"] = data["picture"]
+    vary = data.get("vary") or "seed"
+    if vary == "recipe":
+        args = {"picture": data["picture"], "material": args.get("material") or [],
+                "weight": args.get("weight") or []}
+    args.update(vary=vary, count=int(data.get("count") or 4), size=int(data.get("size") or 1024),
+                background=True)
+    for k in ("knob", "start", "end"):
+        if data.get(k) not in (None, ""):
+            args[k] = data[k]
+    if data.get("each"):
+        args["each"] = list(data["each"])
+    args = {k: v for k, v in args.items() if v not in ([], {}, None)}
+    return jsonify(dump(call("alchemy derive", args)))
 
 
 @bp.get("/film/constants")

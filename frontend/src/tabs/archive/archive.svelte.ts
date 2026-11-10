@@ -5,9 +5,9 @@
 import { get, post, rpc, reason } from '../../lib/api/client'
 import { toast } from '../../lib/stores/toast.svelte'
 
-export type Node = { id: string; kind: string; shown: string; count: number; path: string; group: string; folders: Node[]; items: Node[] }
+export type Node = { id: string; kind: string; shown: string; count: number; path: string; group: string; author?: string; folders: Node[]; items: Node[] }
 export type TrashEntry = { id: string; name: string; kind: string; at: number }
-export type Shown = { id: string; kind: string; name: string; path: string; contents: string[]; pictures: string[] }
+export type Shown = { id: string; kind: string; name: string; path: string; contents: string[]; pictures: string[]; detail?: Record<string, any> }
 
 export const archive = $state({
   kinds: [] as Node[],
@@ -18,7 +18,7 @@ export const archive = $state({
   status: '',
 })
 
-export const ICON: Record<string, string> = { collections: '▦', films: '▶', videos: '▶', stories: '≡', pictures: '▣', searches: '⌕', imports: '↓', exports: '↑' }
+export const ICON: Record<string, string> = { collections: '▦', sets: '⧉', labels: '◎', loras: '◈', pages: '▤', sheets: '▦', films: '▶', videos: '▶', stories: '≡', pictures: '▣', searches: '⌕', imports: '↓', exports: '↑' }
 
 export async function loadArchive() {
   archive.loading = true

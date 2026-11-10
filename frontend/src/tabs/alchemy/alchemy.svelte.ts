@@ -5,7 +5,7 @@ import { get, post, reason } from '../../lib/api/client'
 import { load, save } from '../../lib/stores/persist'
 
 export type Knob = { key: string; kind: 'float' | 'int' | 'choice' | 'bool' | 'angle' | 'text'; default: any; lo?: number; hi?: number; step?: number; label: string; doc: string; options?: any[]; when: [string, string, any][]; section: 'main' | 'more' | 'looks'; px?: boolean }
-export type Method = { id: string; family: string; label: string; doc: string; cost: 'live' | 'seconds'; materials: [number, number]; picture: boolean; needs: string[]; knobs: Knob[] }
+export type Method = { id: string; family: string; label: string; doc: string; cost: 'live' | 'seconds'; materials: [number, number]; picture: boolean; needs: string[]; knobs: Knob[]; listed?: boolean }
 export type Preset = { name: string; group: string; doc: string; coverage: number | null }
 export type Refine = { key: string; label: string; lo: number; hi: number; step: number; default: number; doc: string }
 export type FinishSpec = { key: string; group: string; label: string; lo: number; hi: number; step: number; doc: string; default: number }
@@ -27,13 +27,16 @@ export const catalog = $state<{ data: Catalog | null; error: string }>({ data: n
 /** Which subtab is open, shared so the Archive can open a film in Video and the film can open a look in Image. */
 export const alchemyUi = $state({ sub: 'image' as 'image' | 'video' | 'pattern' })
 
+/** Which panel the Image subtab's left column shows: the pictures, or sets and labels. */
+export const alchemyLeft = $state({ pane: 'pictures' as 'pictures' | 'learn' })
+
 export async function loadCatalog() {
   if (catalog.data) return catalog.data
   try {
     const c = await get<Catalog>('/api/alchemy/catalog')
     // Settle the knobs before the page sees the catalogue, so every control
     // has a value the moment it is drawn.
-    const m = c.methods.find((x) => x.id === step.method) ?? c.methods[0]
+    const m = c.methods.find((x) => x.id === step.method) ?? c.methods.find((x) => x.listed !== false) ?? c.methods[0]
     step.method = m.id
     step.family = m.family
     step.knobs = settleKnobs(m, step.knobs)
@@ -42,6 +45,16 @@ export async function loadCatalog() {
     catalog.error = reason(e)
   }
   return catalog.data
+}
+
+/** Read the catalogue again (a label or a LoRA was made), keeping the step's values that still apply. */
+export async function reloadCatalog() {
+  try {
+    const c = await get<Catalog>('/api/alchemy/catalog')
+    const m = c.methods.find((x) => x.id === step.method) ?? c.methods.find((x) => x.listed !== false) ?? c.methods[0]
+    step.knobs = settleKnobs(m, step.knobs)
+    catalog.data = c
+  } catch { /* the old catalogue stays */ }
 }
 
 export function method(id: string): Method | undefined {
@@ -90,6 +103,7 @@ export function applies(k: Knob, values: Record<string, any>): boolean {
     if (op === '==' && String(v) !== String(val)) return false
     if (op === '!=' && String(v) === String(val)) return false
     if (op === 'in' && !(val as any[]).includes(v)) return false
+    if (op === '>' && !(Number(v ?? 0) > Number(val))) return false
   }
   return true
 }

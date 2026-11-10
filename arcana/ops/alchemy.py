@@ -463,6 +463,160 @@ def _alchemy_make(a: AlchemyMakeArgs, ctx: Context) -> Result:
     return run_effect(ctx, f"alchemy make {method.id}", compute, record, a.background)
 
 
+# ─────────────────────────── derivatives ───────────────────────────
+
+VARY = {"seed": "the same step drawn again with new seeds: similar textures",
+        "material": "the step once with each material: different textures",
+        "recipe": "each recipe in turn on the picture: different looks",
+        "knob": "one knob stepped from a start to an end: the look growing"}
+
+
+class DeriveResult(Result):
+    picture: str
+    vary: str
+    ids: list[str]
+    paths: list[str]
+    labels: list[str]
+
+    def text(self) -> str:
+        lines = [f"{len(self.ids)} derivatives of {self.picture}, by {self.vary}:"]
+        lines += [f"  {i}  {lab}  {p}" for i, lab, p in zip(self.ids, self.labels, self.paths)]
+        return "\n".join(lines) + "\n"
+
+
+class AlchemyDeriveArgs(StepInputs):
+    vary: Literal["seed", "material", "recipe", "knob"] = Field("seed", description="What changes from one "
+                                                                 "derivative to the next: " + "; ".join(
+                                                                     f"{k}, {v}" for k, v in VARY.items()) + ".")
+    count: int = Field(4, ge=2, le=12, description="How many derivatives, with --vary seed or knob.")
+    each: list[str] = Field(default_factory=list, max_length=12, description="With --vary material, one "
+                            "material per derivative; with --vary recipe, one recipe per derivative. Repeated.",
+                            json_schema_extra={"metavar": "EACH"})
+    knob: str | None = Field(None, description="With --vary knob, the knob stepped.")
+    start: float | None = Field(None, description="With --vary knob, its first value. Defaults to its lowest.")
+    end: float | None = Field(None, description="With --vary knob, its last value. Defaults to its highest.")
+    size: int = Field(1024, ge=256, le=4096, description="Longest side of each derivative, in pixels.")
+    background: bool = Field(False, description="Return a job id at once instead of waiting.")
+
+
+def _variants(a: AlchemyDeriveArgs, spec: dict, ctx: Context) -> list[tuple[str, dict]]:
+    """(label, spec) for each derivative."""
+    from . import archive
+
+    _, _, _, methods, pipeline, recipes = _mods()
+    method = methods.get(pipeline.resolved(spec)["method"])
+    knobs = dict(spec.get("knobs") or {})
+    if a.vary == "seed":
+        if not any(k.key == "seed" for k in method.knobs) and method.family != "tokens":
+            raise ValueError(f"{method.label} draws the same picture every time. Vary the materials, the "
+                             f"recipes or a knob instead.")
+        first = int(knobs.get("seed", spec.get("crop", 0)) or 0)
+        out = []
+        for i in range(a.count):
+            seed = first + i
+            k = {**knobs, "seed": seed} if any(x.key == "seed" for x in method.knobs) else knobs
+            out.append((f"seed {seed}", {**spec, "knobs": k, "crop": seed}))
+        return out
+    if a.vary == "material":
+        if len(a.each) < 2:
+            raise ValueError("Give two or more materials with --each, one for each derivative.")
+        if method.materials[1] == 0:
+            raise ValueError(f"{method.label} takes no material. Choose a method that lays one in.")
+        out = []
+        for m in a.each:
+            item = archive.resolve_item(m, ctx.actor)
+            rest = list(spec.get("materials") or [])[1:]
+            out.append((os.path.basename(str(item.path)), {**spec, "materials": [item.ref, *rest]}))
+        return out
+    if a.vary == "recipe":
+        if len(a.each) < 2:
+            raise ValueError("Give two or more recipes with --each, one for each derivative.")
+        out = []
+        for r in a.each:
+            recipes.get(r)
+            base = {k: v for k, v in spec.items() if k in ("picture", "materials", "weights")}
+            out.append((r, {**base, "recipe": r}))
+        return out
+    k = next((x for x in method.knobs if x.key == a.knob), None)
+    if k is None or k.kind not in ("float", "int", "angle"):
+        nums = [x.key for x in method.knobs if x.kind in ("float", "int", "angle")]
+        raise ValueError(f"Name a number knob of {method.label} with --knob: {', '.join(nums) or 'it has none'}.")
+    lo = a.start if a.start is not None else k.lo
+    hi = a.end if a.end is not None else k.hi
+    out = []
+    for i in range(a.count):
+        v = lo + (hi - lo) * i / (a.count - 1)
+        v = int(round(v)) if k.kind == "int" else round(float(v), 4)
+        out.append((f"{k.label} {v:g}", {**spec, "knobs": {**knobs, k.key: v}}))
+    return out
+
+
+@op("alchemy derive", "effect", AlchemyDeriveArgs, DeriveResult,
+    modalities=("image",),
+    doc="""
+    Versions of one picture, each kept like alchemy make. The step is drawn
+    with new seeds, with each material in turn, with each recipe in turn, or
+    with one knob stepped. Laid on a film's picture lane, they
+    morph into one another, so the film passes through versions of one
+    picture instead of from one photograph to the next.
+    """,
+    examples=("alchemy derive japan:12 --material japan:7 --method generative.controlnet --vary seed --count 5",
+              "alchemy derive japan:12 --method tokens.mix --vary material --each japan:7 --each japan:3 "
+              "--each japan:40",
+              "alchemy derive japan:12 --material japan:7 --vary recipe --each \"water light\" --each \"lit relief\" "
+              "--each moody",
+              "alchemy derive japan:12 --material japan:7 --method generative.controlnet --vary knob "
+              "--knob strength --start 0.2 --end 0.9 --count 6 --background"))
+def _alchemy_derive(a: AlchemyDeriveArgs, ctx: Context) -> Result:
+    from . import archive
+    from .effects import run_effect
+
+    try:
+        from .. import ledger as _ledger
+    except ImportError:                               # pragma: no cover
+        import ledger as _ledger
+    if not a.picture:
+        raise ValueError("Name the picture to derive from.")
+    _, inputs, _, methods, pipeline, _ = _mods()
+    settings = settings_of(a)
+    spec = _with_pictures(a, settings, ctx)
+    variants = _variants(a, spec, ctx)
+    source = archive.resolve_item(a.picture, ctx.actor)
+    lead = os.path.splitext(os.path.basename(source.path))[0]
+
+    def compute(progress):
+        made = []
+        for i, (label, sp) in enumerate(variants):
+            if progress is not None and getattr(progress, "cancelled", lambda: False)():
+                break
+            if progress:
+                progress(i / len(variants), f"derivative {i + 1} of {len(variants)}: {label}")
+            method = methods.get(pipeline.resolved(sp)["method"])
+            image, _, _ = _run(sp, a.size, "result")
+            path = inputs.write(image, method.family, f"{lead}__derive-{i + 1:02d}",
+                                {"op": "alchemy derive", "vary": a.vary, "label": label, "method": method.id,
+                                 "sources": [source.ref], "settings": {k: v for k, v in sp.items()
+                                                                       if k not in ("picture",)}})
+            made.append((label, path, sp))
+        if not made:
+            raise ValueError("The derivatives stopped before the first.")
+        if progress:
+            progress(1.0, f"{len(made)} derivatives kept")
+        return made
+
+    def record(tx, made):
+        ids, paths, labels = [], [], []
+        for label, path, sp in made:
+            entry = _ledger.record(tx, path, op="alchemy derive", args={"vary": a.vary, "label": label},
+                                   sources=[source.handle or source.ref], derived_from=source.handle or source.ref)
+            ids.append(entry["handle"])
+            paths.append(path)
+            labels.append(label)
+        return DeriveResult(picture=source.handle or source.ref, vary=a.vary, ids=ids, paths=paths, labels=labels)
+
+    return run_effect(ctx, f"alchemy derive {a.vary}", compute, record, a.background, kind="derive")
+
+
 # ─────────────────────────── masks ───────────────────────────
 
 class PresetInfo(BaseModel):
@@ -600,8 +754,9 @@ class RecipeListResult(Result):
 
 
 class AlchemyRecipeListArgs(Args):
-    group: str | None = Field(None, description="Only this group: tokens, hidden, pixels, masks, "
-                                                "finish, or mine.")
+    group: str | None = Field(None, description="Only this group: material on a thing, picture in a material, "
+                                                "materials blended, hidden image, glitch, relief, where, look, "
+                                                "or mine.")
 
 
 @op("alchemy recipe list", "read", AlchemyRecipeListArgs, RecipeListResult,
@@ -610,10 +765,10 @@ class AlchemyRecipeListArgs(Args):
     own. A recipe sets only what it holds, so a mask recipe and
     a finish recipe stack, and the pictures chosen stay.
     """,
-    examples=("alchemy recipe list", "alchemy recipe list --group tokens"))
+    examples=("alchemy recipe list", 'alchemy recipe list --group glitch'))
 def _alchemy_recipe_list(a: AlchemyRecipeListArgs, ctx: Context) -> RecipeListResult:
     *_, recipes = _mods()
-    return RecipeListResult(recipes=[RecipeInfo(**r.public()) for r in recipes.every()
+    return RecipeListResult(recipes=[RecipeInfo(**r.public()) for r in recipes.menu()
                                      if a.group in (None, r.group)])
 
 
@@ -681,9 +836,9 @@ def _film_mod():
     return film
 
 
-def _film_of(name: str | None, spec: dict | None, ctx: Context) -> dict:
+def _film_of(name: str | None, spec: dict | None, ctx: Context, depth: int = 0) -> dict:
     """The film an op names or carries, its pictures checked against the caller's rules: an agent
-    names pictures by handle."""
+    names pictures by handle. A film held on the picture lane is checked the same way."""
     from . import archive
 
     film = _film_mod()
@@ -691,7 +846,12 @@ def _film_of(name: str | None, spec: dict | None, ctx: Context) -> dict:
     if spec is None:
         raise ValueError("Name a kept film, or give one with --spec.")
     for p in spec.get("pictures") or []:
-        archive.resolve_item(str(p.get("ref", "")), ctx.actor)
+        ref = str(p.get("ref", ""))
+        if film.is_film(ref):
+            if depth < film.DEPTH:
+                _film_of(ref[len(film.FILM_REF):], None, ctx, depth + 1)
+            continue
+        archive.resolve_item(ref, ctx.actor)
     for k in spec.get("looks") or []:
         for m in (k.get("settings") or {}).get("materials") or []:
             if m:
@@ -821,6 +981,38 @@ def _alchemy_film_save(a: AlchemyFilmSaveArgs, ctx: Context) -> FilmShowResult:
     f = _film_of(None, a.spec, ctx)
     ctx.tx.touch(film.film_path(f["name"]))
     f = film.save(f)
+    return FilmShowResult(film=_info_of(f), spec=f)
+
+
+class AlchemyFilmSpaceArgs(FilmSpecArgs):
+    shape: Literal["even", "faster", "slower", "smooth"] = Field("even", description="even (one rate), faster "
+                                                                 "(speeding up), slower (slowing down) or "
+                                                                 "smooth (slow at both ends).")
+    by: Literal["change", "time"] = Field("change", description="change: each passage as long as the picture "
+                                          "changes along it, so the morph keeps one rate; time: every passage "
+                                          "as long.")
+    start: float | None = Field(None, ge=0, description="When the first picture comes. Defaults to where it is.")
+    end: float | None = Field(None, ge=0, description="When the last picture comes. Defaults to where it is.")
+
+
+@op("alchemy film space", "write", AlchemyFilmSpaceArgs, FilmShowResult,
+    doc="""
+    Re-time a film's pictures between the first and the last. By change, each
+    passage takes as long as the picture changes along it, so the morph runs
+    at one rate, and the shape bends that rate. A held film keeps its length.
+    A kept film is saved re-timed; a film given with --spec is returned.
+    """,
+    examples=("alchemy film space --spec " + EXAMPLE_SPEC + " --by time --shape faster",))
+def _alchemy_film_space(a: AlchemyFilmSpaceArgs, ctx: Context) -> FilmShowResult:
+    film = _film_mod()
+    f = _film_of(a.film, a.spec, ctx)
+    try:
+        f = film.normalised(film.spaced(f, a.shape, a.start, a.end, by=a.by))
+    except MemoryError as e:
+        raise ValueError(str(e)) from None
+    if a.film and not a.spec:
+        ctx.tx.touch(film.film_path(f["name"]))
+        f = film.save(f)
     return FilmShowResult(film=_info_of(f), spec=f)
 
 

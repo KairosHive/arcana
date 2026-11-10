@@ -7,19 +7,20 @@ import { load, save } from './persist'
 import { toast } from './toast.svelte'
 import { EMPTY, type Capabilities } from './capabilities'
 
-export type Mode = 'datasets' | 'prompt' | 'story' | 'moodboard' | 'alchemy' | 'archive' | 'agent'
+export type Mode = 'datasets' | 'prompt' | 'story' | 'moodboard' | 'alchemy' | 'generate' | 'archive' | 'agent'
 export const MODES: { value: Mode; label: string; hue: string }[] = [
   { value: 'datasets', label: 'Datasets', hue: 'var(--tab-datasets)' },
   { value: 'prompt', label: 'Prompt Search', hue: 'var(--tab-search)' },
   { value: 'story', label: 'Generate Story', hue: 'var(--tab-story)' },
   { value: 'moodboard', label: 'Moodboard', hue: 'var(--tab-moodboard)' },
   { value: 'alchemy', label: 'Alchemy', hue: 'var(--tab-alchemy)' },
+  { value: 'generate', label: 'Generate', hue: 'var(--tab-generate)' },
   { value: 'archive', label: 'Archive', hue: 'var(--tab-archive)' },
   { value: 'agent', label: 'Agent', hue: 'var(--tab-agent)' },
 ]
 
 export type DatasetOption = { label: string; value: string; name: string; modality: 'image' | 'audio' | 'video'; dim: number }
-export type BoardRow = { slug: string; name: string; author: string; count: number; missing: number; sections: number; updated: number; dataset: string }
+export type BoardRow = { slug: string; name: string; author: string; count: number; missing: number; sections: number; updated: number; dataset: string; kind?: 'board' | 'set' }
 export type Detail = { role?: string | null; kind?: string; section?: string | null; note?: string | null; derived_from?: string | null; handle?: string | null; missing?: boolean }
 export type Collection = { slug: string | null; name: string; items: string[]; details: Record<string, Detail> }
 export type Settings = { pixels: boolean; collection: string | null }

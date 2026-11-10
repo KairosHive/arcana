@@ -11,7 +11,11 @@
   // Grouped by modality, photos first, so the menu reads as the kinds of archive on this machine.
   const options = $derived([...app.datasets].sort((a, b) => caps.order(a.modality) - caps.order(b.modality) || a.label.localeCompare(b.label))
     .map((d) => ({ value: d.value, label: `${d.name} · ${caps.label(d.modality)} (${d.dim}D)` })))
-  const boardOptions = $derived(app.boards.map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} picture${b.count === 1 ? '' : 's'}` })))
+  // Collections (moodboards) first; sets, gathered by searches for Alchemy's labels and LoRAs, after them.
+  const boardOptions = $derived([
+    ...app.boards.filter((b) => b.kind !== 'set').map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} picture${b.count === 1 ? '' : 's'}`, group: 'Collections' })),
+    ...app.boards.filter((b) => b.kind === 'set').map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} picture${b.count === 1 ? '' : 's'}`, group: 'Sets' })),
+  ])
   const chosen = $derived(app.datasets.find((d) => d.value === app.dataset))
 
   async function create() {

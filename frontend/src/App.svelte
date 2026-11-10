@@ -12,6 +12,7 @@
   import SearchTab from './tabs/search/SearchTab.svelte'
   import MoodboardTab from './tabs/moodboard/MoodboardTab.svelte'
   import AlchemyTab from './tabs/alchemy/AlchemyTab.svelte'
+  import GenerateTab from './tabs/generate/GenerateTab.svelte'
   import AgentTab from './tabs/agent/AgentTab.svelte'
   import ArchiveTab from './tabs/archive/ArchiveTab.svelte'
 
@@ -45,6 +46,7 @@
       {#if visited.story}<section class="tab" hidden={app.mode !== 'story'}><SearchTab mode="story" /></section>{/if}
       {#if visited.moodboard}<section class="tab" hidden={app.mode !== 'moodboard'}><MoodboardTab /></section>{/if}
       {#if visited.alchemy}<section class="tab" hidden={app.mode !== 'alchemy'}><AlchemyTab /></section>{/if}
+      {#if visited.generate}<section class="tab" hidden={app.mode !== 'generate'}><GenerateTab /></section>{/if}
       {#if visited.archive}<section class="tab" hidden={app.mode !== 'archive'}><ArchiveTab /></section>{/if}
       {#if visited.agent}<section class="tab" hidden={app.mode !== 'agent'}><AgentTab /></section>{/if}
     {/if}

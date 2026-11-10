@@ -54,7 +54,7 @@ def test_every_method_declares_well_formed_knobs():
             if k.kind == "choice":
                 assert k.default in k.options, (m.id, k.key)
             for key, _, _ in k.when:
-                assert key in keys, (m.id, k.key, key)
+                assert key in keys or key == "_materials", (m.id, k.key, key)   # _materials: how many are given
 
 
 def test_knobs_are_brought_into_range_and_choices_checked():
@@ -185,11 +185,11 @@ def test_saved_recipes_are_listed_and_replace_their_namesake(tmp, monkeypatch):
 def test_the_ops_are_registered_with_their_kinds():
     kinds = {o.name: o.kind for o in ops.all_ops() if o.name.startswith("alchemy ")}
     assert kinds == {"alchemy methods": "read", "alchemy memory": "read", "alchemy preview": "read",
-                     "alchemy make": "effect",
+                     "alchemy make": "effect", "alchemy derive": "effect",
                      "alchemy mask presets": "read", "alchemy mask preview": "read",
                      "alchemy recipe list": "read", "alchemy recipe show": "read",
                      "alchemy recipe save": "write", "alchemy film list": "read",
-                     "alchemy film show": "read", "alchemy film save": "write", "alchemy film delete": "write",
+                     "alchemy film show": "read", "alchemy film space": "write", "alchemy film save": "write", "alchemy film delete": "write",
                      "alchemy film preview": "read", "alchemy film make": "effect",
                      "alchemy template list": "read", "alchemy template apply": "read",
                      "alchemy template save": "write", "alchemy template delete": "write"}
@@ -292,6 +292,7 @@ def test_loras_are_found_by_run_and_checkpoint_latest_first(tmp, monkeypatch):
     _lora_tree(root, "sd15-lora-yellow", [500, 2000])
     _lora_tree(root / "hub", "sd15-lora-yellow-copy", [2000])   # the hub mirror holds copies: skipped
     monkeypatch.setenv("ARCANA_LORA_DIRS", str(root))
+    monkeypatch.setenv("ARCANA_DATA_DIR", str(pathlib.Path(tmp) / "data"))   # not this machine's own LoRAs
     monkeypatch.setattr(pathlib.Path, "expanduser", lambda self: self if "latent-lab-models" not in str(self)
                         else pathlib.Path(tmp) / "nowhere")
     assert loras.options() == ("none", "sd15-lora-yellow/step-002000", "sd15-lora-yellow/step-000500")
@@ -307,7 +308,8 @@ def test_the_texture_lora_method_is_declared_for_words_alone():
     assert knobs["lora"].options[0] == "none" and knobs["lora"].default in knobs["lora"].options
     assert knobs["lora_w"].when == (("lora", "!=", "none"),)
     assert knobs["prompt"].default == "in goofi style"
-    assert any(r.settings.get("method") == "generative.lora" for r in recipes.BUILTIN)
+    assert not m.listed                     # out of the menu until LORA_ROADMAP.md brings it back
+    assert recipes.get("textured face").settings["method"] == "generative.lora"   # retired, still opens
 
 
 def test_the_texture_lora_is_drawn_only_inside_the_mask(tmp, ds, monkeypatch):

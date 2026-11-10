@@ -49,6 +49,7 @@ class Step:
     weights: list
     mask: np.ndarray | None
     depth: object = None
+    what: str | None = None          # what the mask holds, in words, for a method that names it
 
 
 def resolved(spec: dict) -> dict:
@@ -117,7 +118,7 @@ def _run(spec, long_side, view, with_before):
     out = _drawn.get(key)
     if out is None:
         step = Step(W, H, c, pkey, mats, mkeys, list(spec.get("weights") or [1.0] * len(mats)), m,
-                    depth=lambda: scene.ask("depth"))
+                    depth=lambda: scene.ask("depth"), what=_what(spec.get("mask")))
         if method.family == "tokens":
             knobs.setdefault("seed", crop)
         out = method.run(step, knobs)
@@ -158,19 +159,40 @@ def step_on(c, key, spec, asker=None):
     scene = mk.Scene(c, key, mats[0] if mats else None,
                      load=lambda ref, w, h: load_frame(resolve(ref), w, h), asker=asker)
     m = mk.build(spec.get("mask"), scene)
+    if spec.get("mask_to") is not None:      # a film between two looks whose masks differ: they cross-fade
+        f = min(max(float(spec.get("mask_mix") or 0.0), 0.0), 1.0)
+        m2 = mk.build(spec["mask_to"], scene)
+        if m is not None or m2 is not None:
+            one = np.ones((H, W), np.float32)
+            m = ((1 - f) * (one if m is None else m) + f * (one if m2 is None else m2)).astype(np.float32)
     out = c
+    if method is not None and spec.get("amount") is not None and float(spec["amount"]) <= 0.001:
+        method = None                        # a film's amount lane at nothing: the morph alone, drawn quickly
     if method is not None:
         knobs = mt.settle_knobs(method, spec.get("knobs") or {})
         if method.family == "tokens":
             knobs.setdefault("seed", crop)
         step = Step(W, H, c, key, mats, [f"{p}@{W}x{H}@z{zoom}@s{crop}" for p in mat_paths],
-                    list(spec.get("weights") or [1.0] * len(mats)), m, depth=lambda: scene.ask("depth"))
+                    list(spec.get("weights") or [1.0] * len(mats)), m, depth=lambda: scene.ask("depth"),
+                    what=_what(spec.get("mask")))
         out = method.run(step, knobs)
         if out.shape[:2] != (H, W):
             out = np.asarray(to_image(out).resize((W, H), mk.Image.LANCZOS), np.float32) / 255.0
         if m is not None and method.picture:
             out = m[..., None] * out + (1 - m[..., None]) * c
+        amount = spec.get("amount")
+        if amount is not None and float(amount) < 1:
+            out = c + (out - c) * max(float(amount), 0.0)
     return fn.apply(out, spec.get("finish"), m, seed=crop), m
+
+
+def _what(mask):
+    from .editor import mask_words
+
+    try:
+        return mask_words(mask)
+    except Exception:
+        return None
 
 
 def _enlarged(image, TW, TH):

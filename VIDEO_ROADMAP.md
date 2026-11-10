@@ -1057,6 +1057,55 @@ since the check reads op arguments. A tab dims only when every feature it holds
 excludes the chosen dataset, which happens for video datasets and for none of
 today's two modalities.
 
+## Adjustments after merging main (10 November 2026)
+
+Main gained four commits while this branch was built. They change the plan in
+six places.
+
+**3.1, the clip lane.** Main put kept films on the picture lane as keys with
+`in`, `out` and `speed`, and `film.py` states that clips from a video dataset
+take the same shape. The separate `clips` list of 3.1 is dropped. A clip is a
+picture-lane key whose `ref` is a section reference, and it reuses main's
+`span`, the two-point timing (`at`, `plays`) and the morph into the frame at
+`in` and out of the frame at `out`. The work left is a frame source for such a
+key (`video.frames` through the proxy for preview, the original for the final
+render), the audio lane and the mux.
+
+**3.1, pace.** Main's steady spacing measures how much the picture changes
+along a passage in the morph's own space. A clip key keeps its length under
+that spacing, as a held film does today.
+
+**3.4, looks over time.** Main's lanes take a whole shape between two times
+(rise, fall, swell, dip, wave, steps), the amount lane sets how much of the
+look covers the morph, and masks glide or cross-fade between looks. Looks over
+time on a clip therefore need only the clip frame source. The lane shapes and
+the pattern engine's curves describe the same thing, so the pattern lane of
+3.5 reads the film's lane shapes and the pattern engine keeps its pulses,
+interlaces and flashes.
+
+**3.6, morphs.** `alchemy derive` keeps several versions of one picture and
+lays them on the picture lane. The same op applied to a clip's key frames
+gives the versions a video morph passes through, which replaces the separate
+key-frame step planned in 3.6.
+
+**2.5, spaces.** Sets and IP labels live in CLIP ViT-H/14 (1024 numbers).
+Video sections are indexed with the dataset's CLIP, so the search route accepts an IP
+label on a video dataset built with ViT-H. That path is untested, and the
+capability table lists labels and axes as photo features until it is.
+
+**1.4, the contract.** Main's ops and model loads were brought under this
+branch's rules during the merge. `alchemy derive` and `set save` declare
+photos. The loaders in `alchemy/editor.py`, `ip_labels.py` and `lora_train.py`
+go through `hub.pretrained`, and `captions.py` reads CLIP features through
+`compat.features`. The Generate tab and the features Save to a set, IP labels
+and axes are in the capability table as photo features. Prompt Search on a
+sound dataset keeps + Collection and loses Save selected, which main replaced
+with sets.
+
+**Order of work from here.** Clip keys on the picture lane with a frame
+source, then the audio lane and mux, then the page controls for colour on
+video, then tracked masks and propagated style, then phase 9.
+
 # Decisions to take
 
 | Decision | Recommendation | Settled by |

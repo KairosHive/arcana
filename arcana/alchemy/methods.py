@@ -40,9 +40,24 @@ class Knob:
     when: tuple = ()             # (key, op, value) clauses that must all hold for the knob to apply
     px: bool = False             # a pixel size, scaled with the frame
     section: str = "main"        # main (shown first, the dominance knob leading), more, or looks
+    source: str = ""             # options read when asked, for things made while the app runs: labels, loras
 
     def public(self):
-        return {k: v for k, v in self.__dict__.items() if v not in ((), None, "") or k in ("default",)}
+        out = {k: v for k, v in self.__dict__.items() if v not in ((), None, "") or k in ("default",)}
+        if self.source:
+            out["options"] = list(options_of(self))
+        return out
+
+
+def options_of(knob: Knob) -> tuple:
+    """A choice knob's options. Labels and LoRAs are made while the app runs, so they are read each time."""
+    if knob.source == "labels":
+        return _arcana("ip_labels").options()
+    if knob.source == "axes":
+        return _arcana("ip_labels").axis_options()
+    if knob.source == "loras":
+        return _arcana("loras").options()
+    return knob.options
 
 
 @dataclass(frozen=True)
@@ -58,20 +73,21 @@ class Method:
     cost: str = "live"           # live | seconds
     needs: tuple = ()            # gpu, diffusers, modflows
     focused: bool = False        # draws only around a small mask, so the frame may stay at full size
+    listed: bool = True          # shown in the tab's menu; an unlisted method still runs for recipes, films, ops
 
     def public(self):
         return dict(id=self.id, family=self.family, label=self.label, doc=self.doc, cost=self.cost,
                     materials=list(self.materials), picture=self.picture, needs=list(self.needs),
-                    knobs=[k.public() for k in self.knobs])
+                    knobs=[k.public() for k in self.knobs], listed=self.listed)
 
     def defaults(self):
         return {k.key: k.default for k in self.knobs}
 
 
 def K(key, kind, default, lo=None, hi=None, step=None, label="", doc="", options=(), when=(), px=False,
-      section="main"):
+      section="main", source=""):
     return Knob(key, kind, default, lo, hi, step, label or key.replace("_", " "), doc, tuple(options),
-                tuple(tuple(w) for w in when), px, section)
+                tuple(tuple(w) for w in when), px, section, source)
 
 
 def M(*a, **k):
@@ -186,7 +202,8 @@ LOOK_KNOBS = tuple(K(n, "float", 0.0, -3, 3, 0.05, n, f"the model's own {n} axis
 OPS = tuple(tk.OPERATIONS)
 
 TOKENS = [
-    Method("tokens.mix", "tokens", "mix", "the materials laid into the picture's tokens, by arithmetic",
+    Method("tokens.mix", "tokens", "materials into the picture", "the materials laid into the picture's DINO or "
+           "VAE tokens, by arithmetic: fused into one surface, by regions of light or depth, or carried by transport",
            (K("picture", "float", 0.5, 0, 1, 0.01, "picture underneath", "how much of the picture's own tokens "
               "stay. 0 lets the materials lead, 1 keeps the picture"),
             MODEL,
@@ -208,7 +225,7 @@ TOKENS = [
             M("firmness", "float", 0.6, 0, 1, 0.01, "firmness", "how firmly each place takes the material it resembles",
               when=(("where", "==", "nearest"),)))
            + LOOK_KNOBS, tk.mix),
-    Method("tokens.mosh", "tokens", "mosh", "tokens moved out of their places and drawn back: datamoshing",
+    Method("tokens.mosh", "tokens", "glitch", "tokens moved out of their places and drawn back: datamoshing",
            (K("hold", "float", 0.5, 0, 1, 0.01, "picture underneath", "how much of the picture's own tokens "
               "stay. 0 lets the moved tokens lead, 1 keeps the picture"),
             MODEL,
@@ -231,7 +248,8 @@ TOKENS = [
             M("split_size", "float", 1.5, 0.5, 6, 0.1, "split size", "in tokens", when=(("operation", "==", "split"),)),
             M("seed", "int", 0, 0, 9999, 1, "seed", "other random choices"))
            + LOOK_KNOBS, tk.mosh, materials=(0, 3)),
-    Method("tokens.weave", "tokens", "weave", "new textures made from the materials alone",
+    Method("tokens.weave", "tokens", "new texture from the materials", "a hybrid texture made from the materials "
+           "alone in DINO's tokens: blended into one surface, in patchwork, laid out or remixed",
            (MODEL,
             K("pattern", "choice", "blend", label="pattern", options=tuple(tk.WEAVES), doc="how the materials make one texture"),
             K("walk", "float", 0.5, 0, 1, 0.01, "walk", "where between the materials", when=(("pattern", "==", "blend"),)),
@@ -286,19 +304,164 @@ def _colour_modflows(step, k):
     return _arr(out, step.W, step.H)
 
 
+def _steer(k):
+    """The IP label vector a step's label knobs ask for, or None for no label."""
+    if k.get("label", "none") in (None, "", "none"):
+        return None
+    return _arcana("ip_labels").steer(k["label"], k.get("label2"), float(k.get("mix", 0.5)),
+                                      float(k.get("push", 2.0)), float(k.get("spread", 0.0)),
+                                      int(k.get("seed", 0)), k.get("axis"), float(k.get("axis_amount", 0.0)))
+
+
+def _label_guide(k):
+    """With a label and no material, the picture nearest the label's centre, for what wants a picture
+    (the colour the texture LoRA starts from)."""
+    if k.get("label", "none") in (None, "", "none"):
+        return None
+    near = _arcana("ip_labels").load(k["label"]).nearest(1)
+    if not near:
+        return None
+    from PIL import Image, ImageOps
+
+    with Image.open(near[0]) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((768, 768))
+        return im.copy()
+
+
 def _style(method):
     def run(step, k):
         st = _arcana("style_transfer")
-        src, tgt = _pil(step.materials[0]), _pil(step.c)
+        tgt = _pil(step.c)
+        src = _pil(step.materials[0]) if step.materials else None
+        vec = _steer(k) if method in ("controlnet", "ip_adapter") else None
+        if src is None and vec is None:
+            raise ValueError("This method needs a material [1] or an IP label.")
+        toward = float(k.get("toward", 1.0))
         if method == "controlnet":
+            second, split = _split(step, k, tgt)
+            if second is not None:
+                vec = _arcana("ip_labels").steer(k["label"], None, 0.0, float(k.get("push", 2.0)),
+                                                 float(k.get("spread", 0.0)), int(k.get("seed", 0)))
+            against = _against(k)
             out, _map = st.controlnet_transfer(src, tgt, control=k["control"], scale=float(k["scale"]),
                                                control_scale=float(k["control_scale"]),
                                                strength=float(k["strength"]), steps=int(k["steps"]),
-                                               seed=int(k["seed"]), prompt=k.get("prompt", ""))
+                                               seed=int(k["seed"]), prompt=k.get("prompt", ""),
+                                               ip_embed=vec, toward=toward, against=against,
+                                               second=second, split=split)
+            if k.get("then", "none") not in (None, "", "none"):
+                # latent-lab's finishing pass: a second material redraws the surface lightly, the first having
+                # built the forms.
+                fin = _arcana("ip_labels").steer(k["then"], None, 0.0, float(k.get("push", 2.0)), 0.0,
+                                                 int(k.get("seed", 0)))
+                out, _map = st.controlnet_transfer(None, out, control=k["control"], scale=float(k["scale"]),
+                                                   control_scale=float(k["control_scale"]),
+                                                   strength=float(k.get("then_s", 0.45)), steps=int(k["steps"]),
+                                                   seed=int(k["seed"]) + 1, prompt=k.get("prompt", ""),
+                                                   ip_embed=fin)
+        elif method == "ip_adapter":
+            out = st.ip_adapter_transfer(src, tgt, scale=float(k["scale"]), strength=float(k["strength"]),
+                                         steps=int(k["steps"]), seed=int(k.get("seed", 2222)),
+                                         prompt=k.get("prompt", ""), ip_embed=vec, toward=toward)
         else:
             out = st.transfer(method, src, tgt, **k)
         return _arr(out, step.W, step.H)
     return run
+
+
+def _against(k):
+    if k.get("against", "none") in (None, "", "none"):
+        return None
+    return _arcana("ip_labels").steer(k["against"], None, 0.0, float(k.get("push", 2.0)), 0.0, 0)
+
+
+def _split(step, k, tgt):
+    """(second material's vector, where the first goes) when the step splits two labels over the picture by its
+    depth or its light; (None, None) otherwise. The split is a soft quantile: `split_at` is the share of the
+    picture the first label takes, nearest or brightest first, over a band of `softness`."""
+    if k.get("split", "off") == "off" or k.get("label", "none") in (None, "", "none") or \
+            k.get("label2", "none") in (None, "", "none"):
+        return None, None
+    from PIL import Image
+
+    if k["split"] == "depth":
+        field = np.asarray(step.depth(), np.float32)
+    else:
+        field = np.asarray(step.c, np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    w, h = tgt.size
+    field = np.asarray(Image.fromarray(field).resize((w, h), Image.BILINEAR), np.float32)
+    share = float(k.get("split_at", 0.5))
+    cut = float(np.quantile(field, 1 - share))
+    band = max(1e-6, float(np.quantile(field, min(1, 1 - share + 0.1)) - np.quantile(field, max(0, 1 - share - 0.1))))
+    m = np.clip((field - cut) / band + 0.5, 0, 1)
+    second = _arcana("ip_labels").steer(k["label2"], None, 0.0, float(k.get("push", 2.0)), float(k.get("spread", 0.0)),
+                                        int(k.get("seed", 0)))
+    return second, m
+
+
+def _without_material(knob):
+    """A knob that applies only when there is no material [1] (the editor draws its swatch then)."""
+    import dataclasses
+
+    return dataclasses.replace(knob, when=knob.when + (("_materials", "==", 0),))
+
+
+def _transform_knobs():
+    """ControlNet's own moves with labels, from latent-lab's transform: two labels split over the picture,
+    a label to steer away from, and a finishing pass."""
+    two = (("label", "!=", "none"), ("label2", "!=", "none"))
+    return (
+        K("split", "choice", "off", label="two materials by", options=("off", "depth", "light"),
+          doc="with a second label: off mixes the two everywhere; depth puts the first label on the near part and "
+              "the second on the far part, light the first on the light part and the second in the shadows",
+          when=two),
+        K("split_at", "float", 0.5, 0.1, 0.9, 0.02, "first takes",
+          "the share of the picture the first label takes, nearest or lightest first",
+          when=two + (("split", "!=", "off"),)),
+        M("against", "choice", "none", label="steer away from", options=("none",), source="labels",
+          when=(("label", "!=", "none"),),
+          doc="a label the drawing moves away from: toward crust, away from water"),
+        M("then", "choice", "none", label="finish with", options=("none",), source="labels",
+          doc="a label for a second, lighter pass over the result: the first builds the forms, this one the surface. "
+              "The result goes back through pixels between the passes, which can break a drawn texture into "
+              "confetti (seen on lichen finished with ice); keep it light"),
+        M("then_s", "float", 0.45, 0.2, 0.7, 0.05, "finish strength", "how much the finishing pass redraws",
+          when=(("then", "!=", "none"),)),
+    )
+
+
+def _label_knobs(seed=True):
+    """The knobs that steer a diffusion method by IP labels (ip_labels.py)."""
+    on = (("label", "!=", "none"),)
+    out = (
+        K("label", "choice", "none", label="IP label", options=("none",), source="labels",
+          doc="a position in IP-Adapter space measured on a set, words or a picture (Labels, beside the "
+              "pictures); none steers by the material [1] alone"),
+        K("label2", "choice", "none", label="second label", options=("none",), source="labels", when=on,
+          doc="a second label, mixed with the first"),
+        K("mix", "float", 0.5, 0, 1, 0.01, "mix", "0 the first label, 1 the second; a film lane on it walks "
+          "from one to the other", when=on + (("label2", "!=", "none"),)),
+        K("toward", "float", 1.0, 0, 1.5, 0.05, "toward the label",
+          "0 keeps the material [1]'s own look, 1 the label's, past 1 beyond it",
+          when=on + (("_materials", ">", 0),)),
+        # Default 2: label centres from one archive sit at cosine 0.9 to 0.95 of each other and drew
+        # alike at 1 (ice, moss and fire on one picture, 2026-11-09); at 2 each drew its own surface.
+        M("push", "float", 2.0, 0.5, 3, 0.05, "push",
+          "how far the label sits from the average picture: past 1 more of what sets it apart, below 1 "
+          "more ordinary", when=on),
+        M("spread", "float", 0.25, 0, 1, 0.05, "spread",
+          "0 the label's centre, which reads generic; toward 1 one member's own look, picked by the seed",
+          when=on),
+        K("axis", "choice", "none", label="concept axis", options=("none",), source="axes", when=on,
+          doc="a direction fitted between two places (wet against dry): the label is moved along it"),
+        K("axis_amount", "float", 0.0, -2.0, 2.0, 0.05, "along the axis",
+          "how far along the axis: 1 is the whole distance between its two ends, positive toward its first "
+          "end, negative toward its second", when=on + (("axis", "!=", "none"),)),
+    )
+    if seed:
+        out += (M("seed", "int", 2222, 0, 99999, 1, "seed", "another draw"),)
+    return out
 
 
 FOCUS_BELOW = 0.35   # a mask covering less of the frame than this is drawn on a crop around it
@@ -353,19 +516,31 @@ def _texture_lora(step, k):
     it was a 100 px smudge the model could only invent over."""
     st = _arcana("style_transfer")
     src = _pil(step.materials[0]) if step.materials else None
+    vec = _steer(k)
+    guide = src if src is not None else (_label_guide(k) if vec is not None else None)
     box = mask_box(step.mask) if k.get("focus", True) else None
     x0, y0, x1, y1 = box or (0, 0, step.W, step.H)
     region = (_full_resolution(step, box) if box else None) or _pil(step.c[y0:y1, x0:x1])
-    if src is not None and float(k.get("colour", 0)) > 0:
+    if guide is not None and float(k.get("colour", 0)) > 0:
         # img2img keeps the colours it starts from at any gentle redraw, so a guide steering only
         # through IP-Adapter came back as streaks on the picture's own skin tone. Starting from the
-        # guide's palette (LAB statistics) lets each guide's colour arrive.
-        region = _arcana("lab_transfer").lab_color_transfer_pil(region, src, float(k["colour"]))
+        # guide's palette (LAB statistics) lets each guide's colour arrive. With a label and no
+        # material, the label's most central picture is the guide.
+        region = _arcana("lab_transfer").lab_color_transfer_pil(region, guide, float(k["colour"]))
+    prompt = k.get("prompt", "")
+    if k["lora"] != "none":
+        # A LoRA trained in Arcana answers its own trigger ("in ice style") and was trained on captions
+        # of its pictures; the default prompt names latent-lab's trigger, so it is swapped for the
+        # LoRA's typical caption ("a close-up photograph of rippled water, glassy, ..., in ice style").
+        lr = _arcana("loras")
+        own = lr.trigger(k["lora"])
+        if own != lr.TRIGGER and lr.TRIGGER in prompt:
+            prompt = prompt.replace(lr.TRIGGER, lr.prompt(k["lora"]) or own)
     out, _map = st.controlnet_transfer(src, region, control=k["control"], scale=float(k["material"]),
                                        control_scale=float(k["structure"]), strength=float(k["strength"]),
                                        steps=int(k["steps"]), guidance=float(k["guidance"]), seed=int(k["seed"]),
-                                       prompt=k.get("prompt", ""), lora=k["lora"], lora_weight=float(k["lora_w"]),
-                                       avoid=k.get("avoid", ""))
+                                       prompt=prompt, lora=k["lora"], lora_weight=float(k["lora_w"]),
+                                       avoid=k.get("avoid", ""), ip_embed=vec, toward=float(k.get("toward", 1.0)))
     if (x1 - x0) > out.width * 1.25:
         # A region of a full-size photograph is larger than the drawing (diffusion draws at
         # most FOCUS_LONG): Real-ESRGAN takes it up, so it sits as sharp as the photograph around it.
@@ -380,8 +555,92 @@ def _texture_lora(step, k):
     return whole
 
 
+SWATCH_FROM = ("material [1]", "IP label", "words")
+
+
+def _swatch(step, k):
+    """What the editor is shown as the material. A material [1] is shown as it is. Without one, the material
+    is drawn by Stable Diffusion 1.5 from a place you choose: an IP label (a position measured on your own
+    pictures, a set, the matches for some words or one picture), words, or both, the words then added to the
+    label's place. Without any of these there is nothing to show, and the step says so."""
+    if step.materials:
+        return _pil(step.materials[0])
+    vec, words = _steer(k), (k.get("words") or "").strip()
+    if vec is None and not words:
+        raise ValueError("The material editor needs a material: a picture on [1], an IP label, or words "
+                         "(the material's words, such as molten copper).")
+    if k.get("swatch_by") == "the pictures (FLUX)":
+        return _pictures_swatch(k, words)
+    return _arcana("style_transfer").drawn_swatch(vec, words, seed=int(k.get("seed", 0)))
+
+
+PICTURES_PROMPT = ("A close-up photograph of one continuous material surface with the texture, grain and colours of "
+                   "the reference images, filling the frame.")
+
+
+def _pictures_swatch(k, words=""):
+    """The material drawn by FLUX.2 klein looking at the label's own pictures: a few members near its centre,
+    unlike each other. With a second label, the pictures come from both in proportion to the mix. Faithful
+    to the photographs where the place's drawing (Stable Diffusion at the label's vector) is the archive's
+    idea pushed further."""
+    from PIL import Image, ImageOps
+
+    from . import editor as ed
+
+    lab = _arcana("ip_labels")
+    refs = []
+    if k.get("label", "none") not in (None, "", "none"):
+        n2 = 0
+        if k.get("label2", "none") not in (None, "", "none"):
+            n2 = int(round(4 * float(k.get("mix", 0.5))))
+            refs += lab.load(k["label2"]).representatives(n2)
+        refs = lab.load(k["label"]).representatives(4 - n2) + refs
+    pics = []
+    for p in refs:
+        im = Image.open(p)
+        im.draft("RGB", (1024, 1024))
+        pics.append(ImageOps.exif_transpose(im).convert("RGB"))
+    prompt = PICTURES_PROMPT if not words else (
+        f"A close-up photograph of {words}, with the texture, grain and colours of the reference images, filling "
+        f"the frame." if pics else f"A close-up photograph of {words}, richly detailed, filling the frame.")
+    key = (tuple(refs), prompt, int(k.get("seed", 0)))
+    hit = _FLUX_SWATCHES.get(key)
+    if hit is None:
+        hit = ed.EDITOR.generate(prompt, pics, (768, 768), steps=6, seed=int(k.get("seed", 0)))
+        _FLUX_SWATCHES[key] = hit
+        while len(_FLUX_SWATCHES) > 16:
+            _FLUX_SWATCHES.pop(next(iter(_FLUX_SWATCHES)))
+    return hit
+
+
+_FLUX_SWATCHES: dict = {}
+
+
+def _edit(step, k):
+    """latent-lab's flagship (its atlas): the masked part redrawn by FLUX.2 klein, an editor model shown a
+    swatch of the material and told, in words, to put it on the thing's own folds and light. The swatch is
+    the material [1]; without one, an IP label's material drawn first by Stable Diffusion 1.5."""
+    from . import editor as ed
+
+    swatch = _swatch(step, k)
+    mask = step.mask if step.mask is not None else np.ones((step.H, step.W), np.float32)
+    what = (k.get("what") or "").strip() or getattr(step, "what", None)
+    prompt = (k.get("instruction") or "").strip() or ed.instruction(what)
+    out = ed.EDITOR(_pil(step.c), mask, swatch, prompt, steps=6 if k.get("quality") == "full" else 4,
+                    strength=float(k["strength"]), seed=int(k.get("seed", 0)), focus=bool(k.get("focus", True)))
+    return _arr(out, step.W, step.H)
+
+
 _LORAS = _arcana("loras").options()
 
+
+# Texture detail is a pixel method (no model, instant): listed here, under Pixels, as detail transfer. The
+# generative.texture id stays for the films and steps saved with it.
+PIXELS.append(Method("pixels.detail", "pixels", "detail transfer",
+                     "the material's fine detail laid onto the picture's own pixels, scale by scale: no model, instant",
+                     (K("amount", "float", 0.6, 0, 1, 0.01, "amount", "how much of the material's detail is laid on"),
+                      M("levels", "int", 4, 1, 6, 1, "levels", "how many scales of detail")),
+                     lambda step, k: _style("texture")(step, {**k, "strength": k["amount"]}), materials=(1, 1)))
 
 COLOUR = [
     Method("colour.lab", "colour", "LAB", "the material's colour statistics on the picture, in LAB: instant, any machine",
@@ -397,45 +656,56 @@ GENERATIVE = [
     Method("generative.texture", "generative", "texture detail", "the picture's pixels with the material's detail at high frequency",
            (K("strength", "float", 0.6, 0, 1, 0.01, "strength", "how much of the material's detail"),
             M("levels", "int", 4, 1, 6, 1, "levels", "how many scales of detail")),
-           _style("texture"), materials=(1, 1)),
-    Method("generative.img2img", "generative", "img2img", "the picture regenerated, aimed by words CLIP finds for the material",
+           _style("texture"), materials=(1, 1), listed=False),   # in the menu as pixels.detail
+    Method("generative.img2img", "generative", "picture toward words",
+           "the picture redrawn toward words: the ones CLIP finds for the material [1], or your own in the prompt; "
+           "fast",
            (K("strength", "float", 0.45, 0, 1, 0.01, "strength", "how much is regenerated"),
             M("steps", "int", 4, 1, 12, 1, "steps", "diffusion steps"),
             K("prompt", "text", "", label="prompt", doc="words added to the material's")),
            _style("img2img"), materials=(1, 1), cost="seconds", needs=("diffusers",)),
-    Method("generative.ip_adapter", "generative", "IP-Adapter", "the picture regenerated with the material itself in view",
-           (K("scale", "float", 0.7, 0, 1.5, 0.05, "material weight", "how strongly the material steers"),
+    Method("generative.ip_adapter", "generative", "picture loosely in a material",
+           "the picture redrawn with the material [1] or an IP label in view and no map of its forms, so they drift "
+           "and reinvent themselves more freely than in \"picture in a material\"",
+           (K("scale", "float", 0.7, 0, 1.5, 0.05, "material weight", "how strongly the material or label steers"),
             K("strength", "float", 0.45, 0, 1, 0.01, "strength", "how much is regenerated"),
             M("steps", "int", 12, 4, 30, 1, "steps", "diffusion steps"),
-            K("prompt", "text", "", label="prompt", doc="words beside the material")),
-           _style("ip_adapter"), materials=(1, 1), cost="seconds", needs=("diffusers",)),
-    Method("generative.controlnet", "generative", "ControlNet", "the material's look held to a map of the picture",
-           (K("control", "choice", "depth", label="map", options=("depth", "canny", "luminance"),
-              doc="what of the picture holds the generation in place"),
-            K("scale", "float", 0.7, 0, 1.5, 0.05, "material weight", "how strongly the material steers"),
-            K("control_scale", "float", 0.8, 0, 1.5, 0.05, "map weight", "how strictly the map is followed"),
-            K("strength", "float", 0.7, 0, 1, 0.01, "strength", "how much is regenerated"),
+            K("prompt", "text", "", label="prompt", doc="words beside the material")) + _label_knobs(),
+           _style("ip_adapter"), materials=(0, 1), cost="seconds", needs=("diffusers",)),
+    Method("generative.controlnet", "generative", "picture in a material",
+           "the whole picture redrawn in a material [1] or an IP label, its forms held by a map of its depth; "
+           "two labels can split the picture by depth or light",
+           (K("strength", "float", 0.75, 0, 1, 0.01, "redraw amount", "how much of the picture is redrawn"),
+            K("scale", "float", 0.85, 0, 1.5, 0.05, "material weight", "how strongly the material or label steers"),
+            K("control_scale", "float", 0.8, 0, 1.5, 0.05, "hold structure", "how strictly the picture's forms are kept"),
+            M("control", "choice", "depth", label="map", options=("depth", "canny", "luminance"),
+              doc="what of the picture holds the drawing in place"),
             M("steps", "int", 16, 4, 40, 1, "steps", "diffusion steps"),
-            M("seed", "int", 2222, 0, 99999, 1, "seed", "another draw"),
-            K("prompt", "text", "", label="prompt", doc="words beside the material")),
-           _style("controlnet"), materials=(1, 1), cost="seconds", needs=("diffusers",)),
-    Method("generative.lora", "generative", "texture LoRA",
-           "the picture redrawn in your texture LoRA's look, its forms held by a map; with a mask, only there",
+            M("prompt", "text", "", label="prompt", doc="words beside the material")) + _label_knobs()
+           + _transform_knobs(),
+           _style("controlnet"), materials=(0, 1), cost="seconds", needs=("diffusers",)),
+    Method("generative.lora", "generative", "picture in a learned look",
+           "the picture, or a masked part of it, redrawn in the look of a model trained on one of your sets "
+           "(a LoRA, made in Sets & labels): the set's own softness and palette rather than one material; its forms "
+           "held by a map of its depth",
            (K("strength", "float", 0.75, 0.2, 0.98, 0.02, "redraw amount",
               "how much of the picture is redrawn: low keeps it, high reinvents it"),
-            K("lora", "choice", _LORAS[1] if len(_LORAS) > 1 else "none", label="LoRA", options=_LORAS,
-              doc="your texture LoRA (run/checkpoint), found in <data dir>/loras, ARCANA_LORA_DIRS or "
-                  "~/latent-lab-models; none for the plain model"),
-            K("lora_w", "float", 1.4, 0, 2, 0.05, "LoRA strength",
-              "how strongly the LoRA's look applies; about 1.0 to 1.8 works best", when=(("lora", "!=", "none"),)),
-            K("prompt", "text", "in goofi style", label="prompt",
+            K("lora", "choice", _LORAS[1] if len(_LORAS) > 1 else "none", label="learned look", options=_LORAS,
+              source="loras",
+              doc="a model trained on one of your sets (a LoRA: set/checkpoint), from Sets & labels, ARCANA_LORA_DIRS "
+                  "or ~/latent-lab-models; none draws with the plain model, steered only by the material or label"),
+            K("lora_w", "float", 1.4, 0, 2, 0.05, "look strength",
+              "how strongly the learned look applies; about 1.0 to 1.8 works best", when=(("lora", "!=", "none"),)),
+            M("prompt", "text", "in goofi style", label="prompt",
               doc="words that steer the drawing; the LoRA's trigger words call up its look"),
-            K("structure", "float", 1.0, 0, 1.6, 0.05, "hold structure", "how firmly the picture's shapes are kept"),
+            M("structure", "float", 1.0, 0, 1.6, 0.05, "hold structure", "how firmly the picture's shapes are kept"),
             K("material", "float", 0.5, 0, 1, 0.05, "material weight",
-              "with a material [1], how strongly its look steers beside the LoRA; without one it has no effect"),
+              "with a material [1] or an IP label, how strongly its look steers beside the LoRA; with "
+              "neither it has no effect"),
             K("colour", "float", 0.8, 0, 1, 0.05, "material colour",
-              "with a material [1], how much of its palette the redraw starts from; at 0 each material "
-              "arrives only as streaks on the picture's own colours (measured: 2.5 times less apart)"),
+              "with a material [1] (or a label's most central picture), how much of its palette the redraw "
+              "starts from; at 0 each material arrives only as streaks on the picture's own colours "
+              "(measured: 2.5 times less apart)"),
             M("focus", "bool", True, label="draw at the mask",
               doc="with a small mask, such as a face, only the region around it is drawn, at full resolution"),
             M("avoid", "text", "animal, creature", label="avoid",
@@ -444,14 +714,45 @@ GENERATIVE = [
               doc="what of the picture holds the drawing in place"),
             M("steps", "int", 20, 4, 40, 1, "steps", "diffusion steps"),
             M("guidance", "float", 7.0, 1, 12, 0.5, "guidance", "how closely the words are followed"),
-            M("seed", "int", 0, 0, 99999, 1, "seed", "another draw")),
-           _texture_lora, materials=(0, 1), cost="seconds", needs=("diffusers",), focused=True),
+            M("seed", "int", 0, 0, 99999, 1, "seed", "another draw")) + _label_knobs(seed=False),
+           # Out of the menu (2026-11-09): no test found a learned look beating a label or no LoRA at all;
+           # LORA_ROADMAP.md is how it comes back. Recipes, films and the ops still run it.
+           _texture_lora, materials=(0, 1), cost="seconds", needs=("diffusers",), focused=True, listed=False),
 ]
+
+GENERATIVE.append(
+    Method("generative.edit", "generative", "material on a thing",
+           "the masked part redrawn by an editor model (FLUX.2 klein) shown the material: it puts the material "
+           "on the thing's own folds and light; name the thing in the mask, such as thing:the dress",
+           (K("strength", "float", 1.0, 0.5, 1.0, 0.01, "redraw amount",
+              "how much of the masked part is redrawn: below 1 the picture's own shows through more"),
+            K("swatch_by", "choice", "the pictures (FLUX)", label="draw the material from", when=(("_materials", "==", 0),),
+              options=("the pictures (FLUX)", "the place (SD 1.5)"),
+              doc="with no material [1]: FLUX.2 klein looking at the label's own pictures (faithful to your "
+                  "photographs), or Stable Diffusion at the label's place in IP space (mixes, push and spread "
+                  "move it, beyond what the archive holds)"),
+            K("words", "text", "", label="material in words", when=(("_materials", "==", 0),),
+              doc="with no material [1]: the material described in words (molten copper, wet slate), drawn by "
+                  "Stable Diffusion; with an IP label, added to the label's place"),
+            K("what", "text", "", label="what it is",
+              doc="what the mask holds, in words (the dress, the cliff); empty reads it from the mask"),
+            M("quality", "choice", "full", label="quality", options=("draft", "full"),
+              doc="draft is 4 steps, full is 6"),
+            M("instruction", "text", "", label="instruction",
+              doc="the whole instruction, in place of \"Replace the surface of <what> with the material from the "
+                  "reference image ...\""),
+            M("focus", "bool", True, label="work around the mask",
+              doc="when the mask holds only part of the picture, only its surroundings are drawn, at full "
+                  "resolution: faster, and a small thing gets more pixels"),
+            M("seed", "int", 1, 0, 99999, 1, "seed", "another draw"))
+           + tuple(_without_material(kn) for kn in _label_knobs(seed=False) if kn.key != "toward"),
+           _edit, materials=(0, 1), cost="seconds", needs=("diffusers", "gpu"), focused=True))
 
 FAMILIES = {"pixels": "the material's own pixels laid into the picture: nothing invented",
             "tokens": "the pictures as token grids, mixed by arithmetic and drawn back",
             "colour": "the material's colours on the picture",
-            "generative": "a diffusion model redraws the picture with the material or your texture LoRA in view"}
+            "generative": "a diffusion model redraws a thing in the picture, or the whole picture, in a material "
+                          "[1], an IP label, or a look learned from one of your sets"}
 METHODS = {m.id: m for m in PIXELS + TOKENS + COLOUR + GENERATIVE}
 
 
@@ -471,6 +772,8 @@ def applies(knob: Knob, values: dict) -> bool:
             return False
         if op == "in" and v not in val:
             return False
+        if op == ">" and not float(v or 0) > float(val):
+            return False
     return True
 
 
@@ -489,9 +792,10 @@ def settle_knobs(method: Method, given: dict) -> dict:
             v = int(round(float(v)))
             v = min(max(v, int(knob.lo)), int(knob.hi)) if knob.lo is not None else v
         elif knob.kind == "choice":
-            if str(v) not in [str(o) for o in knob.options]:
-                raise ValueError(f"{key} is one of {', '.join(str(o) for o in knob.options)}, got {v!r}.")
-            v = next(o for o in knob.options if str(o) == str(v))
+            opts = options_of(knob)
+            if str(v) not in [str(o) for o in opts]:
+                raise ValueError(f"{key} is one of {', '.join(str(o) for o in opts)}, got {v!r}.")
+            v = next(o for o in opts if str(o) == str(v))
         elif knob.kind == "bool":
             v = str(v).lower() in ("1", "true", "yes", "on")
         out[key] = v

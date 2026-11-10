@@ -1,5 +1,6 @@
 <script lang="ts">
   import PatternTab from './PatternTab.svelte'
+  import ColourTab from './ColourTab.svelte'
   import ModalityTag from '../../lib/components/ModalityTag.svelte'
   import { onMount } from 'svelte'
   import { app } from '../../lib/stores/app.svelte'
@@ -15,7 +16,7 @@
   import Status from '../../lib/ui/Status.svelte'
   import SplitPane from '../../lib/ui/SplitPane.svelte'
 
-  /** Alchemy: Image (the step) and Video (the film). */
+  /** Alchemy: Image (the step), Video (the film), Pattern (procedural editing) and Colour (a clip recoloured). */
   let stage: Stage | undefined = $state()
   const visible = $derived(app.mode === 'alchemy')
 
@@ -29,8 +30,8 @@
 
 <div class="alc">
   <div class="subbar">
-    <Tabs bind:value={alchemyUi.sub} tabs={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', badge: film.spec.pictures.length ? String(film.spec.pictures.length) : '' }, { value: 'pattern', label: 'Pattern' }]} />
-    <ModalityTag feature={alchemyUi.sub === 'image' ? 'alchemy.step' : alchemyUi.sub === 'video' ? 'alchemy.film' : 'alchemy.pattern'} />
+    <Tabs bind:value={alchemyUi.sub} tabs={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', badge: film.spec.pictures.length ? String(film.spec.pictures.length) : '' }, { value: 'pattern', label: 'Pattern' }, { value: 'colour', label: 'Colour' }]} />
+    <ModalityTag feature={alchemyUi.sub === 'image' ? 'alchemy.step' : alchemyUi.sub === 'video' ? 'alchemy.film' : alchemyUi.sub === 'colour' ? 'alchemy.colour' : 'alchemy.pattern'} />
   </div>
   {#if !catalog.data}
     <div class="center">{#if catalog.error}<Status text={catalog.error} tone="bad" />{:else}<Spinner size={18} label="Reading the methods…" />{/if}</div>
@@ -56,6 +57,7 @@
       <FilmTab active={alchemyUi.sub === 'video' && visible} />
     </div>
     {#if alchemyUi.sub === 'pattern'}<div class="view"><PatternTab /></div>{/if}
+    {#if alchemyUi.sub === 'colour'}<div class="view"><ColourTab /></div>{/if}
   {/if}
 </div>
 

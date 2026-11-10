@@ -1038,8 +1038,17 @@ best one outlined, and a click plays from there. Chips filter by motion
   colour, and with `--source` puts back the changes the original clip had. On
   a test card with every other frame darkened it cut the frame-to-frame
   change to under a quarter.
-- Open. No page control yet, and looks over time, tracked masks and
-  propagated style are still to build.
+- The page. Alchemy has a Colour subtab. A clip of the collection is the
+  target, pictures and other clips are the references in order, and the
+  controls are the method, the strength and the number of moments to follow a
+  reference clip at. The result plays beside the original with the measured
+  change between frames, and Steady runs `colour deflicker` on it against the
+  original.
+- In the page, on a 12.5 s clip recoloured toward a still with Lab, the
+  change between frames went from 0.24 to 0.26. Steady on that result, which
+  had no added flicker, raised it from 0.26 to 0.34.
+- Open. Steady on a clip without flicker should leave it as it is. Tracked
+  masks and propagated style are still to build.
 
 **Checked against the revised Part 3.** The built code stands as it is. The
 pattern engine addresses frames by number, which the reader and the section

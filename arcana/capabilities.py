@@ -83,6 +83,7 @@ FEATURES: tuple[Feature, ...] = (
     Feature("alchemy.mask", ("alchemy",), "Masks", "item", ops=("alchemy mask preview",)),
     Feature("alchemy.film", ("alchemy",), "Film", "item", ops=("alchemy film preview", "alchemy film make")),
     Feature("alchemy.pattern", ("alchemy",), "Pattern", "item", ops=("pattern make",)),
+    Feature("alchemy.colour", ("alchemy",), "Colour on video", "item", ops=("colour video",)),
     Feature("alchemy.learn", ("alchemy",), "IP labels and axes", "item", PHOTO),
     # ── Generate
     Feature("generate.material", ("generate",), "New material from places in the archive", "none", PHOTO),

@@ -6,7 +6,7 @@ import { post, reason } from '../../lib/api/client'
 import { load, save } from '../../lib/stores/persist'
 import { toast } from '../../lib/stores/toast.svelte'
 
-export type Key = { t: number; ease?: string; v?: number; ref?: string; settings?: Record<string, any>; in?: number; out?: number; speed?: number }
+export type Key = { t: number; ease?: string; v?: number; ref?: string; settings?: Record<string, any>; in?: number; out?: number; speed?: number; mute?: boolean; gain?: number }
 export type FilmSpec = {
   name: string; fps: number; size: number; aspect: string; space: string; loop: boolean; even: boolean; length?: number
   pictures: Key[]; looks: Key[]; lanes: Record<string, Key[]>
@@ -15,7 +15,7 @@ export type LaneMeta = { label: string; lo: number; hi: number; step: number; gr
 export type LookSummary = { index: number | null; count: number; t?: number; method?: string; model?: string | null; mask?: string; materials?: string[]; finish?: string[]; settings?: Record<string, any> }
 export type FilmMeta = {
   length: number; lanes: Record<string, LaneMeta>; laneOptions: { label: string; value: string; group: string }[]
-  pictures: { t: number; path: string; name: string; film?: string; dur?: number; in?: number; out?: number; speed?: number }[]; looks: { t: number; label: string }[]
+  pictures: { t: number; path: string; name: string; film?: string; clip?: boolean; dur?: number; in?: number; out?: number; speed?: number }[]; looks: { t: number; label: string }[]
   ok: boolean; status: string; empty: string; normalised: any
 }
 export type Selection = { lane: string; i: number } | null
@@ -109,6 +109,13 @@ export async function addPicture(ref: string, t: number = film.t) {
 
 export const FILM_REF = 'film:'
 export const isFilmRef = (ref?: string) => String(ref ?? '').startsWith(FILM_REF)
+/** A video on the picture lane: a video dataset's handle, a video file or a section of one. */
+export const isClipRef = (ref?: string) => {
+  const r = String(ref ?? '')
+  return !isFilmRef(r) && (/^[^\\/]+@video:\d+$/.test(r) || /\.(mp4|mov|mkv|webm|avi|m4v)(#t=[\d.,]+)?$/i.test(r))
+}
+/** A key that plays for a while, a kept film or a clip. */
+export const playsRef = (ref?: string) => isFilmRef(ref) || isClipRef(ref)
 
 export const LANE_SHAPES = [
   { key: 'rise', label: 'rise', doc: 'from the first value to the second' },

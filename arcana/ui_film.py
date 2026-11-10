@@ -242,16 +242,23 @@ def meta(spec: dict) -> dict:
     film = _film()
     pictures = []
     for p in sorted(s.get("pictures") or [], key=lambda p: float(p["t"])):
-        if film.is_film(p.get("ref", "")):
-            name = str(p["ref"])[len(film.FILM_REF):]
+        if film.plays(p.get("ref", "")):
+            clip = film.is_clip(p["ref"])
+            name, path = str(p["ref"])[len(film.FILM_REF):], ""
             q = dict(p)
             try:
-                film._film_key(q, 0)
+                film.held_key(q, 0)
                 dur = film.span(q)
+                if clip:
+                    file = film.clip_source(p["ref"])[0]
+                    name = os.path.basename(file)
+                    # The page shows the clip by its frame at `in`.
+                    path = film._modality.section_ref(file, q["in"], q["out"])
             except (ValueError, KeyError, TypeError):
                 dur = 0.0
-            pictures.append({"t": float(p["t"]), "path": "", "name": name, "film": name, "dur": dur,
-                             "in": q.get("in"), "out": q.get("out"), "speed": q.get("speed")})
+            pictures.append({"t": float(p["t"]), "path": path, "name": name, "film": "" if clip else name,
+                             "clip": clip, "dur": dur, "in": q.get("in"), "out": q.get("out"),
+                             "speed": q.get("speed")})
             continue
         try:
             pictures.append({"t": float(p["t"]), "path": resolve(p["ref"]), "name": os.path.basename(str(p["ref"]))})
@@ -285,8 +292,8 @@ def add_picture(spec: dict, ref: str, t: float) -> tuple[dict, float]:
         t = float(pics[-1]["t"]) + GAP
     film = _film()
     key = {"t": round(t, 3), "ref": ref, "ease": "linear"}
-    if film.is_film(ref):
-        film._film_key(key, 0)
+    if film.plays(ref):
+        film.held_key(key, 0)
     if pics:
         # Where a film would run into the next key, or a picture lands while a film plays, the key goes
         # after everything.
@@ -304,11 +311,11 @@ def add_picture(spec: dict, ref: str, t: float) -> tuple[dict, float]:
 
 def _span(p: dict) -> float:
     film = _film()
-    if not film.is_film(p.get("ref", "")):
+    if not film.plays(p.get("ref", "")):
         return 0.0
     q = dict(p)
     try:
-        film._film_key(q, 0)
+        film.held_key(q, 0)
         return film.span(q)
     except (ValueError, KeyError, TypeError):
         return 0.0

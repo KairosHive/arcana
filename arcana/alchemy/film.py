@@ -32,7 +32,18 @@ the `ease` towards the next key.
 Films inside a film. A key on the picture lane can hold a kept film, `{"t": 12, "ref": "film:rites",
 "in": 0, "out": 8, "speed": 1}`: the film morphs into that film's frame at `in`, plays it from `in` to
 `out` at `speed`, and morphs on from its frame at `out`. A film made of one picture's derivatives
-becomes one passage of another film this way. Clips from a video dataset will take the same shape.
+becomes one passage of another film this way.
+
+Clips. A key can hold a video the same way, by its handle, its file or a section of its file:
+`{"t": 4, "ref": "clips@video:12", "in": 12.0, "out": 22.5, "speed": 1}`. `in` and `out` are seconds of
+the source file, and default to the section's own range. The film morphs into the clip's frame at
+`in`, plays the clip, and morphs on from its frame at `out`, so a film passes from a still into a
+moving shot and back. Looks, lanes, masks and finish apply to a clip's frames as they do to a morph.
+
+Sound. A clip is heard while it plays, at its speed, unless its key says `"mute": true`; `"gain"` is
+in decibels. The `audio` list places other sounds: `{"t": 0, "ref": "field@audio:212", "gain": -6,
+"fade": [0.5, 2.0], "in": 0, "out": 30}`, a sound or the track of a video, from `t`, faded in and out.
+`"sound": false` renders a silent film.
 
 The amount lane. `amount` sets how much of the look's method covers the morph, 0 to 1, so a texture
 can be laid over the film progressively while the finish lanes keep their own course.
@@ -56,9 +67,18 @@ import subprocess
 
 import numpy as np
 
+import threading
+
 from . import mask as mk
 from . import spaces
 from .inputs import load_frame, resolve, to_image
+
+try:
+    from .. import modality as _modality
+    from .. import video as _video
+except ImportError:                          # pragma: no cover
+    import modality as _modality
+    import video as _video
 
 EASES = ("linear", "smooth", "in", "out", "hold")
 NUMBER_PATHS = ("zoom", "amount")
@@ -77,11 +97,69 @@ def is_film(ref) -> bool:
     return str(ref).startswith(FILM_REF)
 
 
+def is_clip(ref) -> bool:
+    """A video on the picture lane: a video dataset's handle, a video file or a section of one."""
+    ref = str(ref).strip().strip('"')
+    return not is_film(ref) and _modality.VIDEO in (_modality.of_handle(ref), _modality.of_path(ref))
+
+
+def plays(ref) -> bool:
+    """Whether a key plays for a while (a kept film or a clip) instead of being passed through."""
+    return is_film(ref) or is_clip(ref)
+
+
 def span(key: dict) -> float:
-    """How long a key plays: nothing for a picture, (out - in) / speed for a film."""
-    if not is_film(key.get("ref", "")):
+    """How long a key plays: nothing for a picture, (out - in) / speed for a film or a clip."""
+    if not plays(key.get("ref", "")) or key.get("out") is None:
         return 0.0
     return (float(key["out"]) - float(key["in"])) / float(key["speed"])
+
+
+def clip_source(ref) -> tuple[str, float | None, float | None]:
+    """(file, start, end) of a clip's reference: the video file, and its section's range when the
+    reference names a section."""
+    from ..ops import archive
+
+    item = archive.resolve_item(str(ref).strip().strip('"'), "person")
+    file, t0, t1 = _modality.split_ref(item.path)
+    if not os.path.isfile(file):
+        raise ValueError(f"{ref}'s file is gone: {file}")
+    return file, t0, t1
+
+
+_probed: dict = {}
+
+
+def clip_info(file: str) -> dict:
+    """A video's length, rate, size and whether it has sound, read once per file and change."""
+    key = (file, os.path.getmtime(file))
+    if key not in _probed:
+        _probed[key] = _video.probe(file)
+    return _probed[key]
+
+
+def _clip_key(p: dict) -> None:
+    """A clip key's in, out and speed filled in and checked, in seconds of its file."""
+    file, t0, t1 = clip_source(p["ref"])
+    length = float(clip_info(file)["duration"] or 0.0)
+    name = os.path.basename(file)
+    p["in"] = float(t0 or 0.0) if p.get("in") in (None, "") else float(p["in"])
+    p["out"] = float(t1 if t1 is not None else length) if p.get("out") in (None, "") else float(p["out"])
+    p["out"] = min(p["out"], length) if length and p["out"] <= length + 0.25 else p["out"]
+    p["speed"] = float(p.get("speed") or 1.0)
+    if not 0.1 <= p["speed"] <= 8:
+        raise ValueError("A clip plays at 0.1 to 8 times its speed.")
+    if not 0 <= p["in"] < p["out"] <= length + 1e-6:
+        raise ValueError(f"The clip {name} runs 0 to {length:.2f} s: its in and out lie in that range, "
+                         f"in before out.")
+
+
+def held_key(p: dict, depth: int = 0) -> None:
+    """The in, out and speed of a key that plays, a kept film or a clip, filled in and checked."""
+    if is_film(p["ref"]):
+        _film_key(p, depth)
+    else:
+        _clip_key(p)
 
 
 def _film_key(p: dict, depth: int) -> None:
@@ -129,12 +207,15 @@ def normalised(spec: dict, depth: int = 0) -> dict:
             if slug(str(p["ref"])[len(FILM_REF):]) == slug(f["name"]):
                 raise ValueError("A film cannot hold itself.")
             _film_key(p, depth)
+        elif is_clip(p["ref"]):
+            _clip_key(p)
     if len({p["t"] for p in pics}) != len(pics):
         raise ValueError("Two pictures share a time on the picture lane.")
     for a, b in zip(pics, pics[1:]):
         if a["t"] + span(a) >= b["t"]:
-            raise ValueError(f"The film at {a['t']:.2f} s plays until {a['t'] + span(a):.2f} s, past the next "
-                             f"key at {b['t']:.2f} s. Move that key later or shorten the film's out.")
+            what = "film" if is_film(a["ref"]) else "clip"
+            raise ValueError(f"The {what} at {a['t']:.2f} s plays until {a['t'] + span(a):.2f} s, past the next "
+                             f"key at {b['t']:.2f} s. Move that key later or shorten the {what}'s out.")
     f["pictures"] = pics
     last = pics[-1]["t"] + span(pics[-1])
     length = float(f.get("length") or 0)
@@ -161,6 +242,21 @@ def normalised(spec: dict, depth: int = 0) -> dict:
         if keys:
             lanes[path] = keys
     f["lanes"] = lanes
+    f["sound"] = bool(f.get("sound", True))
+    sounds = sorted((dict(a) for a in f.get("audio") or []), key=lambda a: float(a.get("t") or 0))
+    for a in sounds:
+        a["t"] = float(a.get("t") or 0.0)
+        a["gain"] = float(a.get("gain") or 0.0)
+        fade = list(a.get("fade") or [0.0, 0.0])
+        a["fade"] = [max(0.0, float(x)) for x in (fade + [0.0, 0.0])[:2]]
+        if not str(a.get("ref") or "").strip():
+            raise ValueError("A sound on the audio lane names its file or handle with ref.")
+        if not -60 <= a["gain"] <= 24:
+            raise ValueError("A sound's gain is -60 to 24 decibels.")
+    if sounds:
+        f["audio"] = sounds
+    else:
+        f.pop("audio", None)
     return f
 
 
@@ -207,7 +303,7 @@ def points(film: dict) -> list[dict]:
     stops the film plays."""
     out = []
     for i, p in enumerate(film["pictures"]):
-        if is_film(p["ref"]):
+        if plays(p["ref"]):
             out.append({"t": p["t"], "ease": "linear", "key": i, "at": p["in"], "plays": True})
             out.append({"t": p["t"] + span(p), "ease": p["ease"], "key": i, "at": p["out"], "plays": False})
         else:
@@ -372,6 +468,68 @@ def _mask_lane(m: dict, rest: str, v: float) -> dict:
 
 # ─────────────────────────── the frame ───────────────────────────
 
+class Clip:
+    """A video as a source of frames for a film: `frame(t)` is the frame at t seconds of the file,
+    covering W x H, floats in 0..1. Frames asked for in order are read from one running decoder, so a
+    render decodes each clip once; a jump (scrubbing) starts the decoder again at that time."""
+
+    def __init__(self, file: str, W: int, H: int):
+        self.file = file
+        self.W, self.H = int(W), int(H)
+        self.info = clip_info(file)
+        self.fps = min(max(float(self.info["fps"] or 30.0), 1.0), 60.0)
+        k = max(self.W / self.info["width"], self.H / self.info["height"])
+        long = max(self.info["width"], self.info["height"])
+        self.side = None if k >= 1 else int(np.ceil(long * k)) + 2
+        self.spec = {"clip": file, "mtime": os.path.getmtime(file)}
+        self._gen, self._next, self._last = None, 0, None
+        self._lock = threading.Lock()
+
+    def _close(self):
+        if self._gen is not None:
+            self._gen.close()
+            self._gen = None
+
+    def frame(self, t: float):
+        i = max(0, int(round(float(t) * self.fps)))
+        with self._lock:
+            if self._last is not None and self._last[0] == i:
+                return self._last[1]
+            if self._gen is None or i < self._next or i - self._next > self.fps * 2:
+                self._close()
+                self._gen = _video.frames(self.file, self.fps, side=self.side, t0=i / self.fps, info=self.info)
+                self._next = i
+            got = None
+            while self._next <= i:
+                try:
+                    _, got = next(self._gen)
+                except StopIteration:
+                    self._gen = None
+                    break
+                self._next += 1
+            if got is None:
+                # Past the last frame the file holds: the last one read stands in.
+                if self._last is not None:
+                    return self._last[1]
+                got = _video.frame_at(self.file, max(0.0, float(self.info["duration"] or 0.0) - 0.5),
+                                      side=self.side, info=self.info)
+                if got is None:
+                    raise ValueError(f"No frame could be read from {os.path.basename(self.file)}.")
+            from PIL import Image
+
+            from . import pixels as cx
+
+            out = np.asarray(cx.cover(Image.fromarray(got), self.W, self.H), np.float32) / 255.0
+            self._last = (i, out)
+            return out
+
+    def __del__(self):                       # pragma: no cover
+        try:
+            self._close()
+        except Exception:
+            pass
+
+
 class Film:
     """A film made ready to draw: its token space, the grids of its stops and their mask maps. A film
     held on the picture lane is made ready too, at this film's size and shape, and plays from it."""
@@ -383,7 +541,7 @@ class Film:
         self.space_name = self.spec["space"]
         self.sp = spaces.space(self.space_name)
         keys = self.spec["pictures"]
-        self.paths = ["" if is_film(p["ref"]) else resolve(p["ref"]) for p in keys]
+        self.paths = ["" if plays(p["ref"]) else resolve(p["ref"]) for p in keys]
         fw, fh = self._aspect()
         long = max(1, round(self.size / 16))
         self.rows, self.cols = self.sp.grid(fw, fh, long)
@@ -395,6 +553,8 @@ class Film:
                 if f.spec["even"]:
                     f.even()
                 self.inner[i] = f
+            elif is_clip(p["ref"]):
+                self.inner[i] = Clip(clip_source(p["ref"])[0], self.W, self.H)
         self.stops = points(self.spec)
         self.stills = [self._still(q) for q in self.stops]
         from .tokens import encode
@@ -567,6 +727,9 @@ def _first_size(spec: dict, depth: int = 0):
     from .inputs import original_size
 
     for p in spec["pictures"]:
+        if is_clip(p["ref"]):
+            info = clip_info(clip_source(p["ref"])[0])
+            return float(info["width"]), float(info["height"])
         if not is_film(p["ref"]):
             return original_size(resolve(p["ref"]))
         if depth < DEPTH:
@@ -644,8 +807,120 @@ def render(spec: dict, out_path: str, progress=None, size: int | None = None, fp
         writer.wait()
     if made == 0:
         raise ValueError("The render stopped before its first frame.")
+    heard = add_sound(spec, out_path, made / fps)
     return {"path": out_path, "frames": made, "of": frames, "fps": fps, "size": [out_w, out_h],
-            "drawn": [film.W, film.H], "seconds": round(made / fps, 2), "pictures": stills_of(spec)}
+            "drawn": [film.W, film.H], "seconds": round(made / fps, 2), "pictures": stills_of(spec),
+            "sounds": heard}
+
+
+# ─────────────────────────── sound ───────────────────────────
+
+def _atempo(speed: float) -> str:
+    """ffmpeg's atempo takes 0.5 to 2 at a time, so a larger change is a chain of them."""
+    parts = []
+    while speed > 2.0:
+        parts.append("atempo=2.0")
+        speed /= 2.0
+    while speed < 0.5:
+        parts.append("atempo=0.5")
+        speed /= 0.5
+    parts.append(f"atempo={speed:.4f}")
+    return ",".join(parts)
+
+
+_DURATION = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _sound_length(file: str) -> float:
+    """How long a sound or a video's track lasts, from the header ffmpeg prints."""
+    done = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", file], capture_output=True,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    text = done.stderr.decode("utf-8", "replace")
+    if "Audio:" not in text:
+        return 0.0
+    m = _DURATION.search(text)
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
+
+
+def sounds(spec: dict) -> list[dict]:
+    """Every sound the film plays, in film time: {"file", "start", "length" (of the source), "speed",
+    "at", "gain", "fade"}. The clips on the picture lane that have a track, then the audio lane."""
+    f = normalised(spec)
+    if not f["sound"]:
+        return []
+    out = []
+    for p in f["pictures"]:
+        if is_clip(p["ref"]) and not p.get("mute"):
+            file = clip_source(p["ref"])[0]
+            if clip_info(file)["has_audio"]:
+                out.append({"file": file, "start": p["in"], "length": p["out"] - p["in"], "speed": p["speed"],
+                            "at": p["t"], "gain": float(p.get("gain") or 0.0), "fade": [0.03, 0.03]})
+    for a in f.get("audio") or []:
+        from ..ops import archive
+
+        item = archive.resolve_item(str(a["ref"]).strip().strip('"'), "person")
+        file, t0, t1 = _modality.split_ref(item.path)
+        if not os.path.isfile(file):
+            raise ValueError(f"{a['ref']}'s file is gone: {file}")
+        total = _sound_length(file)
+        if total <= 0:
+            raise ValueError(f"{os.path.basename(file)} holds no sound.")
+        start = float(a["in"]) if a.get("in") not in (None, "") else float(t0 or 0.0)
+        end = float(a["out"]) if a.get("out") not in (None, "") else float(t1 if t1 is not None else total)
+        end = min(end, total)
+        if not 0 <= start < end:
+            raise ValueError(f"The sound {os.path.basename(file)} runs 0 to {total:.2f} s: its in and out "
+                             f"lie in that range, in before out.")
+        out.append({"file": file, "start": start, "length": end - start, "speed": 1.0, "at": a["t"],
+                    "gain": a["gain"], "fade": a["fade"]})
+    return out
+
+
+def add_sound(spec: dict, video_path: str, seconds: float) -> int:
+    """The film's sounds mixed and laid under the rendered video, which keeps its picture as it is.
+    Returns how many sounds are heard. A film with none is left silent."""
+    plan = [s for s in sounds(spec) if s["at"] < seconds]
+    if not plan:
+        return 0
+    import tempfile
+
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", video_path]
+    chains, pads = [], []
+    for i, s in enumerate(plan, 1):
+        cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{s['length']:.3f}", "-i", s["file"]]
+        played = min(s["length"] / s["speed"], seconds - s["at"])
+        fin, fout = (min(x, played / 2) for x in s["fade"])
+        chain = (f"[{i}:a]asetpts=PTS-STARTPTS,{_atempo(s['speed'])},aresample=48000,"
+                 f"aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=0:{played:.3f}")
+        if fin > 0:
+            chain += f",afade=t=in:st=0:d={fin:.3f}"
+        if fout > 0:
+            chain += f",afade=t=out:st={played - fout:.3f}:d={fout:.3f}"
+        chain += f",volume={s['gain']:.2f}dB,adelay={int(round(s['at'] * 1000))}:all=1[a{i}]"
+        chains.append(chain)
+        pads.append(f"[a{i}]")
+    # A silent bed as long as the film: the track then starts at zero and ends with the picture,
+    # wherever the first sound comes in.
+    chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{seconds:.3f}[bed]")
+    chains.append("[bed]" + "".join(pads) + f"amix=inputs={len(plan) + 1}:normalize=0:dropout_transition=0:"
+                  f"duration=first,atrim=0:{seconds:.3f}[a]")
+    mixed = os.path.splitext(video_path)[0] + ".sound.mp4"
+    cmd += ["-filter_complex", ";".join(chains), "-map", "0:v", "-map", "[a]", "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", mixed]
+    errors = tempfile.TemporaryFile()
+    try:
+        done = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=errors,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if done.returncode:
+            errors.seek(0)
+            why = errors.read()[-400:].decode("utf-8", "replace").strip()
+            if os.path.isfile(mixed):
+                os.remove(mixed)
+            raise ValueError("ffmpeg could not lay the film's sound: " + why)
+    finally:
+        errors.close()
+    os.replace(mixed, video_path)
+    return len(plan)
 
 
 def length_text(seconds: float) -> str:
@@ -727,8 +1002,9 @@ def prepared(spec: dict, size: int | None = None) -> Film:
     """A Film ready to draw, its pictures' grids kept while the pictures, the space, the size and the
     aspect stay the same, so scrubbing a timeline whose looks and lanes change re-encodes nothing."""
     f = normalised(spec)
-    held = [[p["ref"], p.get("in"), p.get("out"), load(str(p["ref"])[len(FILM_REF):])]
-            for p in f["pictures"] if is_film(p["ref"])]
+    held = [[p["ref"], p.get("in"), p.get("out"),
+             load(str(p["ref"])[len(FILM_REF):]) if is_film(p["ref"]) else clip_source(p["ref"])[0]]
+            for p in f["pictures"] if plays(p["ref"])]
     key = json.dumps([[p["ref"] for p in f["pictures"]], held, f["space"], int(size or f["size"]), f["aspect"],
                       f["loop"]], sort_keys=True)
     film = _ready.get(key)

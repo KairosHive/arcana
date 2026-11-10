@@ -5,7 +5,7 @@
   import { toast } from '../../lib/stores/toast.svelte'
   import { watchJob } from '../../lib/stores/jobs.svelte'
   import { thumbUrl, filmVideoUrl, basename } from '../../lib/api/media'
-  import { film, commit, refreshMeta, addPicture, spacePictures, addLane, addLook, replaceLook, removeLook, lookSummary, removeSelected, newFilm, openFilm, keysOf, clone, sorted, laneValue, shapeLane, placeSeries, isFilmRef, FILM_REF, LANE_SHAPES, SPACES, type FilmSpec, type LookSummary } from './film.svelte'
+  import { film, commit, refreshMeta, addPicture, spacePictures, addLane, addLook, replaceLook, removeLook, lookSummary, removeSelected, newFilm, openFilm, keysOf, clone, sorted, laneValue, shapeLane, placeSeries, isFilmRef, isClipRef, playsRef, FILM_REF, LANE_SHAPES, SPACES, type FilmSpec, type LookSummary } from './film.svelte'
   import { controls, loadStep, alchemyUi, catalog, method as methodOf, step } from './alchemy.svelte'
   import Timeline from './Timeline.svelte'
   import Card from '../../lib/ui/Card.svelte'
@@ -13,6 +13,7 @@
   import Button from '../../lib/ui/Button.svelte'
   import TextInput from '../../lib/ui/TextInput.svelte'
   import NumberInput from '../../lib/ui/NumberInput.svelte'
+  import Toggle from '../../lib/ui/Toggle.svelte'
   import Select from '../../lib/ui/Select.svelte'
   import Field from '../../lib/ui/Field.svelte'
   import Checkbox from '../../lib/ui/Checkbox.svelte'
@@ -136,7 +137,7 @@
     const sel = film.sel
     if (!sel || sel.lane !== 'pictures') return null
     const k = sorted(film.spec.pictures)[sel.i]
-    return k && !isFilmRef(k.ref) ? k : null
+    return k && !playsRef(k.ref) ? k : null
   })
   const stepMethod = $derived(methodOf(step.method))
   const numberKnobs = $derived((stepMethod?.knobs ?? []).filter((k) => ['float', 'int', 'angle'].includes(k.kind) && k.lo !== undefined))
@@ -177,12 +178,13 @@
     let label: string, doc: string
     const m = film.meta?.lanes[sel.lane]
     if (sel.lane === 'pictures' && isFilmRef(key.ref)) { label = `Film ${String(key.ref).slice(FILM_REF.length)}`; doc = 'The film morphs into this film\'s frame at In, plays it to Out at its speed, and morphs on from there.' }
+    else if (sel.lane === 'pictures' && isClipRef(key.ref)) { label = `Clip ${film.meta?.pictures[sel.i]?.name ?? basename(String(key.ref))}`; doc = 'The film morphs into this clip\'s frame at In, plays it to Out at its speed with its sound, and morphs on from there. In and Out are seconds of the clip\'s file.' }
     else if (sel.lane === 'pictures') { label = `Picture ${sel.i + 1}: ${basename(String(key.ref))}`; doc = 'When the film passes this picture.' }
     else if (sel.lane === 'looks') { const mm = key.settings?.method || 'none'; label = `Look ${sel.i + 1}: ${mm === 'none' ? 'morph only' : mm}`; doc = 'From here the film moves toward the next look.' }
     else { label = `${m?.label ?? sel.lane}, key ${sel.i + 1}`; doc = m ? `${m.doc ?? ''}. From ${m.lo} to ${m.hi}.` : '' }
-    return { key, label, doc, hasV: 'v' in key, isFilm: sel.lane === 'pictures' && isFilmRef(key.ref) }
+    return { key, label, doc, hasV: 'v' in key, isFilm: sel.lane === 'pictures' && playsRef(key.ref), isClip: sel.lane === 'pictures' && isClipRef(key.ref) }
   })
-  function editKey(patch: { t?: number; v?: number; ease?: string; in?: number; out?: number; speed?: number }) {
+  function editKey(patch: { t?: number; v?: number; ease?: string; in?: number; out?: number; speed?: number; mute?: boolean; gain?: number }) {
     const sel = film.sel
     if (!sel) return
     const s = clone(film.spec)
@@ -193,6 +195,8 @@
     if (patch.v !== undefined && 'v' in key) key.v = patch.v
     if (patch.ease) key.ease = patch.ease
     for (const k of ['in', 'out', 'speed'] as const) if (patch[k] !== undefined) key[k] = Math.round(patch[k]! * 1000) / 1000
+    if (patch.mute !== undefined) key.mute = patch.mute
+    if (patch.gain !== undefined) key.gain = patch.gain
     commit(s)
   }
   function key(e: KeyboardEvent) {
@@ -279,7 +283,7 @@
 <svelte:window onkeydown={key} />
 
 <div class="filmtab">
-  <Card title="Pictures" subtitle="Drag a picture onto the timeline, or click it to put it at the playhead. Drag it along the timeline to change when the film passes it." pad="sm" scroll style="flex: 0 0 220px; max-height: 100%">
+  <Card title="Pictures" subtitle="Drag a picture or a clip onto the timeline, or click it to put it at the playhead. A clip plays there with its sound. Drag it along the timeline to change when the film passes it." pad="sm" scroll style="flex: 0 0 220px; max-height: 100%">
     <div class="cast">
       {#if !items.length}<p class="hint">The active collection is empty. Pictures added with + Collection on any tab appear here.</p>{/if}
       {#each items as p (p)}
@@ -371,6 +375,12 @@
             <Field label="In (s)"><NumberInput value={selected.key.in ?? 0} min={0} step={0.1} size="sm" width="70px" onchange={(v) => editKey({ in: v })} /></Field>
             <Field label="Out (s)"><NumberInput value={selected.key.out ?? 0} min={0} step={0.1} size="sm" width="70px" onchange={(v) => editKey({ out: v })} /></Field>
             <Field label="Speed"><NumberInput value={selected.key.speed ?? 1} min={0.1} max={8} step={0.1} size="sm" width="60px" onchange={(v) => editKey({ speed: v })} /></Field>
+          </div>
+        {/if}
+        {#if selected.isClip}
+          <div class="row">
+            <Toggle checked={!selected.key.mute} label="Sound" size="sm" onchange={(v) => editKey({ mute: !v })} />
+            {#if !selected.key.mute}<Field label="Gain (dB)"><NumberInput value={selected.key.gain ?? 0} min={-60} max={24} step={1} size="sm" width="70px" onchange={(v) => editKey({ gain: v })} /></Field>{/if}
           </div>
         {/if}
         <Field label="Curve to the next key">

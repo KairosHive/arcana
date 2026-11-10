@@ -494,7 +494,8 @@ through one new kind of source.
 
 ```json
 {
-  "clips": [{"t": 0, "ref": "clips:8120", "in": 0.0, "out": 18.5, "speed": 1.0, "ease": "linear"}],
+  "pictures": [{"t": 0, "ref": "japan:12"},
+               {"t": 4, "ref": "clips@video:8120", "in": 0.0, "out": 18.5, "speed": 1.0, "ease": "linear"}],
   "audio": [{"t": 0, "ref": "field@audio:212", "gain": -6, "fade": [0.5, 2.0]}]
 }
 ```
@@ -1105,6 +1106,37 @@ with sets.
 **Order of work from here.** Clip keys on the picture lane with a frame
 source, then the audio lane and mux, then the page controls for colour on
 video, then tracked masks and propagated style, then phase 9.
+
+## Clips on the film's picture lane (built)
+
+- A key on the picture lane holds a clip by a video handle, a file or a
+  section of a file, such as `{"t": 4, "ref": "clips@video:12", "in": 12.0,
+  "out": 22.5, "speed": 1}`. `in` and `out` are seconds of the source file
+  and default to the section's range.
+- `film.Clip` reads frames from one running decoder when they are asked for
+  in order, and starts the decoder again on a jump. A render decodes each
+  clip once.
+- The film morphs into the clip's frame at `in`, plays the clip's own frames
+  and morphs on from its frame at `out`. Looks, lanes and finish apply to the
+  clip's frames.
+- Sound. A clip is heard while it plays, at its speed, with `mute` and `gain`
+  on its key. The `audio` list places sounds or the track of a video with
+  `t`, `in`, `out`, `gain` and `fade`. The mix is laid under the rendered
+  picture, and `"sound": false` renders a silent film.
+- The page. The timeline draws a clip as a segment with its frame at `in`,
+  its name and its length. The key panel sets In, Out, Speed, Sound and Gain.
+  A clip in the collection is dragged or clicked onto the timeline as a
+  picture is.
+- `alchemy film save`, `preview` and `make` are tagged photo and video, and
+  the op's help describes clip keys and the audio list.
+- Measured on a 1080p 60 fps camera clip between two stills (DINOv2, 512 x
+  288, 12 fps, 9 s). The render took 70 s. Frames during the clip equal the
+  source frames, and the sound sits on the four seconds the clip plays.
+- Open. A mask read by a model (subject, words, depth) is read on the clip's
+  frames at `in` and `out` and blended between them, so it trails a subject
+  that moves. The audio lane has no page control. Sound from a clip inside a
+  held film is left out. The render reads originals at the film's size, and
+  scrubbing reads the same files.
 
 # Decisions to take
 

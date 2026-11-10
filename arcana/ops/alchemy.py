@@ -970,10 +970,17 @@ class AlchemyFilmSaveArgs(Args):
 
 
 @op("alchemy film save", "write", AlchemyFilmSaveArgs, FilmShowResult,
-    modalities=("image",),
+    modalities=("image", "video"),
     doc="""
     Keep a film under its name, replacing one of the same name. Undo takes it
     back like any other write.
+
+    A key on the picture lane holds a picture, a kept film (film:rites) or a
+    clip from a video dataset (walks@video:12). A film or a clip takes in, out
+    and speed, plays between them, and the film morphs into it and out of it.
+    A clip is heard while it plays, with "mute" and "gain" (decibels) on its
+    key. The "audio" list places other sounds, each {"t", "ref", "in", "out",
+    "gain", "fade": [in, out]}, and "sound": false renders a silent film.
     """,
     examples=("alchemy film save --spec " + EXAMPLE_SPEC,))
 def _alchemy_film_save(a: AlchemyFilmSaveArgs, ctx: Context) -> FilmShowResult:
@@ -1181,7 +1188,7 @@ class AlchemyFilmPreviewArgs(FilmSpecArgs):
 
 
 @op("alchemy film preview", "read", AlchemyFilmPreviewArgs, FrameResult,
-    modalities=("image",),
+    modalities=("image", "video"),
     doc="""
     One frame of a film at any moment, kept nowhere. It is the morph at that
     time, the look's step and its finish. The pictures are encoded once and
@@ -1229,7 +1236,7 @@ class AlchemyFilmMakeArgs(FilmSpecArgs):
 
 
 @op("alchemy film make", "effect", AlchemyFilmMakeArgs, FilmMadeResult,
-    modalities=("image",),
+    modalities=("image", "video"),
     doc="""
     Render a film to an H.264 video in output/edited/video/<date>/. The film
     is written beside it as JSON, and the ledger records the video as derived

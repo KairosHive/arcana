@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { film, commit, keysOf, clone, laneValue, sorted, dropPicture, addPicture, isFilmRef, type Key } from './film.svelte'
+  import { film, commit, keysOf, clone, laneValue, sorted, dropPicture, addPicture, isFilmRef, playsRef, type Key } from './film.svelte'
   import { thumbUrl } from '../../lib/api/media'
 
   /**
@@ -150,7 +150,7 @@
     e.preventDefault()
     const path = e.dataTransfer.getData(PATH_TYPE), t = dropT
     dropT = null
-    if (path && t !== null) { if (isFilmRef(path)) addPicture(path, t); else dropPicture(path, t) }
+    if (path && t !== null) { if (playsRef(path)) addPicture(path, t); else dropPicture(path, t) }
   }
 
   $effect(() => {
@@ -188,11 +188,14 @@
     {#each sorted(shown.pictures) as p, i}
       {@const xx = X(p.t)}
       <line class="key-line" x1={xx} y1={RULER} x2={xx} y2={RULER + PICS} />
-      {#if isFilmRef(p.ref)}
+      {#if playsRef(p.ref)}
         {@const w = Math.max(X(p.t + (meta?.pictures[i]?.dur ?? 0)) - xx, 10)}
-        <rect class="seg" class:sel={isSel('pictures', i)} x={xx} y={RULER + 5} width={w} height="44" rx="4" data-kind="key" data-lane="pictures" data-i={i}><title>The film {String(p.ref).slice(5)} plays here</title></rect>
-        <text class="seg-text" x={xx + 6} y={RULER + 22}>▶ {String(p.ref).slice(5)}</text>
-        <text class="seg-text dim" x={xx + 6} y={RULER + 38}>{(meta?.pictures[i]?.dur ?? 0).toFixed(1)} s</text>
+        {@const what = isFilmRef(p.ref) ? String(p.ref).slice(5) : (meta?.pictures[i]?.name ?? 'clip')}
+        {@const still = !isFilmRef(p.ref) && meta?.pictures[i]?.path && w > 60 ? meta.pictures[i].path : ''}
+        <rect class="seg" class:sel={isSel('pictures', i)} x={xx} y={RULER + 5} width={w} height="44" rx="4" data-kind="key" data-lane="pictures" data-i={i}><title>{isFilmRef(p.ref) ? 'The film' : 'The clip'} {what} plays here</title></rect>
+        {#if still}<image href={thumbUrl(still)} x={xx + 2} y={RULER + 7} width="40" height="40" preserveAspectRatio="xMidYMid slice" pointer-events="none" />{/if}
+        <text class="seg-text" x={xx + (still ? 48 : 6)} y={RULER + 22}>▶ {what}</text>
+        <text class="seg-text dim" x={xx + (still ? 48 : 6)} y={RULER + 38}>{(meta?.pictures[i]?.dur ?? 0).toFixed(1)} s</text>
       {:else}
       <image href={meta?.pictures[i]?.path ? thumbUrl(meta.pictures[i].path) : ''} x={xx - 22} y={RULER + 5} width="44" height="44" preserveAspectRatio="xMidYMid slice" class="thumb" data-kind="key" data-lane="pictures" data-i={i} />
       <rect class="thumb-frame" class:sel={isSel('pictures', i)} x={xx - 22} y={RULER + 5} width="44" height="44" rx="4" pointer-events="none" />
@@ -220,7 +223,7 @@
     {#if dropT !== null}
       <line class="drop" x1={X(dropT)} y1={RULER} x2={X(dropT)} y2={RULER + PICS} />
     {/if}
-    <text class="hint-text" x="10" y={H - 6}>Drop pictures or kept films on the timeline · double-click a lane or press ◆ to add a key · drag keys · click a curve to set its shape · Delete removes</text>
+    <text class="hint-text" x="10" y={H - 6}>Drop pictures, clips or kept films on the timeline · double-click a lane or press ◆ to add a key · drag keys · click a curve to set its shape · Delete removes</text>
 
     <line class="playhead" x1={X(film.t)} y1="0" x2={X(film.t)} y2={H} />
     <path class="playhead-cap" data-kind="ruler" d="M{X(film.t) - 6},0 h12 l-6,8z" />

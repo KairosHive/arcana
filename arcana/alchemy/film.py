@@ -39,7 +39,11 @@ can be laid over the film progressively while the finish lanes keep their own co
 
 Masks over time. A geometric layer moves through its numbers. A layer read by a model (the subject,
 words, depth) is read on the key pictures, once each, and blended along the morph, so it moves with
-what it found and no model runs on a frame.
+what it found and no model runs on a frame. A field (light, colour, edges, noise) is read on each
+frame of the morph, so it follows the picture as it changes. Between two looks whose masks share
+their layers, the masks move by their numbers (a spot's place, a coverage, the feather). Between two
+looks whose masks differ in their layers (the subject, then grown noise), both are built on each
+frame and cross-fade with the look's ease, while lanes keep moving the numbers of either.
 """
 
 from __future__ import annotations
@@ -280,6 +284,12 @@ def look_at(film: dict, t: float) -> dict:
             if t < b["t"]:
                 f = ease(a["ease"], (t - a["t"]) / max(b["t"] - a["t"], 1e-9))
                 s = _mix(json.loads(json.dumps(a["settings"])), b["settings"], f)
+                ma, mb = _mask_dict(a["settings"].get("mask")), _mask_dict(b["settings"].get("mask"))
+                if _mask_form(ma) != _mask_form(mb):
+                    # Two masks of different layers: each is built on the frame and the two cross-fade.
+                    s["mask"], s["mask_to"], s["mask_mix"] = ma, mb, f
+                elif ma["layers"]:
+                    s["mask"] = _mask_between(ma, mb, f)
                 break
     for path, keys in film["lanes"].items():
         v = lane_value(keys, t)
@@ -296,30 +306,68 @@ def look_at(film: dict, t: float) -> dict:
                 w[i] = v
             s["weights"] = w
         elif head == "mask":
-            m = s.setdefault("mask", {})
-            if isinstance(m, (str, list)):
-                m = s["mask"] = mk.MaskSpec.of(m).__dict__.copy()
-            if rest in REFINE_KEYS:
-                m[rest] = v
-                continue
-            idx, _, num = rest.partition(".")
-            i = int(idx) - 1
-            layers = list(m.get("layers") or [])
-            if i >= len(layers):
-                continue
-            if num == "coverage":
-                cov = list(m.get("coverage") or [])
-                cov += [None] * (len(layers) - len(cov))
-                cov[i] = v
-                m["coverage"] = cov
-                continue
-            got = layer_numbers(layers[i])
-            if got is not None and num in got[1]:
-                values = list(got[2])
-                values[got[1].index(num)] = v
-                layers[i] = layer_line(got[0], values, got[3] if len(got) > 3 else "")
-                m["layers"] = layers
+            for which in ("mask", "mask_to"):
+                if which == "mask" or s.get("mask_to") is not None:
+                    s[which] = _mask_lane(_mask_dict(s.get(which)), rest, v)
     return s
+
+
+def _mask_dict(m) -> dict:
+    return {k: (list(x) if isinstance(x, list) else x) for k, x in mk.MaskSpec.of(m).__dict__.items()}
+
+
+def _mask_form(m: dict):
+    """What a mask is made of, its numbers aside: two masks of one form move from one to the other by
+    their numbers, two of different forms cross-fade."""
+    return ([str(layer_numbers(x)[0]) if layer_numbers(x) else str(x).strip() for x in m["layers"]],
+            list(m["combine"]), bool(m["invert"]))
+
+
+def _mask_between(a: dict, b: dict, f: float) -> dict:
+    """Two masks of one form at f between them: refinements, coverages and the numbers of geometric
+    layers (a spot's place, a gradient's angle) all moved."""
+    def cover(m):
+        cov = list(m["coverage"]) + [None] * (len(m["layers"]) - len(m["coverage"]))
+        return [mk._coverage_of(x, c) for x, c in zip(m["layers"], cov)]
+
+    out = _mix({**a, "coverage": cover(a)}, {**b, "coverage": cover(b)}, f)
+    layers = []
+    for x, y in zip(a["layers"], b["layers"]):
+        ga, gb = layer_numbers(x), layer_numbers(y)
+        if ga and gb and len(ga[2]) == len(gb[2]):
+            layers.append(layer_line(ga[0], [p + (q - p) * f for p, q in zip(ga[2], gb[2])],
+                                     ga[3] if len(ga) > 3 else ""))
+        else:
+            layers.append(x)
+    out["layers"] = layers
+    out["seed"] = a["seed"]                  # a seed is a name for noise, not a number to move
+    return out
+
+
+def _mask_lane(m: dict, rest: str, v: float) -> dict:
+    """A mask with one lane's number laid over it: a refinement, a layer's coverage or a geometric
+    layer's number. A lane naming a layer the mask lacks leaves it as it is."""
+    if rest in REFINE_KEYS:
+        m[rest] = v
+        return m
+    idx, _, num = rest.partition(".")
+    i = int(idx) - 1
+    layers = list(m.get("layers") or [])
+    if i >= len(layers):
+        return m
+    if num == "coverage":
+        cov = list(m.get("coverage") or [])
+        cov += [None] * (len(layers) - len(cov))
+        cov[i] = v
+        m["coverage"] = cov
+        return m
+    got = layer_numbers(layers[i])
+    if got is not None and num in got[1]:
+        values = list(got[2])
+        values[got[1].index(num)] = v
+        layers[i] = layer_line(got[0], values, got[3] if len(got) > 3 else "")
+        m["layers"] = layers
+    return m
 
 
 # ─────────────────────────── the frame ───────────────────────────

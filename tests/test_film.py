@@ -323,6 +323,28 @@ def test_the_amount_lane_lays_the_look_over_the_morph_bit_by_bit(ds):
     assert np.allclose(half, (c + full) / 2, atol=2e-3)
 
 
+def test_masks_glide_between_looks_by_their_numbers_or_cross_fade_when_their_layers_differ(ds):
+    from arcana.alchemy.pipeline import step_on
+    step = {"method": "pixels.detail", "materials": ["synth:7"]}
+    glide = [{"t": 0, "ease": "linear", "settings": {**step, "mask": {"layers": ["spot:0.2,0.5,0.2"], "feather": 0}}},
+             {"t": 4, "settings": {**step, "mask": {"layers": ["spot:0.8,0.5,0.2"], "feather": 20}}}]
+    s = F.look_at(F.normalised(_spec(looks=glide)), 2.0)
+    assert s["mask"]["layers"] == ["spot:0.5,0.5,0.2"] and s["mask"]["feather"] == pytest.approx(10)
+    assert "mask_to" not in s and s["mask"]["seed"] == 0 and isinstance(s["mask"]["seed"], int)
+    fade = [{"t": 0, "ease": "linear", "settings": {**step, "mask": {"layers": ["gradient:left"], "feather": 0}}},
+            {"t": 4, "settings": {**step, "mask": {"layers": ["gradient:right"], "invert": True, "feather": 0}}},
+            {"t": 6, "settings": {**step, "mask": {"layers": ["highlights"]}}}]
+    f = F.normalised(_spec(looks=fade, lanes={"mask.feather": [{"t": 0, "v": 0}]}))
+    s = F.look_at(f, 1.0)
+    assert s["mask_mix"] == pytest.approx(0.25) and s["mask_to"]["invert"] and s["mask_to"]["feather"] == 0
+    film = F.Film(f)
+    c = film.morph(1.0)
+    _, a = step_on(c, "k", {**s, "mask_mix": 0.0})
+    _, b = step_on(c, "k", {**s, "mask_mix": 1.0})
+    _, m = step_on(c, "k", s)
+    assert not np.allclose(a, b) and np.allclose(m, 0.75 * a + 0.25 * b, atol=1e-5)
+
+
 def test_a_lane_takes_a_whole_shape_between_two_times():
     from arcana import ui_film as U
     s = U.shape_lane({}, "finish.saturation", "wave", -50, 50, 0, 8, 2)

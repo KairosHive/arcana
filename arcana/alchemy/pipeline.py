@@ -159,6 +159,12 @@ def step_on(c, key, spec, asker=None):
     scene = mk.Scene(c, key, mats[0] if mats else None,
                      load=lambda ref, w, h: load_frame(resolve(ref), w, h), asker=asker)
     m = mk.build(spec.get("mask"), scene)
+    if spec.get("mask_to") is not None:      # a film between two looks whose masks differ: they cross-fade
+        f = min(max(float(spec.get("mask_mix") or 0.0), 0.0), 1.0)
+        m2 = mk.build(spec["mask_to"], scene)
+        if m is not None or m2 is not None:
+            one = np.ones((H, W), np.float32)
+            m = ((1 - f) * (one if m is None else m) + f * (one if m2 is None else m2)).astype(np.float32)
     out = c
     if method is not None and spec.get("amount") is not None and float(spec["amount"]) <= 0.001:
         method = None                        # a film's amount lane at nothing: the morph alone, drawn quickly

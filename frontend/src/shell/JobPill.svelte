@@ -4,7 +4,7 @@
 </script>
 
 {#if app.job && (app.job.status === 'running' || app.job.status === 'queued')}
-  <button class="pill" title={app.job.message || app.job.label} onclick={() => setMode(app.job?.kind === 'film' || app.job?.kind === 'effect' ? 'alchemy' : app.job?.kind === 'poetry' ? 'story' : 'datasets')}>
+  <button class="pill" title={app.job.message || app.job.label} onclick={() => setMode(app.job?.kind === 'material' ? 'generate' : app.job?.kind === 'film' || app.job?.kind === 'effect' ? 'alchemy' : app.job?.kind === 'poetry' ? 'story' : 'datasets')}>
     <span class="dot"></span>
     <span class="lab ellipsis">{app.job.label}</span>
     {#if pct !== null}<span class="pct mono">{pct}%</span>{/if}

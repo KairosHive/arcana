@@ -12,7 +12,7 @@
   let isOpen = $state(open)
   let over = $state(false)
   const kids = $derived(node.folders?.length + node.items?.length > 0)
-  const showCount = $derived(node.count > 0 && ['collection', 'film', 'dir'].includes(prefix(node.id)))
+  const showCount = $derived(node.count > 0 && ['collection', 'film', 'dir', 'label', 'lora'].includes(prefix(node.id)))
   // Pictures made group by the folder they sit in on disk.
   const groups = $derived.by(() => {
     if (node.id !== 'kind:pictures') return null
@@ -58,6 +58,7 @@
     {#if kids}<button class="twist" onclick={(e) => { e.stopPropagation(); isOpen = !isOpen }} aria-label={isOpen ? 'Collapse' : 'Expand'}>{isOpen ? '▾' : '▸'}</button>{:else}<span class="twist"></span>{/if}
     <span class="icon">{ICON[node.kind] ?? '▪'}</span>
     <span class="name ellipsis">{node.shown}</span>
+    {#if node.author === 'agent'}<span class="agent" title="Made by an agent">agent</span>{/if}
     {#if showCount}<span class="count mono">{node.count}</span>{/if}
   </div>
   {#if isOpen && kids}
@@ -91,4 +92,5 @@
   .name { flex: 1; min-width: 0; }
   .count { color: var(--arc-ink-faint); font-size: var(--fs-xs); }
   .group { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: transparent; border: none; color: var(--arc-ink-dim); font-size: 11.5px; padding: 3px 8px; }
+  .agent { font-size: 9.5px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--arc-warn); color: var(--arc-warn); flex: 0 0 auto; }
 </style>

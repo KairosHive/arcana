@@ -61,3 +61,35 @@ def locate(name: str) -> pathlib.Path:
         raise ValueError(f"No LoRA called {name!r}. LoRAs: {', '.join(available()) or 'none found'}. "
                          f"Put one under {os.path.join('<data dir>', 'loras')} or name its folder in ARCANA_LORA_DIRS.")
     return folder
+
+
+def prompt(name: str) -> str | None:
+    """The caption a LoRA trained in Arcana draws its set with (arcana-lora.json), or None."""
+    import json
+
+    try:
+        with open(locate(name) / "arcana-lora.json", encoding="utf-8") as f:
+            return json.load(f).get("prompt") or None
+    except (ValueError, OSError):
+        return None
+
+
+def trigger(name: str) -> str:
+    """The words a LoRA was trained to answer: from the run's arcana-lora.json or latent-lab.json,
+    TRIGGER when neither says."""
+    import json
+
+    try:
+        folder = locate(name)
+    except ValueError:
+        return TRIGGER
+    for d in (folder, folder.parent):
+        for meta in ("arcana-lora.json", "latent-lab.json"):
+            try:
+                with open(d / meta, encoding="utf-8") as f:
+                    t = json.load(f).get("trigger")
+                if t:
+                    return t
+            except (OSError, ValueError):
+                continue
+    return TRIGGER

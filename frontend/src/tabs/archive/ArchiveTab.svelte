@@ -5,9 +5,11 @@
   import { previewUrl, thumbUrl, filmVideoUrl, basename } from '../../lib/api/media'
   import { openViewer } from '../../lib/stores/viewer.svelte'
   import { archive, loadArchive, flat, prefix, op, rename, show, type Node, type Shown } from './archive.svelte'
-  import { alchemyUi } from '../alchemy/alchemy.svelte'
   import { openFilm } from '../alchemy/film.svelte'
+  import { learn } from '../../lib/stores/learn.svelte'
+  import { alchemyUi, alchemyLeft, chooseMethod, step, method } from '../alchemy/alchemy.svelte'
   import TreeNode from './TreeNode.svelte'
+  import ArchiveDetail from './ArchiveDetail.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import TextInput from '../../lib/ui/TextInput.svelte'
@@ -18,8 +20,10 @@
   import Empty from '../../lib/ui/Empty.svelte'
 
   /**
-   * Everything the person has kept, as one tree: collections, films, videos,
-   * stories, pictures made, search saves, imports and exports. The tree is on
+   * Everything the person has kept, as one tree: collections (moodboards),
+   * sets (pictures gathered by searches), the IP labels and LoRAs learnt from
+   * sets, films, videos, stories, pictures made, files copied from search,
+   * imports and exports. The tree is on
    * the left, the selection plays in the middle, and the right side renames,
    * moves, merges, makes folders, deletes into the trash and restores.
    */
@@ -101,6 +105,24 @@
     archive.status = await op('archive empty', { yes: true })
   }
   async function useAsCollection() { if (sel) { await useCollection(sel.split(':')[1]); archive.status = `${sel.split(':')[1]} is the active collection.` } }
+  const KIND_NOTE: Record<string, string> = {
+    collections: 'A collection is a moodboard: pictures you curate by hand. Alchemy casts its pictures from the active collection.',
+    sets: 'A set is pictures gathered by searches. Alchemy measures IP labels and trains LoRAs on sets.',
+    labels: 'An IP label is a position in IP-Adapter space, measured on a set, words or one picture. These are the pictures nearest its centre.',
+    loras: 'A learned look: a model (LoRA) trained on a set. Each picture here is the sheet of one checkpoint, drawn at the same seeds.',
+  }
+  function openInAlchemy(kind: 'label' | 'lora' | 'set') {
+    const id = sel!.split(':').slice(1).join(':')
+    if (kind === 'label') chooseMethod(method(step.method)?.knobs.some((k) => k.key === 'label') ? step.method : 'generative.controlnet', { ...step.knobs, label: id })
+    if (kind === 'lora') {
+      const last = learn.loras.find((r) => r.name === id)?.checkpoints.at(-1)?.name
+      if (last) chooseMethod('generative.lora', { lora: last })
+    }
+    alchemyLeft.pane = kind === 'set' ? 'learn' : alchemyLeft.pane
+    alchemyUi.sub = 'image'
+    setMode('alchemy')
+  }
+  function searchWithLabel() { learn.searchLabel = sel!.split(':')[1]; setMode('prompt') }
   async function openInVideo() {
     if (!sel) return
     try {
@@ -120,14 +142,14 @@
     {#if archive.loading && !archive.kinds.length}<Spinner label="Reading the archive…" />{/if}
     <div class="tree">
       {#each archive.kinds as k (k.id)}
-        <TreeNode node={k} open={['collections', 'films', 'videos'].includes(k.kind)} />
+        <TreeNode node={k} open={['collections', 'sets', 'films', 'videos'].includes(k.kind)} />
       {/each}
     </div>
   </Card>
 
   <Card pad="sm" scroll style="flex: 1 1 460px; min-width: min(460px, 100%); max-height: 100%">
     {#if !sel || ['kind', 'folder'].includes(prefix(sel))}
-      <Empty title="Select a collection, a film, a video, a story or a picture to see it here." />
+      <Empty title="Select a collection, a set, a label, a LoRA, a film, a video, a story or a picture to see it here." />
     {:else if showErr}
       <Status text={showErr} tone="bad" />
     {:else if !shown}
@@ -136,14 +158,21 @@
       <div class="head"><span class="title">{shown.name}</span>{#if shown.kind !== 'videos'}<span class="dim small">{pics.length} picture{pics.length === 1 ? '' : 's'}</span>{/if}</div>
       {#if shown.kind === 'videos'}
         <video class="video" src={filmVideoUrl(shown.path)} controls autoplay loop><track kind="captions" /></video>
-      {:else if shown.kind === 'pictures' || shown.kind === 'imports'}
+      {:else if shown.kind === 'pictures' || shown.kind === 'imports' || shown.kind === 'sheets'}
         <button class="big" onclick={() => openViewer([shown!.path], 0, shown!.name)}><img src={previewUrl(shown.path, 2048)} alt="" /></button>
       {:else}
+        {#if KIND_NOTE[shown.kind]}<p class="hint">{KIND_NOTE[shown.kind]}</p>{/if}
         <div class="row">
-          {#if shown.kind === 'collections'}<Button size="sm" onclick={useAsCollection}>Use as the active collection</Button>{/if}
+          {#if shown.kind === 'collections' || shown.kind === 'sets'}<Button size="sm" onclick={useAsCollection}>Use as the active collection</Button>{/if}
+          {#if shown.kind === 'sets'}<Button size="sm" onclick={() => openInAlchemy('set')}>Make a label or LoRA in Alchemy</Button>{/if}
+          {#if shown.kind === 'labels'}<Button size="sm" onclick={() => openInAlchemy('label')}>Draw with it in Alchemy</Button><Button size="sm" onclick={searchWithLabel}>Search with it</Button>{/if}
+          {#if shown.kind === 'loras'}<Button size="sm" onclick={() => openInAlchemy('lora')}>Draw with the latest checkpoint</Button>{/if}
           {#if shown.kind === 'films'}<Button size="sm" onclick={openInVideo}>Open in Alchemy's Video</Button>{/if}
         </div>
-        {#if !pics.length}
+        <ArchiveDetail {shown} />
+        {#if ['stories', 'loras', 'pages'].includes(shown.kind)}
+          <!-- shown whole by ArchiveDetail -->
+        {:else if !pics.length}
           <p class="hint">Nothing in it yet.</p>
         {:else}
           <div class="stage">

@@ -34,6 +34,10 @@ def _archive_show():
     if not item_id:
         raise BadRequest("Give an id.")
     res = call("archive show", {"id": item_id})
+    if item_id.startswith("lora:"):
+        from .. import lora_train as _train
+        from .. import media as _media
+        _media.register_media_root(_train.loras_root())
     try:
         from ..alchemy.inputs import resolve
     except ImportError:                               # pragma: no cover

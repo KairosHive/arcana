@@ -8,7 +8,11 @@
 
   let newName = $state('')
   const options = $derived(app.datasets.map((d) => ({ value: d.value, label: d.label })))
-  const boardOptions = $derived(app.boards.map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} picture${b.count === 1 ? '' : 's'}` })))
+  // Collections (moodboards) first; sets, gathered by searches for Alchemy's labels and LoRAs, after them.
+  const boardOptions = $derived([
+    ...app.boards.filter((b) => b.kind !== 'set').map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} picture${b.count === 1 ? '' : 's'}`, group: 'Collections' })),
+    ...app.boards.filter((b) => b.kind === 'set').map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} picture${b.count === 1 ? '' : 's'}`, group: 'Sets' })),
+  ])
   const chosen = $derived(app.datasets.find((d) => d.value === app.dataset))
 
   async function create() {

@@ -3,7 +3,7 @@
   import { upload, rpc, post, reason } from '../../lib/api/client'
   import { toast } from '../../lib/stores/toast.svelte'
   import { openViewer } from '../../lib/stores/viewer.svelte'
-  import { roles, setReference, setTarget, pruneRoles } from './moodboard.svelte'
+  import { roles, setReference, pruneRoles } from './moodboard.svelte'
   import Thumb from '../../lib/ui/Thumb.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import TextInput from '../../lib/ui/TextInput.svelte'
@@ -15,8 +15,8 @@
   import BoardPage from './BoardPage.svelte'
 
   /**
-   * The collection: the pictures every tool draws from, with the two roles
-   * [R] and [T] on them, and the board controls under them.
+   * The collection: the pictures every tool draws from, with [R] on the one
+   * the similarity search starts from, and the board controls under them.
    */
   const items = $derived(app.collection.items)
   $effect(() => { pruneRoles(items) })
@@ -30,7 +30,7 @@
   let pageOpen = $state(false)
   let pageSlug = $state('')
 
-  const boardOptions = $derived(app.boards.map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} image${b.count === 1 ? '' : 's'}${b.missing ? `, ${b.missing} missing` : ''}${b.author === 'agent' ? ', by an agent' : ''}` })))
+  const boardOptions = $derived(app.boards.filter((b) => b.kind !== 'set').map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} image${b.count === 1 ? '' : 's'}${b.missing ? `, ${b.missing} missing` : ''}${b.author === 'agent' ? ', by an agent' : ''}` })))
   const picked = $derived(app.boards.find((b) => b.slug === boardPick))
   let pagedSlugs = $state<Record<string, boolean>>({})
   $effect(() => {
@@ -56,7 +56,7 @@
       const r = await rpc('board show', { board: boardPick })
       await useCollection(boardPick)
       const b = r.result
-      roles.reference = b.reference || null; roles.target = b.transfer || null
+      roles.reference = b.reference || null
       boardName = b.name
       const n = (b.unsectioned?.length ?? 0) + (b.sections ?? []).reduce((a: number, s: any) => a + (s.items?.length ?? 0), 0)
       const gone = b.metrics?.missing ?? 0
@@ -69,7 +69,7 @@
     const name = boardName.trim()
     if (!name) { saveStatus = 'Give the board a name first.'; return }
     if (!items.length) { saveStatus = 'Nothing in the collection to save.'; return }
-    const args: Record<string, unknown> = { name, items, reference: roles.reference || '', transfer: roles.target || '', dataset: app.dataset.split('::')[0] || '' }
+    const args: Record<string, unknown> = { name, items, reference: roles.reference || '', dataset: app.dataset.split('::')[0] || '' }
     if (picked && picked.name === name) args.id = picked.slug
     try {
       const r = await rpc('board save', args)
@@ -131,11 +131,10 @@
     {:else}
       {#each items as path, i (path)}
         {@const d = app.collection.details[path]}
-        <Thumb {path} size="100%" title={d?.note || path} role={roles.reference === path && roles.target === path ? 'R' : roles.reference === path ? 'R' : roles.target === path ? 'T' : ''}
+        <Thumb {path} size="100%" title={d?.note || path} role={roles.reference === path ? 'R' : ''}
                badge={kindBadge(path)} onopen={() => openViewer(items, i, app.collection.name)} onremove={() => removeFromCollection([path])}>
           <div class="roles">
-            <button class="r" class:on={roles.reference === path} title="Reference: the palette source" onclick={() => setReference(path)}>R</button>
-            <button class="t" class:on={roles.target === path} title="Target: the picture that receives the palette" onclick={() => setTarget(path)}>T</button>
+            <button class="r" class:on={roles.reference === path} title="Reference: the picture the similarity search starts from" onclick={() => setReference(path)}>R</button>
             {#if d?.role}<span class="role-chip">{d.role}</span>{/if}
           </div>
         </Thumb>
@@ -179,7 +178,6 @@
   .roles { display: flex; gap: 3px; align-items: center; }
   .roles button { flex: 0 0 auto; width: 22px; height: 18px; border-radius: var(--r-sm); border: 1px solid var(--arc-line); background: var(--arc-role-off); color: var(--arc-ink-dim); font-size: var(--fs-2xs); font-weight: 800; padding: 0; }
   .roles .r.on { background: var(--arc-accent); border-color: var(--arc-accent); color: var(--arc-bg); }
-  .roles .t.on { background: var(--arc-target); border-color: var(--arc-target); color: var(--arc-bg); }
   .role-chip { font-size: var(--fs-2xs); color: var(--arc-ink-faint); margin-left: auto; }
   .foot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--arc-line); }
   .foot .row { gap: 6px; }

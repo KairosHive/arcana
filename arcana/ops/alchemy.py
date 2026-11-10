@@ -597,8 +597,9 @@ class RecipeListResult(Result):
 
 
 class AlchemyRecipeListArgs(Args):
-    group: str | None = Field(None, description="Only this group: tokens, hidden, pixels, masks, "
-                                                "finish, or mine.")
+    group: str | None = Field(None, description="Only this group: material on a thing, picture in a material, "
+                                                "materials blended, hidden image, glitch, relief, where, look, "
+                                                "or mine.")
 
 
 @op("alchemy recipe list", "read", AlchemyRecipeListArgs, RecipeListResult,
@@ -607,10 +608,10 @@ class AlchemyRecipeListArgs(Args):
     own. A recipe sets only what it holds, so a mask recipe and
     a finish recipe stack, and the pictures chosen stay.
     """,
-    examples=("alchemy recipe list", "alchemy recipe list --group tokens"))
+    examples=("alchemy recipe list", 'alchemy recipe list --group glitch'))
 def _alchemy_recipe_list(a: AlchemyRecipeListArgs, ctx: Context) -> RecipeListResult:
     *_, recipes = _mods()
-    return RecipeListResult(recipes=[RecipeInfo(**r.public()) for r in recipes.every()
+    return RecipeListResult(recipes=[RecipeInfo(**r.public()) for r in recipes.menu()
                                      if a.group in (None, r.group)])
 
 

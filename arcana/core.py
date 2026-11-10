@@ -398,7 +398,8 @@ def search(index, idx2path, query, n, modality="image", allowed=None):
     enough of them survive is what does not work -- a four-star filter over an
     archive that is 5% four-star returns an empty page perhaps 19 times in 20.
     """
-    vec = encode_query(query, index, modality)
+    # A vector is searched as it is: an IP label's position, or a centre of pictures.
+    vec = query if isinstance(query, np.ndarray) else encode_query(query, index, modality)
 
     if allowed is None:
         idxs = index.search(vec, n, exact=True)

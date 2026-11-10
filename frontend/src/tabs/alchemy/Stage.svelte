@@ -108,7 +108,7 @@
   <div class="canvas">
     <div class="loadbar" class:on={drawing}><div class="fill" style:animation-duration="{Math.max(300, expect)}ms"></div></div>
     {#if !hasPictures}
-      <p class="empty hint">Give a picture [T] and a material [1] from the collection on the left.</p>
+      <p class="empty hint">Give a picture [T] from the collection on the left{step.knobs.label && step.knobs.label !== 'none' ? `. The IP label "${step.knobs.label}" stands in for a material` : ', and a material [1]'}.</p>
     {:else if after}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="compare" style="--cut: {cut}%" onpointerdown={pointer}>

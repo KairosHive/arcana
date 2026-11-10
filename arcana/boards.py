@@ -49,7 +49,12 @@ AUTHORS = ("person", "agent")
 # Top-level fields schema 1 did not have. save() keeps each one as it was on
 # disk unless the caller passes it, which is what lets the Moodboard tab re-save
 # an agent's board without knowing these fields exist.
-_V2_FIELDS = ("author", "brief", "concept", "palette", "sections", "layout")
+_V2_FIELDS = ("author", "brief", "concept", "palette", "sections", "layout", "kind", "queries")
+
+# What a board is for. A board is a moodboard, curated by hand. A set is pictures
+# gathered by searches, kept with the searches that found them, for Alchemy's IP
+# labels and LoRAs. Absent means a board: every board before sets was one.
+KINDS = ("board", "set")
 
 
 def boards_dir() -> str:
@@ -183,7 +188,7 @@ def save(name: str, items: list, *, reference: str | None = None,
     passed = {"author": author, "brief": brief, "concept": concept,
               "palette": palette, "sections": sections, "layout": layout}
     for key in _V2_FIELDS:
-        value = passed[key] if passed[key] is not None else previous.get(key)
+        value = passed.get(key) if passed.get(key) is not None else previous.get(key)
         if value is not None:
             record[key] = value
 
@@ -271,6 +276,7 @@ def listing() -> list[dict]:
             "updated": record.get("updated", 0),
             "dataset": record.get("dataset", ""),
             "author": record.get("author", "person"),
+            "kind": record.get("kind", "board"),
         })
     out.sort(key=lambda r: r.get("updated", 0), reverse=True)
     return out

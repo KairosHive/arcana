@@ -41,7 +41,7 @@ def catalog() -> dict:
     """Everything the Alchemy tab needs to draw itself, in one object."""
     methods = []
     for m in _methods.METHODS.values():
-        d = m.public()
+        d = m.public()                     # unlisted methods are sent too: a film or a saved step may use one
         d["knobs"] = [{**k.public(), "section": k.section, "when": [list(w) for w in k.when]}
                       for k in m.knobs]
         methods.append(d)
@@ -63,7 +63,7 @@ def catalog() -> dict:
 
 
 def recipes() -> list[dict]:
-    return [r.public() for r in _recipes.every()]
+    return [r.public() for r in _recipes.menu()]
 
 
 def settings_controls(s: dict, whole: bool = False) -> dict:

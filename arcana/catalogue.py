@@ -1,10 +1,11 @@
 # catalogue.py -- everything Arcana has kept, as one tree to organise
 #
 # The Archive tab and the `archive` ops show what the person has made and kept, by kind:
-# collections (boards), films, videos, stories, pictures made by Alchemy and the transfers,
-# saves from Prompt Search, imports and exports. Each is read live from where it lives: boards
-# from the boards folder, films from the films folder, the rest from output/. Nothing about them
-# is copied here.
+# collections (boards), sets (boards of kind "set": pictures gathered by searches), the IP labels
+# and LoRAs Alchemy learnt from sets, films, videos, stories, pictures made by Alchemy and the
+# transfers, files copied out of searches, imports and exports. Each is read live from where it
+# lives: boards from the boards folder, labels and LoRAs from the data folder, films from the films
+# folder, the rest from output/. Nothing about them is copied here.
 #
 # What the catalogue owns (catalogue.json in the data folder) is how the person organises them:
 #
@@ -37,11 +38,16 @@ except ImportError:                                   # pragma: no cover
 
 KINDS = {
     "collections": "Collections",
+    "sets": "Sets",
+    "labels": "IP labels",
+    "loras": "Learned looks",
+    "pages": "Board pages",
     "films": "Films",
     "videos": "Videos",
     "stories": "Stories",
     "pictures": "Pictures made",
-    "searches": "Search saves",
+    "sheets": "Contact sheets",
+    "searches": "Files copied from search",
     "imports": "Imports",
     "exports": "Exports",
 }
@@ -124,8 +130,12 @@ def scan() -> list[dict]:
         slug = name[:-5]
         rec = _boards.load(slug) or {}
         p = os.path.join(_boards.boards_dir(), name)
-        out.append({"id": f"collection:{slug}", "kind": "collections", "name": rec.get("name") or slug,
-                    "path": p, "group": "", "count": len(rec.get("items") or []), "made": _stamp(p)})
+        kind = "sets" if rec.get("kind") == "set" else "collections"
+        out.append({"id": f"collection:{slug}", "kind": kind, "name": rec.get("name") or slug,
+                    "path": p, "group": "", "count": len(rec.get("items") or []), "made": _stamp(p),
+                    "author": rec.get("author") or "person"})
+    out += _learnt()
+    out += _pages()
     if os.path.isdir(films_dir()):
         for name in sorted(os.listdir(films_dir())):
             if name.endswith(".json"):
@@ -149,6 +159,13 @@ def scan() -> list[dict]:
                 if kind:
                     out.append({"id": f"file:{_rel(p)}", "kind": kind, "name": f, "path": p,
                                 "group": _rel(folder), "count": 1, "made": _stamp(p)})
+    sheets = os.path.join(root, "sheets")
+    if os.path.isdir(sheets):
+        for f in sorted(os.listdir(sheets)):
+            p = os.path.join(sheets, f)
+            if os.path.isfile(p) and os.path.splitext(f)[1].lower() in PICTURE_EXT:
+                out.append({"id": f"file:{_rel(p)}", "kind": "sheets", "name": f, "path": p, "group": "sheets",
+                            "count": 1, "made": _stamp(p)})
     stories = os.path.join(root, "stories")
     if os.path.isdir(stories):
         for f in sorted(os.listdir(stories)):
@@ -176,6 +193,75 @@ def scan() -> list[dict]:
     return out
 
 
+BOARD_KINDS = ("collections", "sets")
+
+
+def _learnt() -> list[dict]:
+    """The IP labels and LoRAs Alchemy measured or trained on sets."""
+    out = []
+    try:
+        from . import ip_labels as _labels
+        from . import lora_train as _train
+    except ImportError:                               # pragma: no cover
+        import ip_labels as _labels
+        import lora_train as _train
+    try:
+        for row in _labels.listing():
+            p = os.path.join(_labels.labels_dir(), row["slug"] + ".npz")
+            out.append({"id": f"label:{row['slug']}", "kind": "labels", "name": row.get("name") or row["slug"],
+                        "path": p, "group": "", "count": int(row.get("pictures") or 0), "made": _stamp(p)})
+    except OSError:
+        pass
+    try:
+        for run in _train.runs():
+            p = os.path.join(_train.loras_root(), run["name"])
+            out.append({"id": f"lora:{run['name']}", "kind": "loras", "name": run["name"], "path": p,
+                        "group": "", "count": len(run["checkpoints"]), "made": _stamp(p)})
+    except OSError:
+        pass
+    return out
+
+
+PAGE_EXT = (".page.html", ".html", ".pdf", ".png", ".jpg")
+
+
+def page_files(slug: str) -> list[str]:
+    """A board's rendered page, print and picture in output/boards, and the agent's working files for
+    it in the workspace (its spec, its wireframe)."""
+    found = []
+    pages = os.path.join(output_root(), "boards")
+    if os.path.isdir(pages):
+        for f in sorted(os.listdir(pages)):
+            stem = next((f[: -len(e)] for e in PAGE_EXT if f.endswith(e)), None)
+            if stem == slug:
+                found.append(os.path.join(pages, f))
+    ws = os.path.join(_paths.data_dir(), "workspace", slug)
+    if os.path.isdir(ws):
+        found += [os.path.join(ws, f) for f in sorted(os.listdir(ws)) if os.path.isfile(os.path.join(ws, f))]
+    return found
+
+
+def _pages() -> list[dict]:
+    """One row per board that has a rendered page, a PDF or a picture of it: what the agent's
+    board-design work leaves in output/boards."""
+    pages = os.path.join(output_root(), "boards")
+    if not os.path.isdir(pages):
+        return []
+    slugs = []
+    for f in sorted(os.listdir(pages)):
+        stem = next((f[: -len(e)] for e in PAGE_EXT if f.endswith(e)), None)
+        if stem and stem not in slugs:
+            slugs.append(stem)
+    out = []
+    for slug in slugs:
+        files = page_files(slug)
+        rec = _boards.load(slug) or {}
+        out.append({"id": f"page:{slug}", "kind": "pages", "name": rec.get("name") or slug, "path": files[0],
+                    "files": files, "group": "", "count": len(files), "made": max(_stamp(p) for p in files),
+                    "author": rec.get("author") or ""})
+    return out
+
+
 def tree(data: dict | None = None, items: list[dict] | None = None) -> dict:
     """The organised tree: {kind: {"title", "folders": [...], "items": [...]}}, each folder and each
     placed collection carrying its own "folders" and "items". Display names are laid over the scan."""
@@ -192,7 +278,7 @@ def tree(data: dict | None = None, items: list[dict] | None = None) -> dict:
         host["folders"].append(f)
     nodes = {**folders}
     for it in by_id.values():
-        if it["kind"] == "collections":
+        if it["kind"] in BOARD_KINDS:
             it.setdefault("folders", [])
             it.setdefault("items", [])
             nodes[it["id"]] = it
@@ -252,12 +338,12 @@ def move(tx, item_id: str, into: str | None) -> None:
         if f is None or f["kind"] != kind:
             raise ValueError(f"{into} is not a folder of {KINDS[kind].lower()}.")
         target = into
-    elif into.startswith("collection:") and kind == "collections":
-        find(into)
+    elif into.startswith("collection:") and kind in BOARD_KINDS and find(into)["kind"] == kind:
         target = into
     else:
-        raise ValueError(f"A {kind[:-1]} goes into a folder of {KINDS[kind].lower()}"
-                         + (" or into another collection." if kind == "collections" else "."))
+        what = {"sets": "set", "labels": "IP label", "loras": "LoRA"}.get(kind, kind[:-1])
+        other = {"collections": " or into another collection.", "sets": " or into another set."}
+        raise ValueError(f"A {what} goes into a folder of {KINDS[kind].lower()}" + other.get(kind, "."))
     if target is not None and item_id in set(_ancestors(data, target)):
         raise ValueError("A folder cannot go inside itself or anything inside it.")
     if item_id.startswith("folder:"):
@@ -323,7 +409,7 @@ def trash(item_id: str) -> dict:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     dest_dir = _paths.ensure_dir(os.path.join(trash_dir(), stamp + "-" + secrets.token_hex(2)))
     moved = []
-    for p in [it["path"]] + ([os.path.splitext(it["path"])[0] + ".json"] if it["id"].startswith("file:") else []):
+    for p in it.get("files") or [it["path"]] + ([os.path.splitext(it["path"])[0] + ".json"] if it["id"].startswith("file:") else []):
         if os.path.exists(p):
             dest = os.path.join(dest_dir, os.path.basename(p))
             shutil.move(p, dest)

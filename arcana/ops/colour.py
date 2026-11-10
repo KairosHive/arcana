@@ -501,8 +501,12 @@ class DeflickerResult(Result):
     frames: int
     before: float
     after: float
+    steadied: bool = True
 
     def text(self) -> str:
+        if not self.steadied:
+            return (f"This clip has no flicker to remove: its colour changes {self.before:.2f} levels of 255 "
+                    f"from frame to frame, as its source does. It is left as it is.\n  {self.path}\n")
         return (f"Steadied {self.frames} frames. Frame-to-frame colour change: {self.before:.2f} before, "
                 f"{self.after:.2f} after (levels of 255).\n  {self.path}\n")
 
@@ -543,6 +547,7 @@ def _colour_deflicker(a: DeflickerArgs, ctx: Context) -> Result:
         return _vc.deflicker(target, out, source, a.window, progress)
 
     def record(tx, made):
-        return DeflickerResult(path=made["path"], frames=made["frames"], before=made["before"], after=made["after"])
+        return DeflickerResult(path=made["path"], frames=made["frames"], before=made["before"], after=made["after"],
+                               steadied=bool(made.get("steadied", True)))
 
     return run_effect(ctx, f"colour deflicker {a.target}", compute, record, a.background, kind="film")

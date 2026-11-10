@@ -9,6 +9,7 @@ import { toast } from '../../lib/stores/toast.svelte'
 export type Key = { t: number; ease?: string; v?: number; ref?: string; settings?: Record<string, any>; in?: number; out?: number; speed?: number; mute?: boolean; gain?: number }
 export type FilmSpec = {
   name: string; fps: number; size: number; aspect: string; space: string; loop: boolean; even: boolean; length?: number
+  temporal?: string; key_every?: number; sound?: boolean; audio?: Record<string, any>[]
   pictures: Key[]; looks: Key[]; lanes: Record<string, Key[]>
 }
 export type LaneMeta = { label: string; lo: number; hi: number; step: number; group: string; doc?: string }

@@ -981,6 +981,9 @@ class AlchemyFilmSaveArgs(Args):
     A clip is heard while it plays, with "mute" and "gain" (decibels) on its
     key. The "audio" list places other sounds, each {"t", "ref", "in", "out",
     "gain", "fade": [in, out]}, and "sound": false renders a silent film.
+    "temporal" says how a look meets a playing clip: frame (on every frame),
+    keys (on frames every "key_every" seconds, carried between them along the
+    clip's movement) or auto, which carries the generative methods.
     """,
     examples=("alchemy film save --spec " + EXAMPLE_SPEC,))
 def _alchemy_film_save(a: AlchemyFilmSaveArgs, ctx: Context) -> FilmShowResult:

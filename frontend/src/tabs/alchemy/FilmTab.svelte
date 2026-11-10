@@ -448,6 +448,13 @@
         <Checkbox checked={film.spec.loop} label="loop back to the first picture" onchange={(v) => setField('loop', v)} />
         <Checkbox checked={film.spec.even} label="even motion between pictures" onchange={(v) => setField('even', v)} />
       </div>
+      {#if film.spec.pictures.some((p) => isClipRef(p.ref))}
+        <div class="row" title="How a look's method meets a playing clip. Carried runs it on frames of the clip a few times a second and moves each result along the clip's movement to the frames between, which keeps a method that draws from noise steady. Automatic carries the generative methods and runs the others on every frame.">
+          <Field label="Looks on clips"><Select value={film.spec.temporal ?? 'auto'} options={[{ value: 'auto', label: 'automatic' }, { value: 'frame', label: 'on every frame' }, { value: 'keys', label: 'on key frames, carried' }]} size="sm" onchange={(v) => setField('temporal', String(v))} /></Field>
+          {#if (film.spec.temporal ?? 'auto') !== 'frame'}<Field label="Key every (s)"><NumberInput value={film.spec.key_every ?? 0.5} min={0.1} max={5} step={0.1} size="sm" width="64px" onchange={(v) => setField('key_every', v)} /></Field>{/if}
+          <Checkbox checked={film.spec.sound ?? true} label="sound" onchange={(v) => setField('sound', v)} />
+        </div>
+      {/if}
     </Disclosure>
 
     <Disclosure label="Templates" note="save, apply">

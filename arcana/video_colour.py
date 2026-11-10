@@ -217,14 +217,57 @@ def frame_means(path: str, fps: float, t0: float = 0.0, t1: float | None = None)
     return np.stack(got).astype(np.float64) if got else np.zeros((0, 3))
 
 
+def _quick(x: np.ndarray, window: int) -> np.ndarray:
+    """Each frame's brightness against the slow course of the clip's: the quick changes alone."""
+    return (x / np.maximum(_smooth(x, window), 1.0)).mean(1) - 1.0
+
+
+def aligned(processed: np.ndarray, source: np.ndarray, window: int = 9, most: int = 3):
+    """
+    The source's frame averages lined up with the processed clip's, or None.
+
+    A render can start a frame early or late against the section it was made
+    from. Putting the source's quick changes back one frame off adds them a
+    second time instead of keeping them, so the offset that makes the two
+    clips' quick changes agree best is found first. When they agree at no
+    offset, the source says nothing about this clip and is left out.
+    """
+    n = len(processed)
+    if len(source) < 3 or n < 3:
+        return None
+    qp = _quick(np.maximum(processed, 1.0), window)
+    best, best_r = None, 0.3
+    for lag in range(-most, most + 1):
+        idx = np.clip(np.arange(n) + lag, 0, len(source) - 1)
+        s = np.maximum(source[idx], 1.0)
+        qs = _quick(s, window)
+        if qp.std() < 1e-9 or qs.std() < 1e-9:
+            continue
+        r = float(np.corrcoef(qp, qs)[0, 1])
+        if r > best_r:
+            best, best_r = s, r
+    return best
+
+
 def gains(processed: np.ndarray, source: np.ndarray | None = None, window: int = 9) -> np.ndarray:
-    """The factor each frame's channels are scaled by: (frames, 3)."""
+    """
+    The factor each frame's channels are scaled by: (frames, 3).
+
+    All ones when scaling would leave the clip changing as much between frames
+    as it does now, which is the case for a clip that has no flicker.
+    """
     p = np.maximum(processed, 1.0)
     target = _smooth(p, window)
-    if source is not None and len(source) >= len(p):
-        s = np.maximum(source[:len(p)], 1.0)
+    s = aligned(p, source, window) if source is not None else None
+    if s is not None:
         target = target * (s / np.maximum(_smooth(s, window), 1.0))      # what the source itself did, kept
-    return np.clip(target / p, 0.5, 2.0)
+    g = np.clip(target / p, 0.5, 2.0)
+    if len(p) > 1:
+        now = np.abs(np.diff(p, axis=0)).mean()
+        then = np.abs(np.diff(p * g, axis=0)).mean()
+        if then >= 0.9 * now:
+            return np.ones_like(g)
+    return g
 
 
 def deflicker(path: str, out: str, source: str | None = None, window: int = 9, progress=None) -> dict:
@@ -243,6 +286,10 @@ def deflicker(path: str, out: str, source: str | None = None, window: int = 9, p
         file, a, b = _range(source)
         src = frame_means(file, fps, a, b)
     g = gains(means, src, window)
+    if np.all(g == 1.0):
+        # Nothing to remove: the clip is left as it is, and no copy is written.
+        before = flicker(path)
+        return {"path": path, "frames": len(g), "before": before, "after": before, "steadied": False}
     w, h = _video._fit(info["width"], info["height"], MAX_SIDE)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     cmd = [_video.ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -271,5 +318,5 @@ def deflicker(path: str, out: str, source: str | None = None, window: int = 9, p
         errors.close()
     if proc.returncode or not n:
         raise ValueError("The steadied clip could not be written.")
-    return {"path": out, "frames": n, "before": flicker(path), "after": flicker(out)}
+    return {"path": out, "frames": n, "before": flicker(path), "after": flicker(out), "steadied": True}
 

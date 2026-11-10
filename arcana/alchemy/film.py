@@ -40,6 +40,13 @@ the source file, and default to the section's own range. The film morphs into th
 `in`, plays the clip, and morphs on from its frame at `out`, so a film passes from a still into a
 moving shot and back. Looks, lanes, masks and finish apply to a clip's frames as they do to a morph.
 
+Looks on a clip. `"temporal"` says how a look's method meets a playing clip. `frame` runs it on every
+frame, which suits methods that give the same answer for nearly the same picture. `keys` runs it on
+frames of the clip every `key_every` seconds (0.5 by default) and carries each result to the
+frames between along the clip's movement, mixed from the key before and the key after, so a method
+that draws from noise does not flicker and runs a few times a second of clip instead of on every
+frame. `auto`, the default, takes `keys` for the generative methods and `frame` for the others.
+
 Sound. A clip is heard while it plays, at its speed, unless its key says `"mute": true`; `"gain"` is
 in decibels. The `audio` list places other sounds: `{"t": 0, "ref": "field@audio:212", "gain": -6,
 "fade": [0.5, 2.0], "in": 0, "out": 30}`, a sound or the track of a video, from `t`, faded in and out.
@@ -51,7 +58,9 @@ can be laid over the film progressively while the finish lanes keep their own co
 Masks over time. A geometric layer moves through its numbers. A layer read by a model (the subject,
 words, depth) is read on the key pictures, once each, and blended along the morph, so it moves with
 what it found and no model runs on a frame. A field (light, colour, edges, noise) is read on each
-frame of the morph, so it follows the picture as it changes. Between two looks whose masks share
+frame of the morph, so it follows the picture as it changes. While a clip plays, a layer read by a
+model is read on frames of the clip every half second and carried to the frames between them along
+the clip's own movement (optical flow), so the mask stays on a subject that moves. Between two looks whose masks share
 their layers, the masks move by their numbers (a spot's place, a coverage, the feather). Between two
 looks whose masks differ in their layers (the subject, then grown noise), both are built on each
 frame and cross-fade with the look's ease, while lanes keep moving the numbers of either.
@@ -84,6 +93,9 @@ EASES = ("linear", "smooth", "in", "out", "hold")
 NUMBER_PATHS = ("zoom", "amount")
 FILM_REF = "film:"
 DEPTH = 2                                    # a film in a film in a film, and no deeper
+TRACK_EVERY = 0.5                            # seconds of a clip between two readings of a model's mask
+TRACK_SIDE = 192                             # the long side the movement between frames is read at
+TEMPORAL = ("auto", "frame", "keys")
 REFINE_KEYS = ("feather", "grow", "follow", "ragged", "amount")
 # The numbers of each geometric layer a lane can move, in the order its source line writes them.
 MOVING = {"spot": ("x", "y", "r"), "gradient": ("angle",), "band": ("y", "height"),
@@ -242,6 +254,12 @@ def normalised(spec: dict, depth: int = 0) -> dict:
         if keys:
             lanes[path] = keys
     f["lanes"] = lanes
+    f["temporal"] = str(f.get("temporal") or "auto")
+    if f["temporal"] not in TEMPORAL:
+        raise ValueError(f"A film's temporal is one of {', '.join(TEMPORAL)}.")
+    f["key_every"] = float(f.get("key_every") or TRACK_EVERY)
+    if not 0.1 <= f["key_every"] <= 5:
+        raise ValueError("A look is read on a clip every 0.1 to 5 seconds.")
     f["sound"] = bool(f.get("sound", True))
     sounds = sorted((dict(a) for a in f.get("audio") or []), key=lambda a: float(a.get("t") or 0))
     for a in sounds:
@@ -523,6 +541,19 @@ class Clip:
             self._last = (i, out)
             return out
 
+    def still(self, t: float):
+        """The frame at t read on its own, which leaves the running decoder where it is: for the
+        frames a mask is read on, ahead of and behind the one being drawn."""
+        from PIL import Image
+
+        from . import pixels as cx
+
+        last = max(0.0, float(self.info["duration"] or 0.0) - 1.0 / self.fps)
+        got = _video.frame_at(self.file, min(max(0.0, float(t)), last), side=self.side, info=self.info)
+        if got is None:
+            return self.frame(t)
+        return np.asarray(cx.cover(Image.fromarray(got), self.W, self.H), np.float32) / 255.0
+
     def __del__(self):                       # pragma: no cover
         try:
             self._close()
@@ -649,10 +680,47 @@ class Film:
         j = (k + 1) % n if self.spec["loop"] else min(k + 1, n - 1)
 
         def ask(kind, arg=""):
+            if self.stops[k]["plays"] and isinstance(self.inner.get(self.stops[k]["key"]), Clip):
+                got = self._tracked(k, s, kind, arg)
+                if got is not None:
+                    return got
             a, b = self._map(k, kind, arg), self._map(j, kind, arg)
             return (1 - s) * a + s * b
 
         return ask
+
+    def _tracked(self, k: int, s: float, kind, arg):
+        """A model's map on the frame of a playing clip: read on the clip every TRACK_EVERY seconds,
+        and each of the two readings around this frame moved onto it along the clip's movement. None
+        when the movement cannot be read (no OpenCV), which leaves the two ends to cross-fade."""
+        q, nxt = self.stops[k], self.stops[k + 1]
+        clip = self.inner[q["key"]]
+        lo, hi = float(q["at"]), float(nxt["at"])
+        tau = lo + (hi - lo) * s
+        n = max(1, int(np.ceil((hi - lo) / TRACK_EVERY - 1e-9)))
+        step = (hi - lo) / n
+        i = min(int((tau - lo) / step), n - 1)
+        u = min(max((tau - lo) / step - i, 0.0), 1.0)
+        now = _grey(clip.frame(tau))
+        try:
+            a = _carried(*self._reading(q["key"], clip, lo + i * step, kind, arg), now)
+            b = _carried(*self._reading(q["key"], clip, lo + (i + 1) * step, kind, arg), now)
+        except ImportError:
+            return None
+        return (1 - u) * a + u * b
+
+    def _reading(self, key: int, clip: "Clip", at: float, kind, arg):
+        """(the model's map, the grey frame it was read on) at a moment of a clip, kept."""
+        name = ("clip", key, round(at, 3), kind, str(arg))
+        if name not in self.maps:
+            from .vision import vision
+
+            frame = clip.still(at)
+            img = to_image(frame)
+            got = np.asarray(vision().ask(f"{clip.file}@{at:.3f}@{self.W}x{self.H}", lambda: img, kind, arg),
+                             np.float32)
+            self.maps[name] = (got, _grey(frame))
+        return self.maps[name]
 
     def _map(self, i, kind, arg):
         key = (i, kind, str(arg))
@@ -669,8 +737,67 @@ class Film:
         from .pipeline import step_on
 
         c = self.morph(t)
-        out, _ = step_on(c, f"film:{id(self)}:{t:.4f}", look_at(self.spec, t), asker=self.asker(t))
+        look = look_at(self.spec, t)
+        k, s = passage(self.spec, t)
+        if self.by_keys(k, look):
+            got = self._propagated(k, s, c)
+            if got is not None:
+                return got
+        out, _ = step_on(c, f"film:{id(self)}:{t:.4f}", look, asker=self.asker(t))
         return np.clip(out, 0, 1)
+
+    def by_keys(self, k: int, look: dict) -> bool:
+        """Whether the look at this moment is run on key frames of a playing clip and carried between
+        them, instead of on every frame."""
+        q = self.stops[k]
+        if not q["plays"] or not isinstance(self.inner.get(q["key"]), Clip):
+            return False
+        method = str(look.get("method") or "none")
+        how = self.spec["temporal"]
+        return method != "none" and (how == "keys" or (how == "auto" and method.startswith("generative.")))
+
+    def _propagated(self, k: int, s: float, c):
+        """The frame of a playing clip with its look carried from the key frames around it. The look
+        runs on the clip's frame at each key time. Each result is moved onto this frame along the
+        clip's movement, from the key before and the key after, and the two are mixed by how near
+        each is. Something that enters the shot between two keys comes in with the later key's look.
+        Adding the look's change to the frame itself was tried first, and let such a thing show
+        through unstyled (a car crossing a quilted street). None when movement cannot be read."""
+        q, nxt = self.stops[k], self.stops[k + 1]
+        clip = self.inner[q["key"]]
+        lo, hi = float(q["at"]), float(nxt["at"])
+        tau = lo + (hi - lo) * s
+        n = max(1, int(np.ceil((hi - lo) / self.spec["key_every"] - 1e-9)))
+        step = (hi - lo) / n
+        i = min(int((tau - lo) / step), n - 1)
+        u = min(max((tau - lo) / step - i, 0.0), 1.0)
+        now = _grey(c)
+        try:
+            a = _carried(*self._styled(k, clip, lo + i * step), now)
+            b = _carried(*self._styled(k, clip, lo + (i + 1) * step), now)
+        except ImportError:
+            return None
+        return np.clip((1 - u) * a + u * b, 0, 1)
+
+    def _styled(self, k: int, clip: "Clip", at: float):
+        """(the look's result, the grey frame it was run on) at a key time of a clip, kept while the look there
+        stays the same. The last few are kept: a render needs two at a time."""
+        from .pipeline import step_on
+
+        q, nxt = self.stops[k], self.stops[k + 1]
+        lo, hi = float(q["at"]), float(nxt["at"])
+        t = q["t"] + (nxt["t"] - q["t"]) * ((at - lo) / max(hi - lo, 1e-9))
+        look = look_at(self.spec, t)
+        sig = hashlib.blake2b(json.dumps(look, sort_keys=True, default=str).encode(), digest_size=8).hexdigest()
+        name = (q["key"], round(at, 3), sig)
+        kept = self.__dict__.setdefault("_keys_styled", {})
+        if name not in kept:
+            frame = clip.still(at)
+            out, _ = step_on(frame, f"film:{id(self)}:key:{q['key']}:{at:.3f}:{sig}", look, asker=self.asker(t))
+            kept[name] = (np.clip(out, 0, 1).astype(np.float32), _grey(frame))
+            while len(kept) > 6:
+                kept.pop(next(iter(kept)))
+        return kept[name]
 
     def moves(self, samples: int = 12) -> list:
         """How much the picture changes between samples along each passage, read on a half-size grid:
@@ -720,6 +847,35 @@ class Film:
         table += [same] * (len(self.stops) - len(table))
         self.table = table
         return table
+
+
+def _grey(frame) -> np.ndarray:
+    """A frame small and grey, for reading movement: uint8, TRACK_SIDE on its long side."""
+    from PIL import Image
+
+    h, w = frame.shape[:2]
+    k = TRACK_SIDE / max(h, w)
+    size = (max(8, round(w * k)), max(8, round(h * k)))
+    return np.asarray(to_image(frame).convert("L").resize(size, Image.BILINEAR))
+
+
+def _carried(reading: np.ndarray, was: np.ndarray, now: np.ndarray) -> np.ndarray:
+    """A map read on the frame `was`, moved onto the frame `now`: each place of `now` takes the map's
+    value from where that place was in `was`, found by dense optical flow between the two."""
+    import cv2
+
+    if was.shape != now.shape or np.array_equal(was, now):
+        return reading
+    # DIS flow. Farneback lost a patterned square that moved 15 px between two 192 px frames (it
+    # read +3 px where the square had moved -15), and DIS read -14.4.
+    flow = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM).calc(now, was, None)
+    H, W = reading.shape[:2]
+    h, w = now.shape
+    fx = cv2.resize(flow[..., 0], (W, H), interpolation=cv2.INTER_LINEAR) * (W / w)
+    fy = cv2.resize(flow[..., 1], (W, H), interpolation=cv2.INTER_LINEAR) * (H / h)
+    xs, ys = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))
+    return cv2.remap(np.ascontiguousarray(reading, np.float32), xs + fx, ys + fy, cv2.INTER_LINEAR,
+                     borderMode=cv2.BORDER_REPLICATE)
 
 
 def _first_size(spec: dict, depth: int = 0):

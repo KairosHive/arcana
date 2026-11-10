@@ -33,6 +33,20 @@ def clip(tmp_path_factory):
     return make_clip(os.path.join(root, "redblue.mp4"), [("0xc02020", 2), ("0x2040c0", 2)], size="160x120")
 
 
+@pytest.fixture(scope="module")
+def moving(tmp_path_factory):
+    """A patterned square crossing a grey frame, 100 px a second, for two seconds."""
+    import subprocess
+
+    path = str(tmp_path_factory.mktemp("filmmoving") / "moving.mp4")
+    subprocess.run([V.ffmpeg_exe(), "-y", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=0x606060:s=320x240:r=24:d=2",
+                    "-f", "lavfi", "-i", "testsrc=s=64x64:r=24:d=2",
+                    "-filter_complex", "[0:v][1:v]overlay=x='20+100*t':y=88[v]", "-map", "[v]",
+                    "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", path], check=True)
+    return path
+
+
 @pytest.fixture
 def ds(tmp, monkeypatch):
     out = synth.use(tmp, monkeypatch)
@@ -138,6 +152,77 @@ def test_the_audio_lane_places_a_sound_with_gain_and_fades(ds, clip, tmp):
         F.normalised(_spec(clip, audio=[{"t": 0, "ref": clip, "gain": 90}]))
     with pytest.raises(ValueError, match="holds no sound"):
         F.sounds(_spec(clip, audio=[{"t": 0, "ref": "synth:12"}]))
+
+
+def test_a_models_mask_follows_what_moves_in_a_clip(ds, moving, monkeypatch):
+    from arcana.alchemy import vision as vis
+
+    def found(image):
+        """The stand-in model: whatever is not the grey ground."""
+        a = np.asarray(image, np.float32) / 255.0
+        return (np.abs(a - a[2, 2]).max(-1) > 0.12).astype(np.float32)
+
+    asked = []
+
+    class Stub:
+        def ask(self, key, picture, kind, arg=""):
+            asked.append(key)
+            return found(picture())
+
+    monkeypatch.setattr(vis, "vision", lambda: Stub())
+    film = F.Film(_spec(moving, pictures=[{"t": 0, "ref": "synth:12"}, {"t": 1, "ref": moving, "in": 0, "out": 2},
+                                          {"t": 5, "ref": "synth:3"}]))
+
+    def overlap(a, b):
+        a, b = a > 0.5, b > 0.5
+        return (a & b).sum() / max((a | b).sum(), 1)
+
+    for t in (1.25, 1.7, 2.3):                          # between two readings, a quarter second from each or near one
+        truth = found(F.to_image(film.morph(t)))
+        tracked = film.asker(t)("subject")
+        assert overlap(tracked, truth) > 0.7, t
+        k, s = F.passage(film.spec, t)
+        faded = (1 - s) * film._map(k, "subject", "") + s * film._map(k + 1, "subject", "")
+        assert overlap(faded, truth) < 0.5 < overlap(tracked, truth)    # the two ends cross-faded lose the square
+    # The model ran on the clip's frames every half second, once each, and on no frame in between.
+    readings = [a for a in asked if a.startswith(moving + "@")]
+    assert 0 < len(readings) <= 5 and len(set(readings)) == len(readings)
+
+
+def test_a_look_runs_on_key_frames_of_a_clip_and_is_carried_between_them(ds, moving, monkeypatch):
+    from arcana.alchemy import pipeline
+
+    ran = []
+
+    def negative(c, key, spec, asker=None):
+        """The stand-in look: the picture inverted. It records the frames it ran on."""
+        if spec.get("method") != "none":
+            ran.append(key)
+        return (1.0 - np.asarray(c, np.float32)) if spec.get("method") != "none" else np.asarray(c, np.float32), None
+
+    monkeypatch.setattr(pipeline, "step_on", negative)
+    pictures = [{"t": 0, "ref": "synth:12"}, {"t": 1, "ref": moving, "in": 0, "out": 2}, {"t": 5, "ref": "synth:3"}]
+    look = [{"t": 0, "settings": {"method": "pixels.negative"}}]
+    film = F.Film(_spec(moving, pictures=pictures, looks=look, temporal="keys"))
+    assert film.by_keys(1, {"method": "pixels.negative"}) and not film.by_keys(0, {"method": "pixels.negative"})
+    frames = [film.frame(1 + i / 12) for i in range(1, 24)]            # the clip's two seconds, 12 a second
+    on_clip = [k for k in ran if ":key:" in k]
+    assert len(on_clip) == 5 and len(ran) == 5                          # every half second, and on no frame between
+    # Each frame is the look of its own picture: the carried change lands on the square where it is now.
+    for i in (3, 8, 15, 20):
+        want = 1.0 - film.morph(1 + i / 12)
+        assert np.abs(frames[i - 1] - want).mean() < 0.02, i
+    # Per frame, the same film runs the look on every frame of the clip.
+    ran.clear()
+    each = F.Film(_spec(moving, pictures=pictures, looks=look, temporal="frame"))
+    assert not each.by_keys(1, {"method": "pixels.negative"})
+    assert np.abs(each.frame(1.5) - (1.0 - each.morph(1.5))).mean() < 1e-6 and len(ran) == 1
+    # Auto carries the generative methods and runs the others on each frame.
+    auto = F.Film(_spec(moving, pictures=pictures))
+    assert auto.by_keys(1, {"method": "generative.controlnet"}) and not auto.by_keys(1, {"method": "pixels.blend"})
+    assert not auto.by_keys(1, {"method": "none"})
+    with pytest.raises(ValueError, match="temporal is one of"):
+        F.normalised(_spec(moving, pictures=pictures, temporal="often"))
 
 
 def test_the_timeline_lists_a_clip_with_its_length_and_lays_one_down(ds, clip):

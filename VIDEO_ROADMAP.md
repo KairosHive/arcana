@@ -1047,8 +1047,10 @@ best one outlined, and a click plays from there. Chips filter by motion
 - In the page, on a 12.5 s clip recoloured toward a still with Lab, the
   change between frames went from 0.24 to 0.26. Steady on that result, which
   had no added flicker, raised it from 0.26 to 0.34.
-- Open. Steady on a clip without flicker should leave it as it is. Tracked
-  masks and propagated style are still to build.
+- Steady now leaves a clip without flicker as it is. It lines the source's
+  frames up with the clip's before keeping the source's changes, and it
+  writes nothing when scaling would leave the change between frames where it
+  is. On the clip above it reports no flicker to remove.
 
 **Checked against the revised Part 3.** The built code stands as it is. The
 pattern engine addresses frames by number, which the reader and the section
@@ -1141,9 +1143,27 @@ video, then tracked masks and propagated style, then phase 9.
 - Measured on a 1080p 60 fps camera clip between two stills (DINOv2, 512 x
   288, 12 fps, 9 s). The render took 70 s. Frames during the clip equal the
   source frames, and the sound sits on the four seconds the clip plays.
-- Open. A mask read by a model (subject, words, depth) is read on the clip's
-  frames at `in` and `out` and blended between them, so it trails a subject
-  that moves. The audio lane has no page control. Sound from a clip inside a
+- Tracked masks. While a clip plays, a mask layer read by a model is read on
+  frames of the clip every half second and carried to the frames between by
+  DIS optical flow, mixed from the reading before and the reading after. On a
+  square crossing the frame at 100 px a second the carried mask overlaps the
+  square by more than 0.7, and the two ends cross-faded overlap it by less
+  than 0.5. Farneback flow lost that square, so DIS is used.
+- Looks carried between key frames. `"temporal"` is `frame`, `keys` or
+  `auto`. With `keys` the look runs on frames of the clip every `key_every`
+  seconds and each result is moved onto the frames between along the clip's
+  movement. `auto` carries the generative methods. The Video subtab shows the
+  choice when the film holds a clip.
+- Measured with the quilt method on a 3 s camera clip (448 px, 35 frames).
+  On every frame it took 38 s and the picture changed 1.28 levels between
+  frames. Carried from keys it took 18 s and changed 1.04.
+- `video.frame_at` returned the frame almost a second after the time asked,
+  because it read at one frame a second. It now reads at the file's own
+  rate.
+- Open. SAM 2's own video propagation, warped noise and previous-frame
+  conditioning (levels 2 and 3 of 3.4) and a video model are still to build.
+  The carried look was measured with a patch method and has not been run with
+  a diffusion method. The audio lane has no page control. Sound from a clip inside a
   held film is left out. The render reads originals at the film's size, and
   scrubbing reads the same files.
 

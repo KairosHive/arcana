@@ -273,8 +273,12 @@ def frames_between(path: str, t0: float, t1: float, n: int, *, side: int | None 
 
 
 def frame_at(path: str, t: float, *, side: int | None = 448, info: dict | None = None) -> np.ndarray | None:
-    """One frame, for a thumbnail or a keyframe."""
-    for _, f in frames(path, 1.0, side=side, t0=max(0.0, t), t1=max(0.0, t) + 1.0, info=info):
+    """The frame at t, for a thumbnail or a keyframe."""
+    # Read at the file's own rate. At one frame a second ffmpeg's fps filter hands over the last
+    # frame of the second that starts at t, which is the picture almost a second later.
+    info = info or probe(path)
+    rate = min(max(float(info["fps"] or 30.0), 1.0), 120.0)
+    for _, f in frames(path, rate, side=side, t0=max(0.0, t), t1=max(0.0, t) + 1.0, info=info):
         return f
     return None
 

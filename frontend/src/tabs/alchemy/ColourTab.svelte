@@ -74,6 +74,7 @@
     status = 'Steadying…'
     const was = made
     run('colour deflicker', { target: was.path, source: was.from, window: windowFrames }, (r) => {
+      if (r.steadied === false) { status = 'This clip has no flicker to remove. It is left as it is.'; tone = 'ok'; return }
       made = { ...was, path: r.path, before: r.before, after: r.after, steady: true }
       status = `Steadied ${r.frames} frames.`; tone = 'ok'
     })

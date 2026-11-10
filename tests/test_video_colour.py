@@ -127,5 +127,29 @@ def test_a_flickering_clip_is_steadied(media):
     out = VC.deflicker(flick, os.path.join(media["root"], "out", "steady.mp4"), source=media["clip"])
     assert out["frames"] == 72 and out["before"] > 10
     assert out["after"] < out["before"] / 4
-    assert V.probe(out["path"])["has_audio"]
+    assert V.probe(out["path"])["has_audio"] and out["steadied"]
+
+
+def test_a_clip_without_flicker_is_left_as_it_is(media):
+    # A recoloured clip carries the quick changes its source had (grain, a moving subject) and no
+    # others. Steadying it must add none, whether its frames line up with the source's or sit one off.
+    rng = np.random.default_rng(3)
+    n = 200
+    source = (120 + 10 * np.sin(np.arange(n) / 30))[:, None].repeat(3, 1) * (1 + 0.004 * rng.standard_normal((n, 1)))
+    recoloured = source * np.array([1.1, 0.95, 0.8])
+    for clip in (recoloured, recoloured[1:], np.vstack([recoloured[:1], recoloured])):
+        g = VC.gains(clip, source)
+        before = np.abs(np.diff(clip, axis=0)).mean()
+        assert np.abs(np.diff(clip * g, axis=0)).mean() <= before + 1e-9
+    assert np.all(VC.gains(recoloured[1:], source) == 1.0)
+    # A source that says nothing about the clip is left out, and the clip's own jumps still go.
+    other = 90 + 20 * rng.random((n, 3))
+    jitter = np.where(np.arange(n)[:, None] % 2 == 0, 1.15, 0.87)
+    assert VC.aligned(recoloured * jitter, other) is None
+    g = VC.gains(recoloured * jitter, other)
+    assert np.abs(np.diff(recoloured * jitter * g, axis=0)).mean() < np.abs(np.diff(recoloured * jitter, axis=0)).mean() / 4
+    # The file itself: nothing is written, and the clip comes back as the result.
+    out = VC.deflicker(media["clip"], os.path.join(media["root"], "out", "same.mp4"), source=media["clip"])
+    assert out["steadied"] is False and out["path"] == media["clip"] and out["after"] == out["before"]
+    assert not os.path.exists(os.path.join(media["root"], "out", "same.mp4"))
 

@@ -15,12 +15,14 @@ import sys
 
 try:
     from . import paths as _paths
+    from . import modality as _modality
 except ImportError:                                   # pragma: no cover
     import paths as _paths
+    import modality as _modality
 
 
 def _ds(name: str, modality: str | None) -> str:
-    return name if (modality or "image") == "image" else f"{name}@{modality}"
+    return _modality.dataset_id(name, modality)
 
 
 def _run(old: str, tokens: list[str] | None, legacy_main, argv: list[str]) -> int:

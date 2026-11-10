@@ -5,9 +5,12 @@
   import Select from '../lib/ui/Select.svelte'
   import TextInput from '../lib/ui/TextInput.svelte'
   import Chip from '../lib/ui/Chip.svelte'
+  import { caps } from '../lib/stores/caps.svelte'
 
   let newName = $state('')
-  const options = $derived(app.datasets.map((d) => ({ value: d.value, label: d.label })))
+  // Grouped by modality, photos first, so the menu reads as the kinds of archive on this machine.
+  const options = $derived([...app.datasets].sort((a, b) => caps.order(a.modality) - caps.order(b.modality) || a.label.localeCompare(b.label))
+    .map((d) => ({ value: d.value, label: `${d.name} · ${caps.label(d.modality)} (${d.dim}D)` })))
   const boardOptions = $derived(app.boards.map((b) => ({ value: b.slug, label: `${b.name}  ·  ${b.count} picture${b.count === 1 ? '' : 's'}` })))
   const chosen = $derived(app.datasets.find((d) => d.value === app.dataset))
 
@@ -29,7 +32,7 @@
     <span class="caps">Dataset</span>
     <Select value={app.dataset || null} {options} placeholder={options.length ? 'Choose a dataset…' : 'No datasets yet'}
             width="260px" disabled={!options.length} onchange={(v) => setDataset(String(v))} />
-    {#if chosen}<Chip tone={chosen.modality === 'audio' ? 'audio' : 'accent'} small>{chosen.modality}</Chip>{/if}
+    {#if chosen}<Chip tone={chosen.modality === 'image' ? 'accent' : chosen.modality} small>{caps.label(chosen.modality)}</Chip>{/if}
   </div>
   <div class="divider"></div>
   <div class="group">

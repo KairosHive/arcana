@@ -5,6 +5,10 @@ trained by Zheng, Ma, Tong and Xie ("Diffusion Transformers with Representation 
 MIT) draws a picture back from any grid. Two materials mixed in that grid stay one surface, which is
 what makes token mixing different from a crossfade. Ported from latent-lab's rae.py.
 """
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
 import math
 import pathlib
 
@@ -124,7 +128,7 @@ class RAE:
         """DINOv2-B with registers, its last layer norm without its learned scale and shift."""
         from transformers import Dinov2WithRegistersModel
 
-        encoder = Dinov2WithRegistersModel.from_pretrained(ENCODER, attn_implementation="sdpa")
+        encoder = _hub.pretrained(Dinov2WithRegistersModel.from_pretrained, ENCODER, attn_implementation="sdpa")
         encoder.layernorm.elementwise_affine = False
         encoder.layernorm.weight = None
         encoder.layernorm.bias = None

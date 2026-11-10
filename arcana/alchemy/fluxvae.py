@@ -16,6 +16,10 @@ archive the first four are, in some order, crispness, colour temperature, exposu
 `controls` names them by measuring what each one does to a picture.
 """
 
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
 import pathlib
 
 import numpy as np
@@ -45,7 +49,7 @@ class FluxVAE:
 
         self.device = device
         self.dtype = torch.bfloat16 if device != "cpu" else torch.float32
-        self.vae = AutoencoderKLFlux2.from_pretrained(REPO, subfolder="vae", torch_dtype=self.dtype).to(device).eval()
+        self.vae = _hub.pretrained(AutoencoderKLFlux2.from_pretrained, REPO, subfolder="vae", torch_dtype=self.dtype).to(device).eval()
         bn = self.vae.bn
         self.mean = bn.running_mean.float().to(device).view(1, -1, 1, 1)
         self.std = torch.sqrt(bn.running_var.float().to(device) + bn.eps).view(1, -1, 1, 1)

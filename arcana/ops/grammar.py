@@ -389,10 +389,17 @@ def _wrap_terms(terms: list[str], width: int, indent: str = "    ") -> list[str]
     return lines + [cur]
 
 
+def modality_words(op: Op) -> str:
+    """'photos', 'photos and sounds': the media an op works with, as its help says it."""
+    return registry._modality.words(op.modalities or ())
+
+
 def help_text(op: Op) -> str:
     """The op's help page, generated from its declaration."""
     lines = _wrap_terms(usage_terms(op), WIDTH)
-    lines.append(f"({op.kind}" + (f", needs {', '.join(sorted(op.needs))}" if op.needs else "")
+    lines.append(f"({op.kind}"
+                 + (f", works with {modality_words(op)}" if op.modalities else "")
+                 + (f", needs {', '.join(sorted(op.needs))}" if op.needs else "")
                  + (f", {' and '.join(a for a in registry.ACTORS if a in op.actors)} only"
                     if op.actors != frozenset(registry.ACTORS) else "") + ")")
     lines.append("")
@@ -441,6 +448,9 @@ argument set can come as --args '{...}' or --args @file.json.
 Pictures are named by handle, dataset:key (japan:1423). Datasets are named by
 id (japan, or field@audio for an audio set). Backslashes in Windows paths need
 no escaping, and # needs no quoting.
+
+An op that takes media says which kinds it works with (photos, sounds), in its
+help and in `op list`, and refuses the others.
 
 <op> --help prints any op's help. `op list` lists them all.
 """
@@ -574,6 +584,7 @@ def schema() -> dict:
     """Every op as JSON Schema, for clients that build calls from a schema."""
     return {o.name: {"kind": o.kind, "summary": o.summary, "doc": o.doc,
                      "needs": sorted(o.needs), "actors": sorted(o.actors),
+                     "modalities": o.tags,
                      "examples": list(o.examples),
                      "args": o.args.model_json_schema(),
                      "result": o.result.model_json_schema()}

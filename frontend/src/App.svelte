@@ -4,6 +4,7 @@
   import Header from './shell/Header.svelte'
   import ContextBar from './shell/ContextBar.svelte'
   import RelocatePanel from './shell/RelocatePanel.svelte'
+  import ActivityStrip from './shell/ActivityStrip.svelte'
   import Viewer from './shell/Viewer.svelte'
   import Toast from './lib/ui/Toast.svelte'
   import Spinner from './lib/ui/Spinner.svelte'
@@ -31,6 +32,7 @@
     <button class="unfold" title="Show the header band" onclick={() => foldHeader(false)}>▾ show header</button>
   {/if}
   <RelocatePanel />
+  {#if app.ready}<ActivityStrip />{/if}
 
   <main class="main">
     {#if app.error}

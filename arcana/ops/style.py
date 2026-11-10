@@ -141,6 +141,7 @@ class StyleTransferArgs(Args):
 
 
 @op("style transfer", "effect", StyleTransferArgs, StyleResult,
+    modalities=("image",),
     doc="""
     Apply the look of one picture to another. `style methods` says what each
     method does. The diffusion methods download their weights on first use,
@@ -244,6 +245,7 @@ class ControlMapArgs(Args):
 
 
 @op("style control-map", "read", ControlMapArgs, MapResult,
+    modalities=("image",),
     doc="""
     The map a ControlNet will read from a picture. Judge it before a
     transfer. A wrong depth map explains a wrong result. Depth loads a depth
@@ -309,6 +311,7 @@ MAX_GENERATED = 2
 
 
 @op("generate", "effect", GenerateArgs, GenerateResult,
+    modalities=("image",),
     doc="""
     Make a picture with sd-turbo, from words or by redrawing a picture toward
     words. Use it to fill an angle the archive is weak on, sparingly: a board

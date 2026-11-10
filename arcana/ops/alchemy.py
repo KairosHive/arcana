@@ -382,6 +382,7 @@ class AlchemyPreviewArgs(StepInputs):
 
 
 @op("alchemy preview", "read", AlchemyPreviewArgs, StepResult,
+    modalities=("image",),
     doc="""
     One Alchemy step, drawn small and kept nowhere. The picture [T] is mixed
     with up to three materials by a method, through a mask, with a finish. Live
@@ -413,6 +414,7 @@ class AlchemyMakeArgs(StepInputs):
 
 
 @op("alchemy make", "effect", AlchemyMakeArgs, StepResult,
+    modalities=("image",),
     doc="""
     One Alchemy step, drawn at full size and kept. By default the picture keeps
     the size of the photograph it came from. It is written to
@@ -549,6 +551,7 @@ class AlchemyMaskPreviewArgs(Args):
 
 
 @op("alchemy mask preview", "read", AlchemyMaskPreviewArgs, MaskPreviewResult,
+    modalities=("image",),
     doc="""
     A mask on its own, drawn over its picture in gold. It comes with the share
     of the picture it lets in, to judge a mask before a step runs through it.
@@ -807,6 +810,7 @@ class AlchemyFilmSaveArgs(Args):
 
 
 @op("alchemy film save", "write", AlchemyFilmSaveArgs, FilmShowResult,
+    modalities=("image",),
     doc="""
     Keep a film under its name, replacing one of the same name. Undo takes it
     back like any other write.
@@ -985,6 +989,7 @@ class AlchemyFilmPreviewArgs(FilmSpecArgs):
 
 
 @op("alchemy film preview", "read", AlchemyFilmPreviewArgs, FrameResult,
+    modalities=("image",),
     doc="""
     One frame of a film at any moment, kept nowhere. It is the morph at that
     time, the look's step and its finish. The pictures are encoded once and
@@ -1032,6 +1037,7 @@ class AlchemyFilmMakeArgs(FilmSpecArgs):
 
 
 @op("alchemy film make", "effect", AlchemyFilmMakeArgs, FilmMadeResult,
+    modalities=("image",),
     doc="""
     Render a film to an H.264 video in output/edited/video/<date>/. The film
     is written beside it as JSON, and the ledger records the video as derived

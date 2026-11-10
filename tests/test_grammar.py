@@ -199,8 +199,8 @@ def test_usage_wraps_between_terms_never_inside_one():
 # ─────────────────────────── completion ───────────────────────────
 
 def test_completion_walks_op_names_flags_and_choices():
-    assert grammar.complete("se") == ["search", "settings"]
-    assert grammar.complete("search ") == ["facets", "like", "palette", "text"]
+    assert grammar.complete("se") == ["search", "sequence", "settings"]
+    assert grammar.complete("search ") == ["across", "facets", "like", "palette", "text"]
     assert grammar.complete("arcana test echo x --lo") == ["--loud"]
     assert "--no-loud" in grammar.complete("test echo x --no")
     assert grammar.complete("test echo x --mode ") == ["semantic", "palette"]

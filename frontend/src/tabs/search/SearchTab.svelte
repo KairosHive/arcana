@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ModalityTag from '../../lib/components/ModalityTag.svelte'
+  import { caps } from '../../lib/stores/caps.svelte'
   import { app, current, type Job } from '../../lib/stores/app.svelte'
   import { get, post, reason } from '../../lib/api/client'
   import { toast } from '../../lib/stores/toast.svelte'
@@ -14,6 +16,9 @@
   import TextInput from '../../lib/ui/TextInput.svelte'
   import TextArea from '../../lib/ui/TextArea.svelte'
   import NumberInput from '../../lib/ui/NumberInput.svelte'
+  import Select from '../../lib/ui/Select.svelte'
+  import { activity } from '../../lib/stores/activity.svelte'
+  import Chip from '../../lib/ui/Chip.svelte'
   import Toggle from '../../lib/ui/Toggle.svelte'
   import Slider from '../../lib/ui/Slider.svelte'
   import Disclosure from '../../lib/ui/Disclosure.svelte'
@@ -21,7 +26,7 @@
   import Empty from '../../lib/ui/Empty.svelte'
   import SplitPane from '../../lib/ui/SplitPane.svelte'
   import { addToCollection } from '../../lib/stores/app.svelte'
-  import { previewUrl } from '../../lib/api/media'
+  import { previewUrl, filmVideoUrl } from '../../lib/api/media'
 
   /**
    * Prompt Search and Generate Story share this tab: the map on the left with
@@ -31,7 +36,7 @@
   let { mode }: { mode: 'prompt' | 'story' } = $props()
   const visible = $derived(app.mode === mode)
 
-  type Group = { gid: string; keys: number[]; paths: string[]; marks: any[]; rows: number[]; scores: number[] }
+  type Group = { gid: string; keys: number[]; paths: string[]; marks: any[]; rows: number[]; scores: number[]; notes?: string[]; strips?: any[] }
   type Scene = { text: string; path: string; row: number | null; poetryPath?: string }
 
   // ---- the map and its filter ----
@@ -50,6 +55,7 @@
     if (!ds) { map = null; marks = { has: false }; loadedFor = ''; return }
     if (ds === loadedFor) return
     loadedFor = ds
+    void loadSpace(ds)
     mapLoading = true; mapError = ''
     filter = { ...EMPTY_FILTER }; kept = null; filterCount = ''; panelOpen = false
     groups = []; hits = []; scenes = []
@@ -77,6 +83,42 @@
   // ---- search ----
   let text = $state('')
   let k = $state(4)
+  // A video dataset is searched by section: how long a section, and how long at least.
+  let level = $state('auto')
+  let minSeconds = $state(0)
+  // What to match on: what a section shows, how it moves, or both. And a phrase for the movement.
+  let balance = $state(0)
+  let motionText = $state('')
+  let understood = $state<string[]>([])
+  // Sections of a video, or whole videos with a strip of where they match. And how the camera moves.
+  let give = $state('sections')
+  let moving = $state<string[]>([])
+  const MOVES = ['still', 'pan', 'tilt', 'zoom', 'handheld', 'subject', 'flicker']
+  function toggleMove(m: string) { moving = moving.includes(m) ? moving.filter((x) => x !== m) : [...moving, m] }
+  // The shared space: search this dataset with words and with whatever is in the collection, of any kind.
+  let space = $state<{ has: boolean; count: number; available: boolean; why: string }>({ has: false, count: 0, available: false, why: '' })
+  let across = $state(false)
+  let byCollection = $state(false)
+  let acrossNote = $state('')
+  let embedding = $state(false)
+  // An agent's search, opened from the activity strip: run it here so its results are on screen.
+  let shown = 0
+  $effect(() => {
+    const s = activity.show
+    if (mode !== 'prompt' || s.n === shown) return
+    shown = s.n
+    text = s.text
+    across = s.across && space.has
+    queueMicrotask(() => { void run() })
+  })
+  async function loadSpace(ds: string) { try { space = await get('/api/space', { dataset: ds }) } catch { space = { has: false, count: 0, available: false, why: '' } } if (!space.has) across = false }
+  async function embed() {
+    try {
+      embedding = true; acrossNote = 'Embedding into the shared space…'
+      const r = await post('/api/space/embed', { dataset: app.dataset })
+      watchJob(r.job, (j) => { if (j.message) acrossNote = j.message }, async (j) => { embedding = false; acrossNote = j.status === 'done' ? (j.result_text || 'Embedded.') : (j.error || `Ended: ${j.status}.`); await loadSpace(app.dataset) })
+    } catch (e) { embedding = false; acrossNote = reason(e) }
+  }
   let groupTwins = $state(true)
   let thresh = $state(0.08)
   let spectrogram = $state(false)
@@ -96,12 +138,19 @@
 
   async function run() {
     if (!app.dataset) { toast('Choose a dataset above to begin.', 'warn'); return }
-    if (!text.trim()) return
+    const like = across && byCollection ? app.collection.items.slice(0, 8) : []
+    if (!text.trim() && !like.length) return
     searching = true; clicked = null; saveStatus = ''
     try {
-      if (mode === 'prompt') {
-        const r = await post('/api/search', { ...body(), text, k, group: groupTwins, thresh })
-        groups = r.groups; hits = r.rows
+      if (mode === 'prompt' && across) {
+        const r = await post('/api/across', { dataset: app.dataset, text, like, k: Math.max(k, 4) })
+        groups = r.groups; hits = r.rows; understood = []; acrossNote = `Searched for ${r.query}.`
+        frames = Object.fromEntries(r.groups.map((g: Group) => [g.gid, 0]))
+        selected = Object.fromEntries(r.groups.map((g: Group) => [g.gid, false]))
+        scenes = []
+      } else if (mode === 'prompt') {
+        const r = await post('/api/search', { ...body(), text, k, group: groupTwins, thresh, level, minSeconds, balance, motion: motionText, return: give, tags: moving })
+        groups = r.groups; hits = r.rows; understood = r.understood ?? []
         frames = Object.fromEntries(r.groups.map((g: Group) => [g.gid, 0]))
         selected = Object.fromEntries(r.groups.map((g: Group) => [g.gid, false]))
         scenes = []
@@ -130,6 +179,23 @@
   function currentPath(g: Group) { return g.paths[frames[g.gid] ?? 0] }
   function selectAll(on: boolean) { const s: Record<string, boolean> = {}; for (const g of groups) s[g.gid] = on; if (clicked) s.__clicked = on; selected = s }
   const nSelected = $derived(Object.values(selected).filter(Boolean).length)
+
+  // A cut: the chosen clips one after another, with their sound, and an edit list beside the video.
+  let cutVideo = $state(''), cutNote = $state(''), cutting = $state(false)
+  async function cut() {
+    const clips = mode === 'prompt' ? groups.filter((g) => selected[g.gid]).map((g) => g.paths[frames[g.gid] ?? 0]) : scenes.map((s) => s.path)
+    const notes = mode === 'prompt' ? [] : scenes.map((s) => s.text)
+    if (!clips.length) { cutNote = mode === 'prompt' ? 'Select the clips to cut together first.' : 'Generate a story first.'; return }
+    cutting = true; cutNote = 'Cutting…'; cutVideo = ''
+    try {
+      const r = await post('/api/rpc', { op: 'sequence make', args: { clip: clips, notes, name: saveFolder.trim() || (mode === 'prompt' ? 'cut' : 'story'), background: true } })
+      watchJob(r.result.job, (j) => { if (j.message) cutNote = j.message }, (j) => {
+        cutting = false
+        if (j.status === 'done' && j.result) { cutVideo = filmVideoUrl(j.result.path); cutNote = `${j.result.clips} clips, ${j.result.seconds.toFixed(1)} s. Edit list: ${j.result.edl}` }
+        else cutNote = j.error || `The cut ended: ${j.status}.`
+      })
+    } catch (e) { cutting = false; cutNote = reason(e) }
+  }
 
   async function saveSelected() {
     const paths = groups.filter((g) => selected[g.gid]).map(currentPath)
@@ -191,7 +257,8 @@
             {/if}
           </div>
           {#if mode === 'prompt'}<NumberInput bind:value={k} min={1} max={1000} suffix="results" />{/if}
-          <Button kind="primary" onclick={run} busy={searching} disabled={!app.dataset || !text.trim()}>{mode === 'prompt' ? 'Search' : 'Generate Story'}</Button>
+          <Button kind="primary" onclick={run} busy={searching} disabled={!app.dataset || (!text.trim() && !(across && byCollection && app.collection.items.length))}>{mode === 'prompt' ? 'Search' : 'Generate Story'}</Button>
+          <ModalityTag feature={mode === 'prompt' ? 'search.text' : 'story.search'} />
         </div>
         {#if marks.has}
           <MarksBar info={marks} bind:filter count={filterCount} bind:panelOpen />
@@ -202,15 +269,46 @@
   {#snippet b()}
     <div class="right">
       <div class="toolbar">
+        {#if mode === 'prompt' && caps.can('search.levels')}
+          <div class="thresh" title="How long a section to return. Auto keeps, in each video, the section that matches best."><span class="caps">sections</span>
+            <Select bind:value={level} size="sm" options={[{ value: 'auto', label: 'Auto' }, { value: 'file', label: 'Whole files' }, { value: 'coarse', label: 'Coarse' }, { value: 'medium', label: 'Medium' }, { value: 'fine', label: 'Fine' }]} /></div>
+          <div class="thresh" title="Leave out sections shorter than this"><span class="caps">at least</span><NumberInput bind:value={minSeconds} min={0} max={600} step={1} size="sm" width="60px" /><span class="caps">s</span></div>
+          <div class="thresh" title="Sections returns parts of videos. Whole videos returns each file once, with a strip showing where it matches."><span class="caps">return</span>
+            <Select bind:value={give} size="sm" options={[{ value: 'sections', label: 'Sections' }, { value: 'videos', label: 'Whole videos' }]} /></div>
+          <ModalityTag feature="search.levels" />
+          <div class="thresh" title="Keep only sections that move this way">
+            {#each MOVES as m (m)}<Chip tone={moving.includes(m) ? 'video' : 'faint'} small onclick={() => toggleMove(m)}>{m}</Chip>{/each}
+          </div>
+        {/if}
+        {#if mode === 'prompt' && caps.can('search.motion')}
+          <div class="thresh" title="Content ranks by what a section shows. Dynamics ranks by how it moves. Both mixes the two. Movement is read from the phrase on the right, or from the search itself."><span class="caps">match</span>
+            <Select bind:value={balance} size="sm" options={[{ value: 0, label: 'Content' }, { value: 0.5, label: 'Both' }, { value: 1, label: 'Dynamics' }]} /></div>
+          <div class="thresh" style="flex: 1 1 180px; min-width: 150px" title="Words for movement: still, pan left, pan right, tilt up, tilt down, zoom in, zoom out, handheld, fast, slow, calm, subject moving, flicker, rhythmic">
+            <TextInput bind:value={motionText} placeholder="movement: slow pan left, handheld…" size="sm" onenter={run} /></div>
+          {#if understood.length}<span class="dim small" title="The movement words this search was ranked on">moving: {understood.join(', ')}</span>{/if}
+        {/if}
         {#if mode === 'prompt'}
+          <div class="thresh" title={space.available ? 'Search with words and with pictures, sounds or clips together, in the space they all share. A sound can find a picture.' : space.why}>
+            {#if space.has}
+              <Toggle bind:checked={across} label="Shared space" size="sm" />
+              {#if across}<Toggle bind:checked={byCollection} label="search by the collection ({app.collection.items.length})" size="sm" />{/if}
+            {:else}
+              <Button size="sm" onclick={embed} disabled={!space.available || embedding || !app.dataset}>Embed for shared space</Button>
+            {/if}
+            <ModalityTag feature="search.across" />
+          </div>
+          {#if acrossNote && (across || embedding || !space.has)}<span class="dim small">{acrossNote}</span>{/if}
+        {/if}
+        {#if mode === 'prompt' && caps.can('search.twins')}
           <Toggle bind:checked={groupTwins} label="Group twins" size="sm" />
           <div class="thresh" title="Near-duplicates within this cosine distance fold into one card"><span class="caps">distance ≤</span><NumberInput bind:value={thresh} min={0} max={0.5} step={0.01} size="sm" width="60px" /></div>
         {/if}
-        {#if isAudio}<Toggle bind:checked={spectrogram} label="Spectrogram" size="sm" />{/if}
-        {#if mode === 'story' && !isAudio}
-          <div class="poetry">
-            <Button size="sm" kind="primary" onclick={injectPoetry} disabled={!scenes.length || (!!poetry && !['done', 'failed', 'cancelled'].includes(poetry.status))}>Inject Poetry</Button>
-            <Slider bind:value={strength} min={0} max={1} step={0.01} label="Strength" width="190px" />
+        {#if isAudio}<Toggle bind:checked={spectrogram} label="Spectrogram" size="sm" /><ModalityTag feature="search.spectrogram" />{/if}
+        {#if mode === 'story'}
+          <div class="poetry" title={caps.why('story.poetry')}>
+            <Button size="sm" kind="primary" onclick={injectPoetry} disabled={!caps.can('story.poetry') || !scenes.length || (!!poetry && !['done', 'failed', 'cancelled'].includes(poetry.status))}>Inject Poetry</Button>
+            <ModalityTag feature="story.poetry" />
+            {#if caps.can('story.poetry')}<Slider bind:value={strength} min={0} max={1} step={0.01} label="Strength" width="190px" />{/if}
           </div>
         {/if}
         <span class="spacer"></span>
@@ -234,7 +332,7 @@
             <Empty title={app.dataset ? 'Describe what you are looking for, then Search.' : 'Choose a dataset above to begin.'} hint="CLIP sees concrete visual things: objects, places, light, weather, colour, texture, composition. Click any point on the map to see it here." />
           {/if}
           {#each groups as g, i (g.gid)}
-            <MediaCard paths={g.paths} marks={g.marks} scores={g.scores} {spectrogram} bind:selected={selected[g.gid]} bind:frame={frames[g.gid]}
+            <MediaCard paths={g.paths} marks={g.marks} scores={g.scores} notes={g.notes ?? []} strips={g.strips ?? []} {spectrogram} bind:selected={selected[g.gid]} bind:frame={frames[g.gid]}
                        title="#{i + 1}" />
           {/each}
         {:else}
@@ -267,6 +365,19 @@
           {/if}
         </div>
         <Status text={saveStatus} tone={saveTone} />
+        {#if caps.can('search.cut')}
+          <div class="row">
+            <Button kind="primary" onclick={cut} busy={cutting} disabled={cutting || (mode === 'prompt' ? !nSelected : !scenes.length)}>{mode === 'prompt' ? 'Cut selected together' : 'Make a rough cut'}</Button>
+            <ModalityTag feature="search.cut" />
+            {#if cutNote}<span class="dim small">{cutNote}</span>{/if}
+          </div>
+          {#if cutVideo}
+            {#key cutVideo}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video class="cut" src={cutVideo} controls playsinline></video>
+            {/key}
+          {/if}
+        {/if}
       </Disclosure>
     </div>
   {/snippet}
@@ -289,4 +400,5 @@
   .poetry-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: var(--arc-surface); border: 1px solid var(--arc-line); border-radius: var(--r-lg); }
   .poetry-card img { width: 100%; border-radius: var(--r-md); }
   .poetry-card .head { font-size: var(--fs-xs); }
+  video.cut { width: 100%; max-height: 50vh; background: #000; border-radius: var(--r-md); }
 </style>

@@ -23,6 +23,8 @@ try:
     from .. import gpu as _gpu
     from .. import ui_collection as _collection
     from .. import ops as _ops
+    from .. import capabilities as _caps
+    from .. import activity as _activity
     from . import datasets as _datasets
 except ImportError:                                   # pragma: no cover
     import jobs as _jobs
@@ -30,6 +32,8 @@ except ImportError:                                   # pragma: no cover
     import gpu as _gpu
     import ui_collection as _collection
     import ops as _ops
+    import capabilities as _caps
+    import activity as _activity
     from api import datasets as _datasets
 
 
@@ -76,6 +80,7 @@ def _bootstrap():
         "signature": _state.STORE.signature(),
         "job": _jobs.MANAGER.active(),
         "dataDir": os.environ.get("ARCANA_DATA_DIR", ""),
+        "capabilities": _caps.table(),
     })
 
 
@@ -89,6 +94,45 @@ def _state_route():
         out["collection"] = _collection.snapshot()
         out["settings"] = settings()
     return jsonify(out)
+
+
+@bp.get("/activity")
+def _activity_route():
+    """The ops that ran since `after`, newest last: what an agent, the terminal or the page just did."""
+    try:
+        after = int(request.args.get("after") or 0)
+    except ValueError:
+        after = 0
+    return jsonify({"items": _activity.since(after), "latest": _activity.latest()})
+
+
+@bp.get("/events")
+def _events():
+    """
+    A stream that says "something changed" the moment it does.
+
+    Each message carries the newest activity number and the state signature.
+    The page answers by fetching what it shows, so nothing travels here but
+    the nudge. The two-second poll stays as the fallback for a stream that a
+    proxy or a sleeping laptop cut.
+    """
+    import json as _json
+    from flask import Response, stream_with_context
+
+    def stream():
+        seen, sig = -1, ""
+        while True:
+            now, state = _activity.latest(), _state.STORE.signature()
+            if now != seen or state != sig:
+                seen, sig = now, state
+                yield f"data: {_json.dumps({'activity': now, 'signature': state})}\n\n"
+            else:
+                yield ": keep-alive\n\n"
+            # Wakes at once on an op; otherwise looks at the signature again shortly.
+            _activity.wait(seen, timeout=1.0)
+
+    return Response(stream_with_context(stream()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @bp.get("/jobs/<job_id>")

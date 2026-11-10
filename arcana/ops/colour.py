@@ -242,6 +242,7 @@ class ColourTransferArgs(ReferenceArgs):
 
 
 @op("colour transfer", "effect", ColourTransferArgs, TransferResult,
+    modalities=("image",),
     doc="""
     Recolour a picture toward another picture's colours, or toward a palette.
     The result is a new file with an out: handle, marked as derived. The
@@ -295,6 +296,7 @@ class ColourLutArgs(Args):
 
 
 @op("colour lut", "effect", ColourLutArgs, LutResult,
+    modalities=("image",),
     doc="""
     Bake a colour transfer into a .cube LUT. It takes the ModFlows transfer
     between two pictures, to grade other footage or photographs the same way in
@@ -353,6 +355,7 @@ class HarmonizeArgs(ReferenceArgs):
 
 
 @op("colour harmonize", "effect", HarmonizeArgs, HarmonizeResult,
+    modalities=("image",),
     doc="""
     Bring a board's outliers toward its palette or toward one picture. Each
     result is added beside its original as a derived support, with a note
@@ -407,3 +410,139 @@ def _colour_harmonize(a: HarmonizeArgs, ctx: Context) -> Result:
         return HarmonizeResult(board=a.board, made=made)
 
     return run_effect(ctx, f"colour harmonize {a.board}", compute, record, a.background)
+
+
+# ─────────────────────────── colour video ───────────────────────────
+
+class VideoColourResult(Result):
+    path: str
+    frames: int
+    seconds: float
+    keys: int
+    cubes: list[str] = Field(default_factory=list)
+    flicker_before: float = 0.0
+    flicker_after: float = 0.0
+
+    def text(self) -> str:
+        kind = "one table for the whole clip" if self.keys == 1 else f"{self.keys} tables followed over time"
+        return (f"Recoloured {self.frames} frames ({self.seconds:.1f} s) with {kind}.\n  {self.path}\n"
+                f"  Frame-to-frame colour change: {self.flicker_before:.2f} before, {self.flicker_after:.2f} after "
+                f"(levels of 255).\n"
+                + "".join(f"  Table for an editor: {c}\n" for c in self.cubes))
+
+
+class VideoColourArgs(Args):
+    target: str = item_arg(0, "The clip to recolour: a section or a whole video, as dataset:key.")
+    reference: list[str] = Field(min_length=1, max_length=8,
+                                 description="What its colours move toward: a picture, a clip, or several "
+                                             "in order, which the clip then passes through.",
+                                 json_schema_extra={"metavar": "ITEM"})
+    method: Method = Field("lab", description="lab, mkl, idt or modflows.")
+    strength: float = Field(1.0, ge=0.0, le=1.0, description="How far toward the reference.")
+    keys: int = Field(1, ge=1, le=24, description="With one reference clip: 1 fits it as a whole, more "
+                                                  "follows its colour over time at that many moments.")
+    background: bool = Field(False, description="Return a job id at once instead of waiting.")
+
+
+@op("colour video", "effect", VideoColourArgs, VideoColourResult,
+    modalities=("image", "video"),
+    doc="""
+    Recolour a clip toward a reference, without flicker. The transfer is fitted
+    once on frames pooled across the clip and applied to every frame as one
+    table. With several references, or --keys on a reference clip, a table is
+    fitted at each and the clip passes from one to the next, so its colour
+    follows the reference's over time. The sound is kept, and each table is
+    written as a .cube file for an editor. The original is untouched.
+    """,
+    examples=("colour video clips@video:12 --reference japan:7",
+              "colour video clips@video:12 --reference clips@video:40 --keys 6 --method mkl"))
+def _colour_video(a: VideoColourArgs, ctx: Context) -> Result:
+    import datetime
+
+    try:
+        from .. import modality as _modality, video_colour as _vc
+    except ImportError:                               # pragma: no cover
+        import modality as _modality
+        import video_colour as _vc
+    target = archive.resolve_item(a.target, ctx.actor).path
+    if _modality.of_path(target) != "video":
+        raise ValueError(f"`colour video` recolours a clip. {a.target} is a picture; use `colour transfer`.")
+    refs = [archive.resolve_item(r, ctx.actor).path for r in a.reference]
+    ok, why = _tm.available(a.method)
+    if not ok:
+        raise ValueError(why)
+    name = os.path.splitext(os.path.basename(_modality.file_of(target)))[0][:40]
+    stem = os.path.join(_paths.edited_dir("video"), f"{name}__colour_{datetime.datetime.now().strftime('%H%M%S')}")
+
+    def compute(progress):
+        if progress:
+            progress(0.02, "Fitting the colour")
+        tables = _vc.tables_for(target, refs, a.method, a.strength, a.keys)
+        made = _vc.render(target, tables, stem + ".mp4", progress)
+        made["cubes"] = _vc.write_cubes(tables, stem, f"{a.method} {name}")
+        made["keys"] = len(tables)
+        file, t0, t1 = _modality.split_ref(target)
+        made["before"] = _vc.flicker(file, t0 or 0.0, t1)
+        made["after"] = _vc.flicker(made["path"])
+        return made
+
+    def record(tx, made):
+        return VideoColourResult(path=made["path"], frames=made["frames"], seconds=made["seconds"],
+                                 keys=made["keys"], cubes=made["cubes"], flicker_before=made["before"],
+                                 flicker_after=made["after"])
+
+    return run_effect(ctx, f"colour video {a.target}", compute, record, a.background, kind="film")
+
+
+# ─────────────────────────── colour deflicker ───────────────────────────
+
+class DeflickerResult(Result):
+    path: str
+    frames: int
+    before: float
+    after: float
+
+    def text(self) -> str:
+        return (f"Steadied {self.frames} frames. Frame-to-frame colour change: {self.before:.2f} before, "
+                f"{self.after:.2f} after (levels of 255).\n  {self.path}\n")
+
+
+class DeflickerArgs(Args):
+    target: str = item_arg(0, "The clip that flickers: a video, as dataset:key or out:<id>.")
+    source: str | None = Field(None, description="The clip the effect was applied to. With it, changes "
+                                                 "the source really had are kept.",
+                               json_schema_extra={"metavar": "ITEM"})
+    window: int = Field(9, ge=3, le=61, description="How many frames a change must last to be kept.")
+    background: bool = Field(False, description="Return a job id at once instead of waiting.")
+
+
+@op("colour deflicker", "effect", DeflickerArgs, DeflickerResult,
+    modalities=("video",),
+    doc="""
+    Remove the frame-to-frame brightness and colour jumps a per-frame effect
+    leaves. Each frame is scaled to the slow course of the clip's colour, and
+    with --source the changes the original clip really had are put back, so
+    only what the effect added goes. The sound is kept and the input is
+    untouched.
+    """,
+    examples=("colour deflicker out:3f9c1e --source clips@video:12",))
+def _colour_deflicker(a: DeflickerArgs, ctx: Context) -> Result:
+    import datetime
+
+    try:
+        from .. import modality as _modality, video_colour as _vc
+    except ImportError:                               # pragma: no cover
+        import modality as _modality
+        import video_colour as _vc
+    target = _modality.file_of(archive.resolve_item(a.target, ctx.actor).path)
+    source = archive.resolve_item(a.source, ctx.actor).path if a.source else None
+    name = os.path.splitext(os.path.basename(target))[0][:40]
+    out = os.path.join(_paths.edited_dir("video"), f"{name}__steady_{datetime.datetime.now().strftime('%H%M%S')}.mp4")
+
+    def compute(progress):
+        return _vc.deflicker(target, out, source, a.window, progress)
+
+    def record(tx, made):
+        return DeflickerResult(path=made["path"], frames=made["frames"], before=made["before"], after=made["after"])
+
+    return run_effect(ctx, f"colour deflicker {a.target}", compute, record, a.background, kind="film")

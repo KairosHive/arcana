@@ -31,8 +31,10 @@ from .bundle import BundleWriter, Item, ModelSpec, SUFFIX, fingerprint
 
 try:
     from . import paths as _paths
+    from . import modality as _modality
 except ImportError:                      # running as a loose script
     import paths as _paths
+    import modality as _modality
 
 # Resolved through paths.py, not from __file__. Deriving these from the module
 # location means a packaged app looks inside its own read-only install
@@ -53,11 +55,11 @@ LEGACY_MODELS = {
                        modality="audio", normalized=False),
 }
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+IMAGE_EXTS = _modality.IMAGE_EXTS
+AUDIO_EXTS = _modality.AUDIO_EXTS
 
-_INDEX_RE = re.compile(r"^index_(.+)_(image|audio)\.pkl$")
-_LATENT_RE = re.compile(r"^latent_space_(.+)_(image|audio)_(\d+)d\.pkl$")
+_INDEX_RE = _modality.INDEX_RE
+_LATENT_RE = _modality.LATENT_RE
 
 
 @dataclass
@@ -93,8 +95,8 @@ def discover(db_dir: str = DB_DIR, latents_dir: str = LATENTS_DIR) -> list[Legac
 
     out = []
     for (name, modality), index_path in sorted(indexes.items()):
-        pal = os.path.join(db_dir, f"features_{name}_palette.npz")
-        sty = os.path.join(db_dir, f"features_{name}_style.npz")
+        pal = os.path.join(db_dir, _modality.feature_file(name, "palette", modality))
+        sty = os.path.join(db_dir, _modality.feature_file(name, "style", modality))
         out.append(LegacyDataset(
             name=name,
             modality=modality,
@@ -188,6 +190,18 @@ def dataset_files(name: str, modality: str = "image", *,
         for p in (d.palette_path, d.style_path):
             if p:
                 found.append(p)
+
+    # A video dataset also owns its sections table and its boundary tree.
+    if modality == "video":
+        for stem in ("sections", "tree"):
+            found.append(os.path.join(db_dir, f"{stem}_{name}_video.pkl"))
+        found.append(os.path.join(db_dir, f"features_{name}_video_motion.npz"))
+
+    # Its vectors in any shared space.
+    if os.path.isdir(db_dir):
+        for fn in os.listdir(db_dir):
+            if fn.startswith(f"space_{name}_{modality}.") and fn.endswith(".npz"):
+                found.append(os.path.join(db_dir, fn))
 
     # Bundles are named <name>_<modality>.arcana and are not part of discover().
     bundle = os.path.join(bundles_dir, f"{name}_{modality}{SUFFIX}")

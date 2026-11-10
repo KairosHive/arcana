@@ -6,6 +6,10 @@
 #   databases/index_<name>_<modality>.pkl
 #   latents/latent_space_<name>_<modality>_<n_components>D.pkl
 
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
 import os
 import sys
 import cv2
@@ -84,14 +88,20 @@ torch.set_grad_enabled(False)
 # --------------------------------------------------------------------------------------
 try:
     from . import paths as _paths
+    from . import compat as _compat
+    from . import modality as _modality
 except ImportError:  # running as a loose script
     import paths as _paths
+    import compat as _compat
+    import modality as _modality
 
 script_root = _paths.APP_ROOT
 ASSETS_DIR = _paths.ASSETS_DIR
 DEFAULT_LABELS = {
     "image": os.path.join(ASSETS_DIR, "labels_image.txt"),
     "audio": os.path.join(ASSETS_DIR, "labels_audio.txt"),
+    # A video's sections are named with the picture vocabulary: CLIP reads their frames.
+    "video": os.path.join(ASSETS_DIR, "labels_image.txt"),
 }
 
 # Resolved through paths.py so a read-only install still imports. Directories are
@@ -103,8 +113,8 @@ IMAGES_ROOT = (_paths.media_roots() or [os.path.abspath(os.path.join(script_root
 # --------------------------------------------------------------------------------------
 # File types
 # --------------------------------------------------------------------------------------
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+IMAGE_EXTS = _modality.IMAGE_EXTS
+AUDIO_EXTS = _modality.AUDIO_EXTS
 CLIP_MODEL_ID = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 CLAP_MODEL_ID = "laion/clap-htsat-fused"
 
@@ -292,7 +302,7 @@ def _read_label_list(src: str | None) -> tuple[list[str], str]:
         return labels, f"inline:{h}"
 
 def _text2vec(text: str, modality: str, model_id: str | None = None) -> np.ndarray:
-    if modality == "image":
+    if modality in ("image", "video"):
         return txt2vec_clip(text, model_id=model_id)
     elif modality == "audio":
         return txt2vec_clap(text)
@@ -317,7 +327,7 @@ def _encode_label_matrix(
     # so switching models produces a separate cache rather than reusing
     # embeddings of the wrong dimension.
     if model_id is None:
-        model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
+        model_id = CLAP_MODEL_ID if modality == "audio" else CLIP_MODEL_ID
     cache_key = f"{modality}|{model_id}|{cache_base}"
     if cache_key in _LABEL_MEM_CACHE:
         return _LABEL_MEM_CACHE[cache_key]
@@ -349,7 +359,7 @@ def _encode_label_matrix(
         batch = labels[i : i + B]
         try:
             # fast path: encode each text with the proper encoder
-            if modality == "image":
+            if modality in ("image", "video"):
                 # CLIP tokenizer can take batch.
                 # model_id matters: cluster names are found by comparing these
                 # label embeddings against image centroids, so both must come
@@ -359,7 +369,7 @@ def _encode_label_matrix(
                 model, processor = load_clip(model_id=model_id)
                 toks = processor.tokenizer(batch, return_tensors="pt", padding=True, truncation=True)
                 with torch.no_grad():
-                    v = model.get_text_features(toks.input_ids.to(model.device)).detach().cpu().float().numpy()
+                    v = _compat.features(model.get_text_features(toks.input_ids.to(model.device))).detach().cpu().float().numpy()
                 vecs.append(v)
             else:
                 # CLAP text batch
@@ -369,7 +379,7 @@ def _encode_label_matrix(
                     inputs[k] = inputs[k].to(model.device)
                 with torch.no_grad():
                     try:
-                        v = model.get_text_features(**inputs)
+                        v = _compat.features(model.get_text_features(**inputs))
                     except AttributeError:
                         v = model(**inputs).text_embeds
                 vecs.append(v.detach().cpu().float().numpy())
@@ -455,7 +465,7 @@ def load_clip(device: str | None = None, model_id: str | None = None):
     model_id = model_id or CLIP_MODEL_ID
     if _CLIP["model"] is None or _CLIP.get("id") != model_id:
         from transformers import CLIPModel, CLIPProcessor
-        m = CLIPModel.from_pretrained(model_id)
+        m = _hub.pretrained(CLIPModel.from_pretrained, model_id)
         if device == "cuda":
             m = m.to("cuda")
             # Half precision only from Volta up. A pre-Volta card runs .half()
@@ -466,7 +476,7 @@ def load_clip(device: str | None = None, model_id: str | None = None):
         else:
             m = m.to("cpu")
         m.eval()
-        p = CLIPProcessor.from_pretrained(model_id)
+        p = _hub.pretrained(CLIPProcessor.from_pretrained, model_id)
         _CLIP.update(model=m, proc=p, id=model_id)
     return _CLIP["model"], _CLIP["proc"]
 
@@ -474,14 +484,14 @@ def load_clap(device: str | None = None):
     device = device or _device()
     if _CLAP["model"] is None:
         from transformers import ClapModel, ClapProcessor
-        m = ClapModel.from_pretrained(CLAP_MODEL_ID)
+        m = _hub.pretrained(ClapModel.from_pretrained, CLAP_MODEL_ID)
         # Keep CLAP in FP32 (BN layers are happier; avoids dtype mismatch)
         if device == "cuda":
             m = m.to("cuda")   # <-- no .half()
         else:
             m = m.to("cpu")
         m.eval()
-        p = ClapProcessor.from_pretrained(CLAP_MODEL_ID)
+        p = _hub.pretrained(ClapProcessor.from_pretrained, CLAP_MODEL_ID)
         _CLAP.update(model=m, proc=p)
     return _CLAP["model"], _CLAP["proc"]
 
@@ -495,14 +505,14 @@ def img2vec_clip(image_bgr: np.ndarray, model_id: str | None = None) -> np.ndarr
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     px = processor(images=[rgb], return_tensors="pt").pixel_values.to(model.device)
     with torch.no_grad():
-        vec = model.get_image_features(px).squeeze().detach().cpu().float().numpy()
+        vec = _compat.features(model.get_image_features(px)).squeeze().detach().cpu().float().numpy()
     return vec
 
 def txt2vec_clip(text: str, model_id: str | None = None) -> np.ndarray:
     model, processor = load_clip(model_id=model_id)
     toks = processor.tokenizer(text, return_tensors="pt")
     with torch.no_grad():
-        vec = model.get_text_features(toks.input_ids.to(model.device)).squeeze().detach().cpu().float().numpy()
+        vec = _compat.features(model.get_text_features(toks.input_ids.to(model.device))).squeeze().detach().cpu().float().numpy()
     return vec
 
 def read_audio_mono(
@@ -564,13 +574,13 @@ def read_audio_mono(
 
 def aud2vec_clap(audio_np: np.ndarray, sr: int) -> np.ndarray:
     model, processor = load_clap()
-    inputs = processor(audios=audio_np, sampling_rate=sr, return_tensors="pt")
+    inputs = _compat.clap_inputs(processor, audio_np, sr)
     for k in inputs:
         inputs[k] = inputs[k].to(model.device)
     with torch.no_grad():
         # get_audio_features exists in recent transformers; fallback to forward
         try:
-            emb = model.get_audio_features(**inputs)
+            emb = _compat.features(model.get_audio_features(**inputs))
         except AttributeError:
             emb = model(**inputs).audio_embeds
         vec = emb.squeeze().detach().cpu().float().numpy()
@@ -583,7 +593,7 @@ def txt2vec_clap(text: str) -> np.ndarray:
         inputs[k] = inputs[k].to(model.device)
     with torch.no_grad():
         try:
-            emb = model.get_text_features(**inputs)
+            emb = _compat.features(model.get_text_features(**inputs))
         except AttributeError:
             emb = model(**inputs).text_embeds
         vec = emb.squeeze().detach().cpu().float().numpy()
@@ -610,6 +620,16 @@ def build(glob_path: str, index_path: str, batch_size: int = 32, modality: str =
     # discover files
     _report(0, 0, "Scanning for files")
     all_paths = glob(glob_path, recursive=True)
+    if modality == "video":
+        # A video is indexed by section, many keys to a file: see video_index.py.
+        try:
+            from . import video_index as _video_index
+        except ImportError:                           # pragma: no cover
+            import video_index as _video_index
+        found = _modality.INDEX_RE.search(os.path.basename(index_path))
+        return _video_index.build(
+            all_paths, index_path, found.group(1) if found else "videos", model_id=model_id,
+            progress=progress, db_dir=os.path.dirname(os.path.abspath(index_path)))
     paths = [p for p in all_paths if (is_image(p) if modality == "image" else is_audio(p))]
     print(f"[INFO] Found {len(paths)} {modality} files to index.")
     if not paths:
@@ -701,7 +721,7 @@ def encode_into(index, idx2path: dict, paths, next_key: int, batch_size: int = 3
             px = processor(images=[cv2.cvtColor(x, cv2.COLOR_BGR2RGB) for x in imgs],
                            return_tensors="pt").pixel_values.to(model.device)
             with torch.no_grad():
-                vecs = model.get_image_features(px).detach().cpu().float().numpy()
+                vecs = _compat.features(model.get_image_features(px)).detach().cpu().float().numpy()
             for i, vec in enumerate(vecs):
                 # fp16 on the GPU can overflow to inf/nan on a pathological
                 # image. usearch stores it happily, and the point then sits at
@@ -1495,18 +1515,24 @@ def model_for_dim(ndim: int, modality: str = "image") -> str:
     except ImportError:
         import models as _models
     for m in _models.MODELS:
-        if m.modality == modality and m.dim == ndim:
+        if m.modality == _modality.encoder_of(modality) and m.dim == ndim:
             return m.id
     raise RuntimeError(
         f"This dataset's vectors are {ndim}-dimensional, which matches no encoder "
         f"Arcana knows about. Re-index the folder rather than extending it.")
 
 
-def existing_feature_paths(name: str) -> dict:
-    """Feature blocks already on disk for this dataset."""
+def existing_feature_paths(name: str, modality: str = "image") -> dict:
+    """
+    Feature blocks already on disk for this dataset.
+
+    Keyed by modality as well as name. A photo set and an audio set can share a
+    name, and without the modality the audio set picked up the photo set's
+    palette and style and carried them into its own bundle.
+    """
     out = {}
     for block in FEATURE_BLOCKS:
-        path = os.path.join(db_dir, f"features_{name}_{block}.npz")
+        path = os.path.join(db_dir, _modality.feature_file(name, block, modality))
         if os.path.exists(path):
             out[block] = path
     return out
@@ -1615,7 +1641,7 @@ def extend_features(name: str, new_idx2path: dict, *, workers: int = 0,
     dataset should suddenly have style features, and computing them for the new
     files alone would produce a block covering a tenth of the collection.
     """
-    have = existing_feature_paths(name)
+    have = existing_feature_paths(name)           # photo datasets only, see extend_dataset
     if not have or not new_idx2path:
         return have
 
@@ -1843,7 +1869,7 @@ def rework_dataset(name: str, *, modality: str = "image", n_components: int = 2,
               f"reworking has to match it.")
     index_kwargs["model_id"] = encoder
 
-    have = existing_feature_paths(name)
+    have = existing_feature_paths(name, modality)
     print(f"[INFO] Reworking {name}: reusing the index, keeping "
           f"{', '.join(sorted(have)) or 'no'} feature block(s).")
     return index_dataset(
@@ -2365,7 +2391,7 @@ def index_dataset(
             model_id = built_with
 
     if model_id is None:
-        model_id = CLIP_MODEL_ID if modality == "image" else CLAP_MODEL_ID
+        model_id = CLAP_MODEL_ID if modality == "audio" else CLIP_MODEL_ID
 
     print("path to index:       ", index_name)
     print("path to latent space:", latent_name)
@@ -2422,7 +2448,7 @@ def index_dataset(
     # which is the same silent loss in a narrower case. Without any of this the
     # bundle loses palette and style on every --reuse_index run, and the
     # moodboard's similarity search goes quiet with nothing to explain why.
-    feature_paths = {**existing_feature_paths(name), **feature_paths}
+    feature_paths = {**existing_feature_paths(name, modality), **feature_paths}
     check_cancel()
 
     # ---- layout -------------------------------------------------------------
@@ -2460,6 +2486,19 @@ def index_dataset(
         print(f"[OK] Marks: {s['sidecars']} ON1 sidecars, {s['dated']} dated, "
               f"stars {s['stars'] or '-'}, labels {s['labels'] or '-'}")
 
+    if modality == "video":
+        # Each row is a section: carry its file, its times and its levels in the
+        # frame, where the map and the search filters read them.
+        try:
+            from . import video_index as _video_index
+        except ImportError:                           # pragma: no cover
+            import video_index as _video_index
+        sec = _video_index.load_sections(name, db_dir)
+        if sec is not None:
+            by_path = sec.set_index("path")
+            for col in ("file", "video", "t0", "t1", "seconds", "levels", "level", "motion", "tags"):
+                df[col] = [by_path[col].get(p) for p in df["path"]]
+
     df.to_pickle(latent_name)
     print(f"[OK] Saved latent DataFrame to {latent_name}")
 
@@ -2467,6 +2506,13 @@ def index_dataset(
               "model_id": model_id, "index": index_name, "latent": latent_name,
               "features": sorted(feature_paths), "bundle": None,
               "marks": on1.summarise(marks) if marks else None}
+
+    if modality == "video":
+        # The portable bundle describes one item per file, with a fingerprint of
+        # the file. Sections of a video need their own entry in that format,
+        # which is not written yet, so a video dataset has no bundle.
+        report(1.0, f"Indexed {len(idx2path):,} sections")
+        return result
 
     report(0.95, "Writing the portable bundle")
     try:

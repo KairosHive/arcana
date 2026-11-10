@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ModalityTag from '../../lib/components/ModalityTag.svelte'
+  import { caps } from '../../lib/stores/caps.svelte'
   import { app, current } from '../../lib/stores/app.svelte'
   import { get, post, reason } from '../../lib/api/client'
   import { toast } from '../../lib/stores/toast.svelte'
@@ -51,7 +53,7 @@
     const ds = current.dataset
     if (!ds || ds.value === checkedFor) return
     checkedFor = ds.value
-    get('/api/features', { name: ds.name }).then((f) => {
+    get('/api/features', { name: ds.name, modality: ds.modality }).then((f) => {
       features = f
       usePalette = f.palette
       useStyle = false
@@ -59,7 +61,7 @@
   })
 
   const WIDTH = { small: 300, medium: 600, large: 900, full: 1400 }
-  const isImage = $derived(current.modality === 'image')
+  const isImage = $derived(caps.can('moodboard.similar'))
 
   async function search(ref = roles.reference) {
     if (!ref) { toast('Choose a reference picture [R] in the collection first.', 'warn'); return }
@@ -100,7 +102,8 @@
       {#snippet a()}
         <div class="bench">
           <Card title="Similarity search" subtitle="Uses the [R] picture in the collection as the reference.">
-            {#if !isImage}<Status text="Similarity search is only available for image datasets." tone="warn" />{/if}
+            {#snippet actions()}<ModalityTag feature="moodboard.similar" />{/snippet}
+            {#if !isImage}<Status text={caps.why('moodboard.similar')} tone="warn" />{/if}
             <div class="feats">
               <div class="feat" class:off={!features.palette}>
                 <div class="row"><Checkbox bind:checked={usePalette} label="Colour palette" disabled={!features.palette} />{#if !features.palette}<Chip tone="warn" small>no features</Chip>{/if}</div>

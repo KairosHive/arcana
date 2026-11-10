@@ -27,9 +27,13 @@ from flask import Blueprint, jsonify, request
 try:
     from .. import ops as _ops
     from .. import paths as _paths
+    from .. import modality as _modality
+    from .. import capabilities as _caps
 except ImportError:                                   # pragma: no cover
     import ops as _ops
     import paths as _paths
+    import modality as _modality
+    import capabilities as _caps
 
 UI_TOKEN = secrets.token_urlsafe(24)
 HEADER = "X-Arcana-UI"
@@ -62,6 +66,9 @@ def tokens() -> dict:
 def _guard():
     if request.endpoint == "arcana_api._session":
         return None
+    # A browser's event stream cannot carry a header, so that one route takes the token in its address.
+    if request.endpoint == "arcana_api._events" and request.args.get("ui") == UI_TOKEN:
+        return None
     if request.headers.get(HEADER) != UI_TOKEN:
         return jsonify({"error": "This route is for Arcana's own page."}), 403
     return None
@@ -70,6 +77,12 @@ def _guard():
 @bp.errorhandler(_ops.Refusal)
 def _refused(e):
     return jsonify({"error": e.reason, "help": e.help, "op": e.op}), 409
+
+
+@bp.errorhandler(_caps.Unsupported)
+def _unsupported(e):
+    """A feature asked to work on media it does not take: the same shape as an op's refusal."""
+    return jsonify({"error": str(e), "feature": e.feature, "modality": e.modality}), 409
 
 
 @bp.errorhandler(BadRequest)
@@ -117,7 +130,7 @@ def attachments(result) -> list[dict]:
 
 
 def dataset_id(name: str, modality: str) -> str:
-    return name if (modality or "image") == "image" else f"{name}@{modality}"
+    return _modality.dataset_id(name, modality)
 
 
 def parse_dataset(value: str) -> tuple[str, int, str]:

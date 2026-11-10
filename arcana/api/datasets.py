@@ -55,26 +55,28 @@ def _scan():
         return jsonify({"folder": folder, "exists": False, "message": "Not a folder: " + folder, "tone": "bad"})
     modality = data.get("modality")
     counts = _dm.scan_both(folder)
-    detected = "audio" if counts["audio"] > counts["image"] else "image"
-    modality = modality if modality in ("image", "audio") else detected
+    kinds = ("image", "audio", "video")
+    nouns = {"image": "images", "audio": "audio files", "video": "videos"}
+    detected = max(kinds, key=lambda m: counts[m])
+    modality = modality if modality in kinds else detected
     n = counts[modality]
-    other = "audio" if modality == "image" else "image"
-    n_other = counts[other]
-    noun = "images" if modality == "image" else "audio files"
+    others = [(m, counts[m]) for m in kinds if m != modality and counts[m]]
+    noun = nouns[modality]
+    also = " and ".join(f"{c:,} {nouns[m]}" for m, c in others)
     if not n:
         message = "No " + noun + " in that folder"
-        message += (f", but {n_other:,} {other} files are. Switch the media type above." if n_other else ".")
+        message += (f", but {also} are. Switch the media type above." if others else ".")
         tone = "warn"
     else:
         message = f"Found {n:,} {noun}."
-        if n_other:
-            message += f" ({n_other:,} {other} files here too, index those separately.)"
+        if others:
+            message += f" ({also} here too, index those separately.)"
         tone = "ok"
-    sample = counts["sample_image"] if modality == "image" else counts["sample_audio"]
+    sample = counts[f"sample_{modality}"]
     decode_ms = _models.measure_decode_ms(sample) if (modality == "image" and sample) else None
     _scan_cache[folder] = {"n": n, "decode_ms": decode_ms}
     vocab = _db.folder_vocabulary(folder) if n else []
-    return jsonify({"folder": folder, "exists": True, "counts": {"image": counts["image"], "audio": counts["audio"]},
+    return jsonify({"folder": folder, "exists": True, "counts": {m: counts[m] for m in kinds},
                     "detected": detected, "modality": modality, "n": n, "message": message, "tone": tone,
                     "suggestedName": _dm.suggest_name(folder), "decodeMs": decode_ms,
                     "autoK": _db.auto_k(n) if n else None, "folderWords": vocab,

@@ -118,6 +118,7 @@ class ItemShowArgs(Args):
 
 
 @op("item show", "read", ItemShowArgs, ItemShowResult,
+    modalities=("image",),
     doc="""
     A close look at up to four pictures. Each comes with its file, size,
     palette, stars, colour tag, capture date and cluster. The picture itself
@@ -195,6 +196,7 @@ class ItemSheetArgs(Args):
 
 
 @op("item sheet", "read", ItemSheetArgs, SheetResult,
+    modalities=("image",),
     doc="""
     A numbered contact sheet of any pictures. The tiles follow the order given,
     for judging a selection side by side. From the terminal the sheet is
@@ -239,6 +241,7 @@ class ItemPaletteArgs(Args):
 
 
 @op("item palette", "read", ItemPaletteArgs, PaletteResult,
+    modalities=("image",),
     doc="""
     A picture's dominant colours, darkest first, with their shares. It is the
     same k-means in LAB that the app draws under its Reference and Target. The
@@ -284,6 +287,7 @@ class ItemDescribeArgs(Args):
 
 
 @op("item describe", "read", ItemDescribeArgs, DescribeResult,
+    modalities=("image",),
     doc="""
     CLIP's words for a picture. They are the nearest labels from Arcana's own
     vocabulary, the description img2img is guided by, and a blind agent's way

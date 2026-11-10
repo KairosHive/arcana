@@ -12,6 +12,10 @@ short. Answers are kept per picture, so moving a mask's other knobs costs nothin
 Ported from latent-lab's segment.py and explore.py.
 """
 
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
 import collections
 import threading
 
@@ -89,24 +93,24 @@ class Vision:
         if name == "sam":
             from transformers import Sam2Model, Sam2Processor
 
-            return Sam2Processor.from_pretrained(SAM), Sam2Model.from_pretrained(SAM).to(dev).eval()
+            return _hub.pretrained(Sam2Processor.from_pretrained, SAM), _hub.pretrained(Sam2Model.from_pretrained, SAM).to(dev).eval()
         if name == "dino":
             from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-            return AutoProcessor.from_pretrained(DINO), AutoModelForZeroShotObjectDetection.from_pretrained(DINO).to(dev).eval()
+            return _hub.pretrained(AutoProcessor.from_pretrained, DINO), _hub.pretrained(AutoModelForZeroShotObjectDetection.from_pretrained, DINO).to(dev).eval()
         if name == "clipseg":
             from transformers import CLIPSegForImageSegmentation, CLIPSegProcessor
 
-            return CLIPSegProcessor.from_pretrained(CLIPSEG), CLIPSegForImageSegmentation.from_pretrained(CLIPSEG).to(dev).eval()
+            return _hub.pretrained(CLIPSegProcessor.from_pretrained, CLIPSEG), _hub.pretrained(CLIPSegForImageSegmentation.from_pretrained, CLIPSEG).to(dev).eval()
         if name == "subject":
             from transformers import AutoModelForImageSegmentation
 
-            model = AutoModelForImageSegmentation.from_pretrained(SUBJECT, trust_remote_code=True)
+            model = _hub.pretrained(AutoModelForImageSegmentation.from_pretrained, SUBJECT, trust_remote_code=True)
             return model.to(dev).eval().half() if str(dev).startswith("cuda") else model.to(dev).eval()
         if name == "depth":
             from transformers import DPTForDepthEstimation, DPTImageProcessor
 
-            return DPTImageProcessor.from_pretrained(DEPTH), DPTForDepthEstimation.from_pretrained(DEPTH).to(dev).eval()
+            return _hub.pretrained(DPTImageProcessor.from_pretrained, DEPTH), _hub.pretrained(DPTForDepthEstimation.from_pretrained, DEPTH).to(dev).eval()
         raise ValueError(name)
 
     # ---- each kind ----

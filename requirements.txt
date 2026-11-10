@@ -26,10 +26,14 @@ opencv-python>=4.7
 torch>=2.0
 torchvision>=0.15
 torchaudio
-# Upper-bounded deliberately. transformers 5 changed CLIPModel.get_image_features
-# to return a BaseModelOutputWithPooling instead of a tensor, so indexing dies at
-# the first image. Raise this only with a test run behind it.
-transformers>=4.41,<5
+# transformers 5. Version 5 changed CLIPModel.get_image_features to return an
+# output object instead of a tensor, which broke indexing at the first image
+# until arcana/compat.py handled both shapes. It also brings huggingface-hub 1.x,
+# where a dropped connection ends a load that 0.x retried, which arcana/hub.py
+# answers by loading from disk first. Both were run against real models before
+# this line moved (VIDEO_ROADMAP.md, Status). Raise the upper bound only with a
+# test run behind it.
+transformers>=5.18,<6
 
 # --- Stable Diffusion pipeline & PIL (story mode) ---
 # 0.36 is the first with FLUX.2's autoencoder, one of Alchemy's two token spaces.

@@ -5,6 +5,7 @@
 import { get, post, reason, ApiError } from '../api/client'
 import { load, save } from './persist'
 import { toast } from './toast.svelte'
+import { EMPTY, type Capabilities } from './capabilities'
 
 export type Mode = 'datasets' | 'prompt' | 'story' | 'moodboard' | 'alchemy' | 'archive' | 'agent'
 export const MODES: { value: Mode; label: string; hue: string }[] = [
@@ -17,7 +18,7 @@ export const MODES: { value: Mode; label: string; hue: string }[] = [
   { value: 'agent', label: 'Agent', hue: 'var(--tab-agent)' },
 ]
 
-export type DatasetOption = { label: string; value: string; name: string; modality: 'image' | 'audio'; dim: number }
+export type DatasetOption = { label: string; value: string; name: string; modality: 'image' | 'audio' | 'video'; dim: number }
 export type BoardRow = { slug: string; name: string; author: string; count: number; missing: number; sections: number; updated: number; dataset: string }
 export type Detail = { role?: string | null; kind?: string; section?: string | null; note?: string | null; derived_from?: string | null; handle?: string | null; missing?: boolean }
 export type Collection = { slug: string | null; name: string; items: string[]; details: Record<string, Detail> }
@@ -42,13 +43,14 @@ export const app = $state({
   signature: '',
   job: null as Job | null,
   headerFolded: load<boolean>('folded', false),
+  capabilities: EMPTY as Capabilities,
 })
 
 export const current = {
   get dataset(): DatasetOption | null {
     return app.datasets.find((d) => d.value === app.dataset) ?? null
   },
-  get modality(): 'image' | 'audio' {
+  get modality(): 'image' | 'audio' | 'video' {
     return this.dataset?.modality ?? 'image'
   },
   get mode() { return MODES.find((m) => m.value === app.mode)! },
@@ -90,6 +92,7 @@ export async function bootstrap() {
     app.hardware = b.hardware
     app.signature = b.signature
     app.job = b.job
+    if (b.capabilities) app.capabilities = b.capabilities
     app.ready = true
     startPolling()
   } catch (e) {

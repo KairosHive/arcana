@@ -416,7 +416,7 @@ def view(rec: dict) -> BoardShowResult:
         built.append(BoardItem(num=n, path=p, file=os.path.basename(p), handle=h,
                                section=d.get("section"), role=d.get("role"), note=d.get("note"),
                                kind=kind, derived_from=d.get("derived_from"),
-                               missing=not os.path.exists(p)))
+                               missing=not os.path.exists(p.rpartition("#t=")[0] or p)))
     sections = []
     for s in rec.get("sections") or []:
         sections.append(SectionView(id=s.get("id", ""), title=s.get("title", ""),
@@ -548,6 +548,7 @@ class BoardSaveArgs(Args):
 
 
 @op("board save", "write", BoardSaveArgs, BoardWriteResult,
+    modalities=("image", "audio"),
     doc="""
     Make a board hold exactly these pictures. They go in the order given, and
     the board is created if needed. It is how the Moodboard tab saves its
@@ -585,6 +586,7 @@ class BoardAddArgs(Args):
 
 
 @op("board add", "write", BoardAddArgs, BoardWriteResult,
+    modalities=("image", "audio", "video"),
     doc="""
     Put pictures on a board, with a section, a role and a note. A picture
     already there keeps its place and takes the new section, role or
@@ -612,6 +614,7 @@ class BoardRemoveArgs(Args):
 
 
 @op("board remove", "write", BoardRemoveArgs, BoardWriteResult,
+    modalities=("image", "audio", "video"),
     doc="""
     Take pictures off a board, with whatever the board said about them. The
     files are untouched.
@@ -639,6 +642,7 @@ class BoardMoveArgs(Args):
 
 
 @op("board move", "write", BoardMoveArgs, BoardWriteResult,
+    modalities=("image", "audio"),
     doc="""
     Move a picture to another section or another place in the order. --section none takes it out of every section.
     """,
@@ -670,6 +674,7 @@ class BoardNoteArgs(Args):
 
 
 @op("board note", "write", BoardNoteArgs, BoardWriteResult,
+    modalities=("image", "audio"),
     doc="""
     Say why a picture is on the board, or what it does there. Sets its note,
     its role, or both.
@@ -885,6 +890,7 @@ class PaletteExtractArgs(Args):
 
 
 @op("board palette extract", "write", PaletteExtractArgs, BoardWriteResult,
+    modalities=("image",),
     doc="""
     Take the board's palette from its own pictures. Each picture's dominant
     colours are merged across the board and weighted by how much of each
@@ -960,6 +966,7 @@ class ItemExportArgs(Args):
 
 
 @op("item export", "effect", ItemExportArgs, ExportResult,
+    modalities=("image", "audio"),
     doc="""
     Copy pictures into a folder under output/search (or output/collections).
     The originals are not moved.
@@ -1044,6 +1051,7 @@ def render_board(slug: str, fmt: str = "html", layout: str | None = None,
 
 
 @op("board render", "effect", BoardRenderArgs, RenderResult,
+    modalities=("image",),
     doc="""
     Lay a board out as one self-contained HTML page, or as one picture. The
     page carries the concept, the palette strip, each section with its reason,
@@ -1253,6 +1261,7 @@ class PdfArgs(Args):
 
 
 @op("board pdf", "effect", PdfArgs, PdfResult,
+    modalities=("image",),
     doc="""
     Save a board as a PDF in output/boards. A board with its own designed page
     prints that page, following its @page size and print styles. Otherwise the

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { thumbUrl } from '../api/media'
+  import { thumbUrl, waveUrl } from '../api/media'
+  import { kindOf } from '../stores/caps.svelte'
   /** One picture tile. Every gallery and rail uses this so badges, selection
       and the hover look are the same everywhere. */
   let {
@@ -13,11 +14,13 @@
     caption?: string; title?: string; dim?: boolean
     onselect?: (v: boolean) => void; onopen?: () => void; onremove?: () => void; children?: Snippet
   } = $props()
+  const kind = $derived(kindOf(path))
 </script>
 
 <div class="thumb" class:selected class:dim style="--sz: {size}" title={title || path}>
   <button class="pic" class:R={role === 'R'} class:T={role === 'T'} onclick={onopen} tabindex={onopen ? 0 : -1} aria-label={caption || path}>
-    <img src={thumbUrl(path)} alt="" loading="lazy" decoding="async" />
+    <!-- A sound has no thumbnail: its waveform stands in, so a collection can hold sounds. -->
+    <img class:wave={kind === 'audio'} src={kind === 'audio' ? waveUrl(path) : thumbUrl(path)} alt="" loading="lazy" decoding="async" />
   </button>
   {#if selectable}
     <label class="sel" title="Select"><input type="checkbox" checked={selected} onchange={(e) => onselect?.((e.target as HTMLInputElement).checked)} /><span></span></label>
@@ -32,6 +35,7 @@
   .thumb { position: relative; width: var(--sz); min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .pic { width: 100%; aspect-ratio: 1; padding: 0; border: 2px solid var(--arc-line); border-radius: var(--r-md); overflow: hidden; background: var(--arc-surface-2); cursor: zoom-in; transition: border-color var(--ease); }
   .pic img { width: 100%; height: 100%; object-fit: cover; }
+  .pic img.wave { object-fit: fill; }
   .thumb:hover .pic { border-color: var(--arc-line-strong); }
   .selected .pic { border-color: var(--arc-accent); }
   .pic.R { border-color: var(--arc-accent); border-width: 3px; }

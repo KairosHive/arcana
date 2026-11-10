@@ -170,6 +170,7 @@ class SearchTextArgs(FilterArgs):
 
 
 @op("search text", "read", SearchTextArgs, SearchResult,
+    modalities=("image", "audio", "video"),
     doc="""
     Pictures matching one visual idea, said one or several ways. With one
     phrase and the defaults it returns the hits the app's Prompt Search shows,
@@ -206,6 +207,7 @@ class SearchFacetsArgs(FilterArgs):
 
 
 @op("search facets", "read", SearchFacetsArgs, SearchResult,
+    modalities=("image", "audio", "video"),
     doc="""
     Several visual ideas at once, one facet per idea. Each facet returns up to
     k pictures, near-duplicates removed, and never repeats a picture an earlier
@@ -250,6 +252,7 @@ class SearchLikeArgs(Args):
 
 
 @op("search like", "read", SearchLikeArgs, LikeResult,
+    modalities=("image", "audio", "video"),
     doc="""
     Pictures like these, searched by example. Semantic mode blends several
     examples and needs no encoder, since it reads the vectors already in the
@@ -361,6 +364,7 @@ class SearchPaletteArgs(Args):
 
 
 @op("search palette", "read", SearchPaletteArgs, PaletteSearchResult,
+    modalities=("image",),
     doc="""
     Pictures whose colours match a palette you choose. They are ranked by earth
     mover's distance between dominant colours, which needs the dataset's

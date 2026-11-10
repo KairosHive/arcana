@@ -17,17 +17,21 @@ try:
     from . import db as _db
     from . import models as _models
     from . import paths as _paths
+    from . import modality as _modality
+    from . import modality as _modality
     from . import ui_style as _ui
     from .jobs import MANAGER
 except ImportError:                                   # pragma: no cover
     import db as _db
     import models as _models
     import paths as _paths
+    import modality as _modality
+    import modality as _modality
     import ui_style as _ui
     from jobs import MANAGER
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+IMAGE_EXTS = _modality.IMAGE_EXTS
+AUDIO_EXTS = _modality.AUDIO_EXTS
 
 picker_busy: dict = {"open": False}
 
@@ -53,24 +57,24 @@ folder_vocabulary = _db.folder_vocabulary
 
 
 def scan_both(folder: str, cap: int = 200_000, keep: int = 40) -> dict:
-    """Count images and audio in one walk, keeping a sample of each."""
-    n_img = n_aud = 0
-    s_img: list[str] = []
-    s_aud: list[str] = []
+    """Count images, audio and video in one walk, keeping a sample of each."""
+    n = {m: 0 for m in _modality.ALL}
+    sample: dict = {m: [] for m in _modality.ALL}
+    done = False
     for root, _dirs, files in os.walk(folder):
         for f in files:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in IMAGE_EXTS:
-                n_img += 1
-                if len(s_img) < keep:
-                    s_img.append(os.path.join(root, f))
-            elif ext in AUDIO_EXTS:
-                n_aud += 1
-                if len(s_aud) < keep:
-                    s_aud.append(os.path.join(root, f))
-            if n_img + n_aud >= cap:
-                return {"image": n_img, "audio": n_aud, "sample_image": s_img, "sample_audio": s_aud}
-    return {"image": n_img, "audio": n_aud, "sample_image": s_img, "sample_audio": s_aud}
+            m = _modality.of_path(f)
+            if m is None:
+                continue
+            n[m] += 1
+            if len(sample[m]) < keep:
+                sample[m].append(os.path.join(root, f))
+            if sum(n.values()) >= cap:
+                done = True
+                break
+        if done:
+            break
+    return {**n, **{f"sample_{m}": sample[m] for m in _modality.ALL}}
 
 
 def suggest_name(folder: str) -> str:
@@ -83,7 +87,7 @@ def suggest_name(folder: str) -> str:
 
 
 def scan_media(folder: str, modality: str, cap: int = 200_000, keep: int = 40) -> tuple[int, list[str]]:
-    exts = IMAGE_EXTS if modality == "image" else AUDIO_EXTS
+    exts = _modality.EXTS.get(modality, IMAGE_EXTS)
     n = 0
     sample: list[str] = []
     for root, _dirs, files in os.walk(folder):
@@ -230,8 +234,7 @@ def dataset_rows() -> list[dict]:
 
 def picker_options() -> list[dict]:
     """One entry per (dataset, layout) with both an index and a map, for the Dataset menu."""
-    lat_pat = re.compile(r"latent_space_(.+)_(image|audio)_(\d+)d\.pkl$")
-    db_pat = re.compile(r"index_(.+)_(image|audio)\.pkl$")
+    lat_pat, db_pat = _modality.LATENT_RE, _modality.INDEX_RE
     lat_map: dict = {}
     for fname in _paths.listdir_safe(_paths.subdir("latents")):
         m = lat_pat.match(fname)

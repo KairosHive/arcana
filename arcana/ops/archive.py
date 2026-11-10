@@ -19,10 +19,12 @@ try:
     from .. import core
     from .. import models as _models
     from .. import paths as _paths
+    from .. import modality as _modality
 except ImportError:                                   # pragma: no cover
     import core
     import models as _models
     import paths as _paths
+    import modality as _modality
 
 
 CONFIG_NAME = "agent.json"
@@ -76,13 +78,11 @@ def dataset_arg(index: int = 0):
 # ─────────────────────────── handles ───────────────────────────
 
 def dataset_id(name: str, modality: str) -> str:
-    return name if modality == "image" else name + AUDIO_SUFFIX
+    return _modality.dataset_id(name, modality)
 
 
 def split_dataset_id(ds_id: str) -> tuple[str, str]:
-    if ds_id.endswith(AUDIO_SUFFIX):
-        return ds_id[:-len(AUDIO_SUFFIX)], "audio"
-    return ds_id, "image"
+    return _modality.split_dataset_id(ds_id)
 
 
 def handle(ds_id: str, key: int) -> str:
@@ -185,7 +185,8 @@ def palettes(ds: core.Dataset, keys, n: int = 4) -> dict:
         from .. import palette as _palette
     except ImportError:                               # pragma: no cover
         import palette as _palette
-    path = os.path.join(_paths.subdir("databases"), f"features_{ds.name}_palette.npz")
+    path = os.path.join(_paths.subdir("databases"),
+                        _modality.feature_file(ds.name, "palette", ds.modality))
     try:
         stamp = os.path.getmtime(path)
     except OSError:
@@ -222,18 +223,18 @@ def missing_share(ds: core.Dataset, sample: int = 200) -> float:
         return 0.0
     step = max(1, len(paths) // sample)
     picked = paths[::step][:sample]
-    return sum(not os.path.exists(p) for p in picked) / len(picked)
+    return sum(not os.path.exists(_modality.file_of(p)) for p in picked) / len(picked)
 
 
-def feature_blocks(name: str) -> list[str]:
+def feature_blocks(name: str, modality: str = "image") -> list[str]:
     db = _paths.subdir("databases")
     return [f for f in ("palette", "style")
-            if os.path.exists(os.path.join(db, f"features_{name}_{f}.npz"))]
+            if os.path.exists(os.path.join(db, _modality.feature_file(name, f, modality)))]
 
 
 def encoder_label(ds: core.Dataset) -> str | None:
     """The encoder's short name (ViT-H/14), or None when the dimension matches none we know."""
-    if ds.modality != "image":
+    if _modality.encoder_of(ds.modality) != "image":
         return None
     try:
         info = _models.get(core.text_model_for_dim(int(ds.index.ndim)))
@@ -262,9 +263,9 @@ class DatasetInfo(BaseModel):
     def line(self) -> str:
         if self.error:
             return f"{self.id} · could not be opened: {self.error}"
-        noun = "pictures" if self.modality == "image" else "sounds"
+        noun = _modality.NOUNS.get(self.modality, "items")
         parts = [self.id, self.modality, f"{self.count:,} {noun}"]
-        if self.modality == "image":
+        if _modality.encoder_of(self.modality) == "image":
             parts.append(f"encoder {self.encoder}" if self.encoder
                          else f"unknown {self.ndim}-d encoder")
         if not self.has_map:
@@ -285,7 +286,8 @@ def describe_dataset(ds_id: str) -> DatasetInfo:
     ds = open_dataset(ds_id)
     info = DatasetInfo(id=ds_id, modality=ds.modality, count=len(ds.idx2path),
                        encoder=encoder_label(ds), ndim=int(ds.index.ndim),
-                       has_map=ds.frame is not None, features=feature_blocks(ds.name))
+                       has_map=ds.frame is not None,
+                       features=feature_blocks(ds.name, ds.modality))
     if ds.frame is not None and "label" in ds.frame.columns:
         info.clusters = int(ds.frame["label"].nunique())
     if ds.frame is not None and core.has_marks(ds.frame):
@@ -343,11 +345,18 @@ def make_hit(num: int, ds_id: str, ds: core.Dataset, key: int, path: str,
              metric: str | None = None, score: float | None = None,
              pal: dict | None = None) -> Hit:
     f = facts(ds, key)
-    return Hit(num=num, handle=handle(ds_id, key), file=os.path.basename(path), path=path,
+    return Hit(num=num, handle=handle(ds_id, key), file=section_name(path), path=path,
                metric=metric, score=score, stars=f.get("stars"), colour=f.get("colour"),
                captured=f.get("captured"), cluster=f.get("cluster"),
-               missing=not os.path.exists(path),
+               missing=not os.path.exists(_modality.file_of(path)),
                palette=(pal or {}).get(key, []))
+
+
+def section_name(path: str) -> str:
+    """A file's name, with a section's time range after it: walk.mp4 12.0-22.5s."""
+    file, t0, t1 = _modality.split_ref(path)
+    base = os.path.basename(file)
+    return base if t0 is None else f"{base} {t0:.1f}-{t1:.1f}s"
 
 
 def sheet(paths: list[str], numbers: list[int] | None = None, *, tile: int = SCAN_TILE,

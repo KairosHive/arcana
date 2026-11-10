@@ -25,6 +25,11 @@
 
 from __future__ import annotations
 
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
+
 import os
 
 import numpy as np
@@ -237,7 +242,7 @@ def _sd_pipe(kind: str):
     kw = {"torch_dtype": dtype}
     if device == "cuda" and kind == "img2img":
         kw["variant"] = "fp16"
-    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(repo, **kw).to(device)
+    pipe = _hub.pretrained(StableDiffusionImg2ImgPipeline.from_pretrained, repo, **kw).to(device)
     pipe.safety_checker = None
     pipe.watermark = None
     try:
@@ -246,7 +251,7 @@ def _sd_pipe(kind: str):
         pass
 
     if kind == "ip_adapter":
-        pipe.load_ip_adapter(IP_ADAPTER_REPO, subfolder="models",
+        _hub.pretrained(pipe.load_ip_adapter, IP_ADAPTER_REPO, subfolder="models",
                              weight_name="ip-adapter_sd15.bin")
         # The adapter and its image encoder arrive AFTER the pipeline was moved
         # and cast, and they do not inherit either. Left alone that gives an
@@ -465,12 +470,12 @@ def _controlnet_pipe(kind: str):
     device = _gpu.device()
     dtype = torch.float16 if device == "cuda" else torch.float32
 
-    net = ControlNetModel.from_pretrained(CONTROLNETS[kind], torch_dtype=dtype)
-    pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+    net = _hub.pretrained(ControlNetModel.from_pretrained, CONTROLNETS[kind], torch_dtype=dtype)
+    pipe = _hub.pretrained(StableDiffusionControlNetImg2ImgPipeline.from_pretrained, 
         IP_BASE_MODEL, controlnet=net, torch_dtype=dtype)
     pipe.safety_checker = None
     pipe.watermark = None
-    pipe.load_ip_adapter(IP_ADAPTER_REPO, subfolder="models",
+    _hub.pretrained(pipe.load_ip_adapter, IP_ADAPTER_REPO, subfolder="models",
                          weight_name="ip-adapter_sd15.bin")
     # Cast AFTER the adapter and its image encoder are attached: neither
     # inherits the pipeline's dtype, and an fp16 UNet talking to fp32 adapter

@@ -16,6 +16,11 @@
 
 from __future__ import annotations
 
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
+
 import os
 import pickle
 import threading
@@ -27,8 +32,12 @@ from usearch.index import Index
 
 try:
     from . import paths as _paths
+    from . import compat as _compat
+    from . import modality as _modality
 except ImportError:
     import paths as _paths
+    import compat as _compat
+    import modality as _modality
 
 
 # ------------- DATASET FILES -------------
@@ -322,9 +331,9 @@ def load_clip_text(device: str = "cpu", model_id: str | None = None):
             try:
                 import torch
                 from transformers import CLIPTextModelWithProjection, CLIPTokenizerFast
-                m = CLIPTextModelWithProjection.from_pretrained(model_id, dtype=torch.float32)
+                m = _hub.pretrained(CLIPTextModelWithProjection.from_pretrained, model_id, dtype=torch.float32)
                 m.eval().to(device)
-                tok = CLIPTokenizerFast.from_pretrained(model_id)
+                tok = _hub.pretrained(CLIPTokenizerFast.from_pretrained, model_id)
             except Exception as e:
                 raise RuntimeError(
                     f"Could not load the text encoder '{model_id}': {e}. "
@@ -343,9 +352,9 @@ def load_clap(device="cpu"):
     with _MODEL_LOAD_LOCK:
         if _CLAP["model"] is None:
             from transformers import ClapModel, ClapProcessor
-            m = ClapModel.from_pretrained("laion/clap-htsat-fused")
+            m = _hub.pretrained(ClapModel.from_pretrained, "laion/clap-htsat-fused")
             m.eval().to(device)
-            p = ClapProcessor.from_pretrained("laion/clap-htsat-fused")
+            p = _hub.pretrained(ClapProcessor.from_pretrained, "laion/clap-htsat-fused")
             _CLAP.update(model=m, proc=p)
     return _CLAP["model"], _CLAP["proc"]
 
@@ -361,7 +370,7 @@ def encode_query(query: str, index: Index, modality: str = "image") -> np.ndarra
     import torch
 
     with torch.no_grad():
-        if modality == "image":
+        if _modality.encoder_of(modality) == "image":
             # Match the encoder to the index. This used to always load ViT-H/14
             # while an index built with ViT-B/32 holds 512-d vectors, so every
             # search against such a dataset died inside usearch with "The number
@@ -380,7 +389,7 @@ def encode_query(query: str, index: Index, modality: str = "image") -> np.ndarra
         for k in inputs:
             inputs[k] = inputs[k].to(clap_model.device)
         try:
-            emb = clap_model.get_text_features(**inputs)
+            emb = _compat.features(clap_model.get_text_features(**inputs))
         except AttributeError:
             emb = clap_model(**inputs).text_embeds
         return emb.squeeze().detach().cpu().numpy().flatten()
@@ -645,8 +654,7 @@ def find_datasets(db_dir: str | None = None, latent_dir: str | None = None) -> l
     import re
     db_dir = db_dir or _paths.subdir("databases")
     latent_dir = latent_dir or _paths.subdir("latents")
-    db_pat = re.compile(r"index_(.+)_(image|audio)\.pkl$")
-    lat_pat = re.compile(r"latent_space_(.+)_(image|audio)_(\d+)d\.pkl$")
+    db_pat, lat_pat = _modality.INDEX_RE, _modality.LATENT_RE
     layouts: dict = {}
     for fname in _paths.listdir_safe(latent_dir):
         m = lat_pat.match(fname)

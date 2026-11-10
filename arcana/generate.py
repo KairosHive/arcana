@@ -11,6 +11,11 @@
 
 from __future__ import annotations
 
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
+
 import threading
 
 from PIL import Image
@@ -45,7 +50,7 @@ def pipe(kind: str):
             # and asking for them raised on every machine without a card.
             kw = ({"torch_dtype": torch.float16, "variant": "fp16"} if device == "cuda"
                   else {"torch_dtype": torch.float32})
-            base = StableDiffusionPipeline.from_pretrained(SD_MODEL, **kw).to(device)
+            base = _hub.pretrained(StableDiffusionPipeline.from_pretrained, SD_MODEL, **kw).to(device)
             try:
                 base.enable_xformers_memory_efficient_attention()
             except Exception:

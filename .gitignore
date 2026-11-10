@@ -46,6 +46,9 @@ NeuralPreset-main/
 *.pt
 *.pth
 
+# The folder of videos tests/sandbox_app.py indexes on this machine.
+tests/.sandbox_videos
+
 # Python packaging artifacts
 *.egg-info/
 

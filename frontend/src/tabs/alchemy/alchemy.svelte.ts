@@ -25,7 +25,7 @@ export type Layer = { choice: string; words: string; coverage: number; combine: 
 export const catalog = $state<{ data: Catalog | null; error: string }>({ data: null, error: '' })
 
 /** Which subtab is open, shared so the Archive can open a film in Video and the film can open a look in Image. */
-export const alchemyUi = $state({ sub: 'image' as 'image' | 'video' })
+export const alchemyUi = $state({ sub: 'image' as 'image' | 'video' | 'pattern' })
 
 export async function loadCatalog() {
   if (catalog.data) return catalog.data

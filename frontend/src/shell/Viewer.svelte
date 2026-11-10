@@ -1,7 +1,7 @@
 <script lang="ts">
   import { viewer, closeViewer, stepViewer } from '../lib/stores/viewer.svelte'
   import { app } from '../lib/stores/app.svelte'
-  import { previewUrl, basename, isAudioPath, audioUrl, waveUrl } from '../lib/api/media'
+  import { previewUrl, basename, isAudioPath, isVideoPath, videoUrl, sectionLabel, audioUrl, waveUrl } from '../lib/api/media'
 
   const path = $derived(viewer.items[viewer.at] ?? '')
   const detail = $derived(app.collection.details[path])
@@ -29,6 +29,9 @@
       <button class="round" title="Previous (←)" onclick={() => stepViewer(-1)}>‹</button>
       {#if isAudioPath(path)}
         <div class="audio"><img src={waveUrl(path)} alt="" /><audio src={audioUrl(path)} controls></audio></div>
+      {:else if isVideoPath(path)}
+        <!-- svelte-ignore a11y_media_has_caption -->
+        {#key path}<video class="pic" src={videoUrl(path)} poster={previewUrl(path, 1400)} controls autoplay></video>{/key}
       {:else}
         <img class="pic" src={previewUrl(path, 2048, 88)} alt="" />
       {/if}
@@ -43,7 +46,7 @@
         </div>
         {#if detail.note}<div class="note">{detail.note}</div>{/if}
       {/if}
-      <div class="file faint">{basename(path)}</div>
+      <div class="file faint">{basename(path)}{#if sectionLabel(path)}  ·  {sectionLabel(path)}{/if}</div>
     </div>
   </div>
 {/if}

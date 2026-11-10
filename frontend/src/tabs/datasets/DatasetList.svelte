@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { caps } from '../../lib/stores/caps.svelte'
   import { post, reason } from '../../lib/api/client'
   import { toast } from '../../lib/stores/toast.svelte'
   import { refreshDatasets } from '../../lib/stores/app.svelte'
@@ -83,7 +84,7 @@
         <div class="drow" style="--tone: var(--arc-{TONE[r.status] === 'accent' ? 'accent' : TONE[r.status]})">
           <span class="stripe"></span>
           <span class="name">{r.name}</span>
-          <Chip tone={r.modality === 'audio' ? 'audio' : 'accent'} small>{r.modality}</Chip>
+          <Chip tone={r.modality === 'image' ? 'accent' : r.modality} small>{caps.label(r.modality)}</Chip>
           <span class="count dim mono">{r.total ? `${r.total.toLocaleString()} items` : '—'}</span>
           <span class="root faint ellipsis" title={r.root}>{r.root}</span>
           <span class="caps-row" title="Named clusters / colour-palette features / style features. Grey means the dataset was indexed without it. Rework adds it without re-encoding anything. 'palette · dated' means those features were built before a fix to the colour conversion: search still works, but much more coarsely. Rework rebuilds them properly.">

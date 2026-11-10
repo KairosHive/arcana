@@ -47,6 +47,7 @@ KINDS = {
 }
 PICTURE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
 VIDEO_EXT = {".mp4", ".mov", ".webm"}
+SOUND_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 # Folders of output/ that hold each kind. Old-layout folders are read too, so nothing made before the
 # layout changed is missing from the tree.
 PICTURE_DIRS = ("edited", "color_transfer", "transfers", "generated", "alchemy")
@@ -103,7 +104,9 @@ def _rel(p: str) -> str:
 def _count_pictures(folder: str) -> int:
     n = 0
     for _, _, files in os.walk(folder):
-        n += sum(1 for f in files if os.path.splitext(f)[1].lower() in PICTURE_EXT)
+        # Sounds count too: a search saved from an audio dataset holds nothing else, and
+        # counting pictures alone listed it as an empty folder.
+        n += sum(1 for f in files if os.path.splitext(f)[1].lower() in PICTURE_EXT | SOUND_EXT)
     return n
 
 

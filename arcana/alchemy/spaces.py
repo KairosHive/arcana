@@ -15,6 +15,11 @@ do to a picture: crispness, warmth, exposure and contrast.
 
 from __future__ import annotations
 
+try:
+    from arcana import hub as _hub
+except ImportError:                                   # pragma: no cover
+    import hub as _hub
+
 import os
 import pathlib
 import random
@@ -73,7 +78,7 @@ def space(name: str):
 
                     from .rae import load
 
-                    got = load(hf_hub_download(RAE_REPO, RAE_FILE), device())
+                    got = load(_hub.pretrained(hf_hub_download, RAE_REPO, RAE_FILE), device())
             _held[name] = got
             print(f"  alchemy: {key} up", flush=True)
     MODELS.used(key)

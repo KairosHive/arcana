@@ -108,7 +108,11 @@ VOCABULARY = {
 # Examples that load a large model. They run when ARCANA_SLOW_EXAMPLES is set,
 # and their behaviour is tested with stubs in test_colour_ops.py either way.
 # `model download` fetches hundreds of megabytes, so its example never runs here.
-SLOW = {"generate", "colour lut", "alchemy make", "board pdf", "alchemy film preview", "alchemy film make"}
+SLOW = {"generate", "colour lut", "alchemy make", "board pdf", "alchemy film preview", "alchemy film make",
+        # These start the shared-space encoder; test_spaces.py runs them with a stub.
+        "dataset embed", "search across",
+        # Needs a video dataset; test_video_colour.py runs the transfer itself.
+        "colour video", "colour deflicker"}
 NETWORK = {"model download"}
 # Examples that index or rewrite a real folder. test_lifecycle.py runs these
 # ops against the synthetic dataset with the encoding stubbed.

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ModalityTag from '../../lib/components/ModalityTag.svelte'
+  import { caps } from '../../lib/stores/caps.svelte'
   import { app } from '../../lib/stores/app.svelte'
   import { post, reason } from '../../lib/api/client'
   import { toast } from '../../lib/stores/toast.svelte'
@@ -22,8 +24,8 @@
   let { models, onstarted, busy = false }: { models: ModelRow[]; onstarted: (id: string) => void; busy?: boolean } = $props()
 
   type Scan = {
-    folder: string; exists: boolean; message?: string; tone?: 'ok' | 'warn' | 'bad'; counts?: { image: number; audio: number }
-    detected?: 'image' | 'audio'; modality?: 'image' | 'audio'; n?: number; suggestedName?: string; decodeMs?: number | null
+    folder: string; exists: boolean; message?: string; tone?: 'ok' | 'warn' | 'bad'; counts?: { image: number; audio: number; video?: number }
+    detected?: 'image' | 'audio' | 'video'; modality?: 'image' | 'audio' | 'video'; n?: number; suggestedName?: string; decodeMs?: number | null
     autoK?: number | null; folderWords?: string[]; models?: ModelChoice[]
   }
   type ModelChoice = { id: string; label: string; dim: number; download_mb: number; downloaded: boolean; estimate: string; summary: string; note: string; blurb: string; default: boolean }
@@ -40,7 +42,7 @@
   let folder = $state('')
   let scan = $state<Scan | null>(null)
   let scanning = $state(false)
-  let modality = $state<'image' | 'audio'>('image')
+  let modality = $state<'image' | 'audio' | 'video'>('image')
   let name = $state('')
   let lastSuggested = ''
   let model = $state('')
@@ -127,7 +129,7 @@
       <Stepper steps={STEPS} bind:current={step} {done} {reachable} />
       {#if found && scan}
         <div class="summary">
-          <Chip tone={modality === 'audio' ? 'audio' : 'accent'}>{(scan.n ?? 0).toLocaleString()} {modality === 'audio' ? 'sounds' : 'images'}</Chip>
+          <Chip tone={modality === 'image' ? 'accent' : modality}>{(scan.n ?? 0).toLocaleString()} {modality === 'audio' ? 'sounds' : modality === 'video' ? 'videos' : 'images'}</Chip>
           {#if name}<span class="ellipsis dim">{name}</span>{/if}
         </div>
       {/if}
@@ -153,6 +155,7 @@
             <div class="seg">
               <button class:on={modality === 'image'} onclick={() => { modality = 'image'; doScan(true) }}>Images{#if scan?.counts} · {scan.counts.image.toLocaleString()}{/if}</button>
               <button class:on={modality === 'audio'} onclick={() => { modality = 'audio'; doScan(true) }}>Audio{#if scan?.counts} · {scan.counts.audio.toLocaleString()}{/if}</button>
+              <button class:on={modality === 'video'} onclick={() => { modality = 'video'; doScan(true) }}>Video{#if scan?.counts} · {(scan.counts.video ?? 0).toLocaleString()}{/if}</button>
             </div>
           </Field>
           <Field label="Name" grow><TextInput bind:value={name} placeholder="taken from the folder" /></Field>
@@ -194,13 +197,19 @@
         <div class="next"><Button kind="ghost" onclick={() => (step = 2)}>Back</Button><Button kind="primary" onclick={() => (step = 4)}>Next: extras</Button></div>
 
       {:else}
-        <h4 class="st">Extras, then go</h4>
+        <h4 class="st">Extras, then go <ModalityTag feature="dataset.extras" /></h4>
+        {#if !caps.can('dataset.extras', modality)}
+          <p class="hint">{modality === 'video'
+            ? 'Each video is read twice a second and cut where it changes, so a search returns sections: a whole file, its main parts, or single moments. Arcana reads the files where they are.'
+            : 'Palette, style and thumbnails are read from pictures. An audio dataset is ready without them.'}</p>
+        {:else}
         <p class="hint">Palette and style power the moodboard's similarity search. They cost time now, but you can add them later from Rework without re-reading a single file, so leave them unticked if you are not sure.</p>
         <div class="row">
           <Checkbox checked={features.includes('palette')} label="Colour palette" onchange={(v) => toggleFeature('palette', v)} />
           <Checkbox checked={features.includes('style')} label="Style / texture" onchange={(v) => toggleFeature('style', v)} />
           <Checkbox checked={features.includes('thumbnails')} label="Thumbnails" onchange={(v) => toggleFeature('thumbnails', v)} />
         </div>
+        {/if}
         <div class="recap">
           <span><b>{name || '—'}</b> · {modality} · {(scan?.n ?? 0).toLocaleString()} files</span>
           <span class="dim">{chosenModel?.label ?? model}{#if chosenModel?.estimate} · {chosenModel.estimate}{/if}</span>

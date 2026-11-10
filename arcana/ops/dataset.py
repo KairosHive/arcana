@@ -42,6 +42,7 @@ class DatasetListArgs(Args):
 
 
 @op("dataset list", "read", DatasetListArgs, DatasetListResult,
+    modalities=("image", "audio", "video"),
     doc="""
     The datasets on this machine, one line each. A line gives the size, the
     encoder, the clusters, which features (palette, style) and marks (stars,
@@ -98,6 +99,7 @@ class DatasetShowArgs(Args):
 
 
 @op("dataset show", "read", DatasetShowArgs, DatasetShowResult,
+    modalities=("image", "audio", "video"),
     doc="""
     One dataset in full. It gives the folder the files sit in, the layouts,
     every cluster with its size, and how many pictures carry each star rating
@@ -180,6 +182,7 @@ class DatasetSurveyArgs(Args):
 
 
 @op("dataset survey", "read", DatasetSurveyArgs, SurveyResult,
+    modalities=("image", "audio", "video"),
     doc="""
     What a dataset holds, cluster by cluster. The clusters come largest first,
     each with its most typical pictures, the ones nearest the cluster's centre.

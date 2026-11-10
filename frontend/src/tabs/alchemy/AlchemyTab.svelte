@@ -1,4 +1,6 @@
 <script lang="ts">
+  import PatternTab from './PatternTab.svelte'
+  import ModalityTag from '../../lib/components/ModalityTag.svelte'
   import { onMount } from 'svelte'
   import { app } from '../../lib/stores/app.svelte'
   import { catalog, loadCatalog, controls, alchemyUi } from './alchemy.svelte'
@@ -26,7 +28,8 @@
 
 <div class="alc">
   <div class="subbar">
-    <Tabs bind:value={alchemyUi.sub} tabs={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', badge: film.spec.pictures.length ? String(film.spec.pictures.length) : '' }]} />
+    <Tabs bind:value={alchemyUi.sub} tabs={[{ value: 'image', label: 'Image' }, { value: 'video', label: 'Video', badge: film.spec.pictures.length ? String(film.spec.pictures.length) : '' }, { value: 'pattern', label: 'Pattern' }]} />
+    <ModalityTag feature={alchemyUi.sub === 'image' ? 'alchemy.step' : alchemyUi.sub === 'video' ? 'alchemy.film' : 'alchemy.pattern'} />
   </div>
   {#if !catalog.data}
     <div class="center">{#if catalog.error}<Status text={catalog.error} tone="bad" />{:else}<Spinner size={18} label="Reading the methods…" />{/if}</div>
@@ -45,6 +48,7 @@
     <div class="view" hidden={alchemyUi.sub !== 'video'}>
       <FilmTab active={alchemyUi.sub === 'video' && visible} />
     </div>
+    {#if alchemyUi.sub === 'pattern'}<div class="view"><PatternTab /></div>{/if}
   {/if}
 </div>
 

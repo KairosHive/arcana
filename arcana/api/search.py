@@ -32,6 +32,12 @@ try:
     from .. import on1 as _on1
     from .. import media as _media
     from .. import paths as _paths
+    from .. import modality as _modality
+    from .. import capabilities as _caps
+    from .. import video_index as _video_index
+    from .. import motion as _motion
+    from .. import omni as _omni
+    from .. import spaces as _spaces
     from .. import jobs as _jobs
     from .. import gpu as _gpu
     from .. import ops as _ops
@@ -41,6 +47,12 @@ except ImportError:                                   # pragma: no cover
     import on1 as _on1
     import media as _media
     import paths as _paths
+    import modality as _modality
+    import capabilities as _caps
+    import video_index as _video_index
+    import motion as _motion
+    import omni as _omni
+    import spaces as _spaces
     import jobs as _jobs
     import gpu as _gpu
     import ops as _ops
@@ -280,6 +292,13 @@ def _rows_for(keys, idx2path) -> list[int]:
     return [key_to_row[k] for k in keys if k in key_to_row]
 
 
+def _number(v) -> float | None:
+    try:
+        return float(v) if v not in (None, "") and float(v) > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 @bp.post("/search")
 def _search():
     data = body()
@@ -296,18 +315,62 @@ def _search():
         keep = _core.marks_mask(df, stars, colours, f_from, f_to)
         if keep.any():
             allowed = _core.keys_where(idx2path, keep)
-    results = _core.search(index, idx2path, text, k, modality=modality, allowed=allowed)
+    level = None
+    sections = _video_index.load_sections(name, _media.DB_DIR) if modality == "video" else None
+    if sections is not None:
+        # A video dataset is searched by section. The level says how long a
+        # section the person wants; auto searches every level and keeps, in
+        # each video, the section that matches best among those that overlap.
+        level = data.get("level") or "auto"
+        if level not in ("auto",) + _video_index.LEVEL_ORDER:
+            raise BadRequest("The level is auto, file, coarse, medium or fine.")
+        tags = [t for t in (data.get("tags") or []) if isinstance(t, str)]
+        at = _video_index.keys_at(sections, level, _number(data.get("minSeconds")),
+                                  _number(data.get("maxSeconds")), tags)
+        allowed = at if allowed is None else (allowed & at)
+    understood: list[str] = []
+    strips: dict = {}
+    if sections is not None:
+        # Content and movement. The movement is read from its own phrase when
+        # one is given, and from the query itself otherwise, so "slow pan left
+        # over water" works in one box once the balance is off zero.
+        moving = (data.get("motion") or "").strip()
+        balance = max(0.0, min(1.0, float(data.get("balance") or 0)))
+        if moving and balance == 0:
+            balance = 0.5
+        wide = _core.search(index, idx2path, text, len(idx2path), modality=modality, allowed=allowed)
+        motion = _video_index.load_motion(name, _media.DB_DIR) if balance > 0 else None
+        if motion:
+            wide, understood = _video_index.rank_with_motion(wide, motion, moving or text, balance)
+            if moving and not understood:
+                raise BadRequest("No movement word in that. Try: " + ", ".join(_motion.vocabulary()) + ".")
+        if data.get("return") == "videos":
+            results, strips = _video_index.whole_videos(sections, wide, k)
+        else:
+            results = _video_index.best_per_video(sections, wide, k) if level == "auto" else wide[:k]
+    else:
+        results = _core.search(index, idx2path, text, k, modality=modality, allowed=allowed)
     keys = [r[0] for r in results]
     paths = [r[1] for r in results]
-    groups = _groups(keys, paths, index, bool(data.get("group", True)), data.get("thresh"))
+    # Twins are folded for photos and sounds. Sections of one video are near
+    # each other by construction, and folding them would hide the choice of length.
+    group_on = bool(data.get("group", True)) and sections is None
+    groups = _groups(keys, paths, index, group_on, data.get("thresh"))
     marks = _marks_lookup(df)
     rows_by_key = {k: i for i, k in enumerate(idx2path.keys())}
     dist_by_key = {r[0]: r[2] for r in results}
+    notes = {}
+    if sections is not None and "motion" in sections.columns:
+        notes = dict(zip(sections["path"], sections["motion"]))
     for g in groups:
         g["marks"] = [marks.get(p) for p in g["paths"]]
+        # How each section moves, in words, for the line under a video card.
+        g["notes"] = [notes.get(p) or "" for p in g["paths"]]
+        g["strips"] = [strips.get(p) for p in g["paths"]]
         g["rows"] = [rows_by_key[k] for k in g.get("keys", []) if k in rows_by_key]
         g["scores"] = [round(float(dist_by_key.get(k, 0.0)), 4) for k in g.get("keys", [])]
-    return jsonify({"groups": groups, "rows": _rows_for(keys, idx2path), "modality": modality, "k": k})
+    return jsonify({"groups": groups, "rows": _rows_for(keys, idx2path), "modality": modality, "k": k,
+                    "level": level, "understood": understood})
 
 
 @bp.post("/story")
@@ -393,6 +456,7 @@ def _story_save():
     scenes = data.get("scenes") or []
     if not scenes:
         return jsonify({"saved": 0, "message": "No story to save."})
+    _caps.require_paths("story.save", [s.get("path") or "" for s in scenes])
     text = data.get("text") or "story"
     folder = (data.get("folder") or "").strip() or _paths.dated_name(text[:40])
     save_dir = _safe_output_dir("stories", folder)
@@ -453,11 +517,65 @@ def _poetry():
     scenes = [s for s in (data.get("scenes") or []) if s.get("path") and s.get("text")]
     if not scenes:
         raise BadRequest("Generate a story first.")
+    _caps.require_paths("story.poetry", [s["path"] for s in scenes])
     if _jobs.MANAGER.active():
         raise BadRequest("Something is already running. Wait for it, or cancel it.")
     job = _jobs.MANAGER.submit(_poetry_job(scenes, (data.get("folder") or "").strip() or None,
                                            data.get("strength")), kind="poetry", label="Injecting poetry")
     return jsonify({"job": job})
+
+
+# ─────────────────────────── the shared space ───────────────────────────
+
+@bp.get("/space")
+def _shared_space():
+    """Whether a dataset has vectors in the shared space, and whether the encoder can run here."""
+    name, _dim, modality = parse_dataset(request.args.get("dataset"))
+    ok, why = _omni.available()
+    got = _spaces.load(name, modality, db_dir=_media.DB_DIR)
+    return jsonify({"has": got is not None, "count": 0 if got is None else int(len(got[0])),
+                    "available": ok, "why": why})
+
+
+@bp.post("/space/embed")
+def _space_embed():
+    name, _dim, modality = parse_dataset(body().get("dataset"))
+    if _jobs.MANAGER.active():
+        raise BadRequest("Something is already running. Wait for it, or cancel it.")
+    res = call("dataset embed", {"dataset": _modality.dataset_id(name, modality), "background": True})
+    return jsonify({"job": res.job})
+
+
+@bp.post("/across")
+def _across():
+    """
+    Search the chosen dataset in the shared space, with words, with items of any
+    kind, or both. The items are paths from the collection: a sound against
+    photos, a photo against clips. Answers in the shape /search does.
+    """
+    data = body()
+    name, dim, modality = parse_dataset(data.get("dataset"))
+    text = (data.get("text") or "").strip()
+    like = [p for p in (data.get("like") or []) if isinstance(p, str) and p][:8]
+    if not text and not like:
+        raise BadRequest("Write what to find, or put a picture, a sound or a clip in the collection to search by.")
+    k = max(1, min(96, int(data.get("k") or 12)))
+    index, idx2path = load_index(name, modality=modality)
+    res = call("search across", {"dataset": _modality.dataset_id(name, modality),
+                                 "text": [text] if text else [], "like": like, "k": k})
+    rows_by_key = {key: i for i, key in enumerate(idx2path.keys())}
+    sections = _video_index.load_sections(name, _media.DB_DIR) if modality == "video" else None
+    notes = dict(zip(sections["path"], sections["motion"])) if sections is not None and "motion" in sections.columns else {}
+    groups, rows = [], []
+    for n, h in enumerate(res.hits):
+        key = int(h.handle.rpartition(":")[2])
+        row = rows_by_key.get(key)
+        if row is not None:
+            rows.append(row)
+        groups.append({"gid": f"x{n}", "keys": [key], "paths": [h.path], "marks": [None],
+                       "rows": [] if row is None else [row], "scores": [round(float(h.score or 0.0), 2)],
+                       "notes": [notes.get(h.path) or ""]})
+    return jsonify({"groups": groups, "rows": rows, "modality": modality, "k": k, "query": res.query})
 
 
 # ─────────────────────────── the moodboard's similarity search ───────────────────────────
@@ -469,8 +587,7 @@ def _similar():
     if not ref:
         raise BadRequest("Choose a reference picture [R] in the collection first.")
     name, dim, modality = parse_dataset(data.get("dataset"))
-    if modality != "image":
-        raise BadRequest("Similarity search only available for images")
+    _caps.require("moodboard.similar", modality)
     use_palette, use_style = bool(data.get("palette", True)), bool(data.get("style", False))
     if not use_palette and not use_style:
         raise BadRequest("Please enable at least one feature (Color Palette or Style/Texture)")
@@ -533,6 +650,7 @@ def _similar():
 def _features():
     """Whether a dataset carries palette and style feature blocks, for the similarity card."""
     name = request.args.get("name") or ""
+    modality = request.args.get("modality") or "image"
     db_dir = _media.DB_DIR
-    return jsonify({"palette": os.path.exists(os.path.join(db_dir, f"features_{name}_palette.npz")),
-                    "style": os.path.exists(os.path.join(db_dir, f"features_{name}_style.npz"))})
+    return jsonify({kind: os.path.exists(os.path.join(db_dir, _modality.feature_file(name, kind, modality)))
+                    for kind in ("palette", "style")})

@@ -129,6 +129,7 @@ class OpRow(BaseModel):
     summary: str
     missing: list[str] = Field(default_factory=list)   # flags this Arcana lacks
     allowed: bool = True                               # may this caller run it
+    modalities: list[str] = Field(default_factory=list)  # image, audio, video; empty takes no media
 
 
 class OpListResult(Result):
@@ -136,6 +137,9 @@ class OpListResult(Result):
 
     def text(self) -> str:
         width = max((len(r.name) for r in self.ops), default=10) + 2
+        labels = registry._modality.LABEL
+        tagw = max((len(" ".join(labels[m] for m in r.modalities)) for r in self.ops), default=0)
+        tagw = tagw + 2 if tagw else 0
         lines = []
         for r in self.ops:
             tail = ""
@@ -143,8 +147,11 @@ class OpListResult(Result):
                 tail = "  (needs " + ", ".join(r.missing) + ")"
             elif not r.allowed:
                 tail = "  (for the person)"
-            lines.append(f"{r.name:<{width}}{r.kind:<8}{r.summary}{tail}")
-        return "\n".join(lines) + "\n\n`<op> --help` for any of them.\n"
+            tag = " ".join(labels[m] for m in r.modalities)
+            lines.append(f"{r.name:<{width}}{r.kind:<8}{tag:<{tagw}}{r.summary}{tail}")
+        note = ("\n\nphoto and audio say which media an op works with. An op with neither takes no media."
+                if tagw else "")
+        return "\n".join(lines) + note + "\n\n`<op> --help` for any of them.\n"
 
 
 class OpListArgs(Args):
@@ -165,7 +172,7 @@ def _op_list(a: OpListArgs, ctx: Context) -> OpListResult:
             continue
         rows.append(OpRow(name=o.name, kind=o.kind, summary=o.summary,
                           missing=[f for f in sorted(o.needs) if not ctx.has(f)],
-                          allowed=ctx.actor in o.actors))
+                          allowed=ctx.actor in o.actors, modalities=o.tags))
     if a.noun and not rows:
         nouns = sorted({o.name.split()[0] for o in registry.all_ops()})
         raise ValueError(f"No ops for {a.noun!r}. Nouns: {', '.join(nouns)}.")

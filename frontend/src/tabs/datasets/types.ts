@@ -1,5 +1,5 @@
 export type DatasetRow = {
-  name: string; modality: 'image' | 'audio'; total: number; root: string; missing: number; error: string
+  name: string; modality: 'image' | 'audio' | 'video'; total: number; root: string; missing: number; error: string
   hasMap: boolean; dims: number[]; labels: boolean; palette: boolean; paletteStale: boolean; style: boolean
   status: 'ready' | 'building' | 'unfinished' | 'files missing' | 'unreadable'; building: boolean
   canRework: boolean; canExtend: boolean; canMarks: boolean

@@ -31,10 +31,12 @@ import numpy as np
 
 try:
     from . import paths as _paths
+    from . import modality as _modality
     from . import gpu as _gpu
     from .cvio import imread_unicode
 except ImportError:                                   # pragma: no cover
     import paths as _paths
+    import modality as _modality
     import gpu as _gpu
     from cvio import imread_unicode
 
@@ -44,7 +46,7 @@ DB_DIR = _paths.subdir("databases")
 OUTPUT_DIR = _paths.subdir("output")
 MEDIA_ROOTS = _paths.media_roots()
 IMAGES_ROOT = (MEDIA_ROOTS or [os.path.abspath(os.path.join(APP_ROOT, "..", "images"))])[0]
-AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+AUDIO_EXTS = _modality.AUDIO_EXTS
 
 # ---- spectrogram defaults and cache ----
 SPEC_CACHE_DIR = os.path.join(_paths.subdir("cache"), "specs")
@@ -119,7 +121,7 @@ def register_dataset_files(idx2path: dict, cache_key: str | None = None) -> None
     files = set()
     for v in idx2path.values():
         try:
-            files.add(os.path.normcase(os.path.abspath(str(v))))
+            files.add(os.path.normcase(os.path.abspath(_modality.file_of(str(v)))))
         except Exception:
             continue
     if files:
@@ -135,6 +137,12 @@ def resolve_media_request(p: str) -> str | None:
     """A client-supplied media path as a real one, or None if it is not servable."""
     if not p:
         return None
+    # A section of a video is its file plus a time range. The file is what is
+    # checked and served; the range rides along for the thumbnail.
+    file, t0, t1 = _modality.split_ref(p)
+    if t0 is not None:
+        got = resolve_media_request(file)
+        return None if got is None else _modality.section_ref(got, t0, t1 if t1 is not None else t0)
     full = resolve_path(p)
     try:
         real = os.path.realpath(os.path.abspath(full))
@@ -189,9 +197,39 @@ def _uncached_none(fn):
     return wrapper
 
 
+def _video_still(path: str, side: int):
+    """
+    The frame that stands for a video or one of its sections, as BGR.
+
+    A section shows the frame at its middle. A whole file shows the frame a
+    tenth of the way in, since the very first frame is so often black.
+    """
+    try:
+        from . import video as _video
+    except ImportError:                               # pragma: no cover
+        import video as _video
+    file, t0, t1 = _modality.split_ref(path)
+    file = resolve_path(file)
+    try:
+        info = _video.probe(file)
+        t = (t0 + (t1 if t1 is not None else t0)) / 2 if t0 is not None else info["duration"] * 0.1
+        frame = _video.frame_at(file, t, side=side, info=info)
+        if frame is None and t > 0:
+            frame = _video.frame_at(file, 0.0, side=side, info=info)
+    except Exception:
+        return None
+    return None if frame is None else cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+
+def _read_picture(path: str, side: int):
+    if _modality.of_path(path) == "video":
+        return _video_still(path, side)
+    return imread_unicode(resolve_path(path))
+
+
 @lru_cache(maxsize=50000)
 def make_thumbnail_bytes(path: str, max_side: int = 192) -> bytes | None:
-    img = imread_unicode(resolve_path(path))
+    img = _read_picture(path, max_side * 2)
     if img is None:
         raise _MediaUnavailable(path)
     h, w = img.shape[:2]
@@ -210,7 +248,7 @@ make_thumbnail_bytes = _uncached_none(make_thumbnail_bytes)
 
 @lru_cache(maxsize=2000)
 def make_resized_bytes(path: str, max_w: int = 900, q: int = 72) -> bytes | None:
-    img = imread_unicode(resolve_path(path))
+    img = _read_picture(path, max_w)
     if img is None:
         raise _MediaUnavailable(path)
     h, w = img.shape[:2]
@@ -469,6 +507,28 @@ def blueprint():
         mime = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",
                 ".flac": "audio/flac", ".ogg": "audio/ogg"}.get(ext, "audio/wav")
         return send_file(full, mimetype=mime, conditional=True, max_age=31536000)
+
+    @bp.get("/video")
+    def _video_route():
+        """A dataset's video file, with ranges, so the page can seek and play one section of it."""
+        path, err = _path()
+        if err:
+            return err
+        full = resolve_path(_modality.file_of(path))
+        try:
+            from . import video as _video
+        except ImportError:                           # pragma: no cover
+            import video as _video
+        if not _video.playable(full):
+            # A file the browser cannot decode: play a proxy, made once and kept.
+            try:
+                made = _video.proxy(full, os.path.join(_paths.subdir("cache"), "video"))
+            except Exception as e:
+                return Response(str(e), status=415)
+            return send_file(made, mimetype="video/mp4", conditional=True, max_age=3600)
+        ext = os.path.splitext(full)[1].lower()
+        mime = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/mp4", ".webm": "video/webm"}.get(ext, "video/mp4")
+        return send_file(full, mimetype=mime, conditional=True, max_age=3600)
 
     @bp.get("/awave")
     def _awave():

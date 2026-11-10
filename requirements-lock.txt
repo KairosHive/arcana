@@ -4,21 +4,16 @@
 #
 # uv.lock is the single source of truth; this file is derived from it so the two
 # cannot disagree. They previously did, on 15 packages, and uv.lock was the one
-# uv actually used -- so `uv run` kept reinstalling transformers 5, which
-# changed CLIPModel.get_image_features to return a BaseModelOutputWithPooling
-# instead of a tensor and broke indexing at the first image.
+# uv actually used.
 #
 # The versions here are held by [tool.uv] constraint-dependencies in
 # pyproject.toml. To change one, change the constraint and re-run `uv lock`.
-#
-# Install:                uv sync
-# Verify nothing drifted: python -m arcana.envcheck
-#
-# For the CPU-only packaging build, install torch from
-# https://download.pytorch.org/whl/cpu first; everything else is identical.
-#
+# transformers is at 5.20.2, the version the encoders, the diffusion methods and
+# the packaged build were run against (VIDEO_ROADMAP.md, Status).
 accelerate==1.15.0
     # via peft
+annotated-doc==0.0.5
+    # via typer
 annotated-types==0.8.0
     # via pydantic
 anyio==4.14.2
@@ -50,11 +45,14 @@ charset-normalizer==3.5.1
 click==8.5.0
     # via
     #   flask
+    #   huggingface-hub
     #   uvicorn
 cloudpickle==3.1.2
     # via joblib
 colorama==0.4.6 ; sys_platform == 'win32'
-    # via tqdm
+    # via
+    #   tqdm
+    #   typer
 contourpy==1.3.2 ; python_full_version < '3.11'
     # via matplotlib
 contourpy==1.3.3 ; python_full_version >= '3.11'
@@ -76,7 +74,6 @@ filelock==3.32.5
     #   diffusers
     #   huggingface-hub
     #   torch
-    #   transformers
 flask==3.1.3
     # via arcana
 fonttools==4.64.0
@@ -90,7 +87,7 @@ h11==0.16.0
     #   httpcore
     #   httpcore2
     #   uvicorn
-hf-xet==1.6.0 ; platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
@@ -99,14 +96,16 @@ httpcore2==2.14.0 ; python_full_version < '3.11' and sys_platform != 'emscripten
 httpcore2==2.15.1 ; python_full_version >= '3.11' and sys_platform != 'emscripten'
     # via httpx2
 httpx==0.28.1
-    # via diffusers
+    # via
+    #   diffusers
+    #   huggingface-hub
 httpx2==2.14.0 ; python_full_version < '3.11'
     # via mcp
 httpx2==2.15.1 ; python_full_version >= '3.11'
     # via mcp
 httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
     # via httpx2
-huggingface-hub==0.36.2
+huggingface-hub==1.33.0
     # via
     #   accelerate
     #   diffusers
@@ -154,6 +153,8 @@ librosa==1.0.0 ; python_full_version >= '3.12'
     # via arcana
 llvmlite==0.49.0
     # via numba
+markdown-it-py==4.2.0
+    # via rich
 markupsafe==3.0.3
     # via
     #   flask
@@ -167,6 +168,8 @@ mcp==2.3.0
     # via arcana
 mcp-types==2.3.0
     # via mcp
+mdurl==0.1.2
+    # via markdown-it-py
 mpmath==1.3.0
     # via sympy
 msgpack==1.2.2
@@ -327,8 +330,11 @@ pydantic==2.13.5
     #   arcana
     #   mcp
     #   mcp-types
+    #   typer
 pydantic-core==2.46.5
     # via pydantic
+pygments==2.21.0
+    # via rich
 pyjwt==2.15.1
     # via mcp
 pyparsing==3.3.2
@@ -363,9 +369,9 @@ regex==2026.9.3
 requests==2.34.2
     # via
     #   diffusers
-    #   huggingface-hub
     #   pooch
-    #   transformers
+rich==15.0.0
+    # via typer
 rpds-py==0.30.0 ; python_full_version < '3.11'
     # via
     #   jsonschema
@@ -409,6 +415,8 @@ scipy==1.18.1 ; python_full_version >= '3.12'
     #   scikit-learn
 setuptools==84.0.0 ; python_full_version >= '3.12'
     # via torch
+shellingham==1.5.4
+    # via typer
 six==1.17.0
     # via python-dateutil
 soundfile==0.14.0
@@ -433,8 +441,10 @@ threadpoolctl==3.6.0
     # via scikit-learn
 timm==1.0.31
     # via arcana
-tokenizers==0.22.2
+tokenizers==0.23.3
     # via transformers
+tomli==2.4.1 ; python_full_version < '3.11'
+    # via huggingface-hub
 torch==2.9.1+cu128
     # via
     #   accelerate
@@ -463,7 +473,7 @@ tqdm==4.70.0
     #   peft
     #   transformers
     #   usearch
-transformers==4.57.6
+transformers==5.20.2
     # via
     #   arcana
     #   peft
@@ -473,6 +483,8 @@ truststore==0.10.5 ; sys_platform != 'emscripten'
     # via
     #   httpcore2
     #   httpx2
+typer==0.29.0
+    # via transformers
 typing-extensions==4.16.0
     # via
     #   anyio

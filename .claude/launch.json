@@ -6,6 +6,12 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "python", "-m", "arcana.arcana"],
       "port": 8051
+    },
+    {
+      "name": "arcana-sandbox",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "tests/sandbox_app.py"],
+      "port": 8061
     }
   ]
 }

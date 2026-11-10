@@ -78,7 +78,8 @@ def dataset_health(name: str, modality: str = "image", sample: int = 200,
     else:
         probe = all_paths
     out["checked"] = len(probe)
-    out["present"] = sum(1 for p in probe if os.path.exists(p))
+    # A video dataset's paths carry a section's time range after the file name.
+    out["present"] = sum(1 for p in probe if os.path.exists(p.rpartition("#t=")[0] or p))
     out["missing"] = out["checked"] - out["present"]
     out["ok"] = out["missing"] == 0
     return out

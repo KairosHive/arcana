@@ -17,11 +17,19 @@ from dataclasses import dataclass, asdict
 
 try:
     from . import gpu as _gpu
+    from . import hub as _hub
 except ImportError:
     import gpu as _gpu
+    import hub as _hub
 
-IMAGE = "image"
-AUDIO = "audio"
+try:
+    from . import modality as _modality
+except ImportError:
+    import modality as _modality
+
+IMAGE = _modality.IMAGE
+AUDIO = _modality.AUDIO
+VIDEO = _modality.VIDEO
 
 
 @dataclass(frozen=True)
@@ -92,7 +100,8 @@ def get(model_id: str) -> ModelInfo | None:
 
 
 def for_modality(modality: str) -> list[ModelInfo]:
-    return [m for m in MODELS if m.modality == modality]
+    # A video dataset is indexed by the image encoders, which read its frames.
+    return [m for m in MODELS if m.modality == _modality.encoder_of(modality)]
 
 
 def default_for(modality: str, has_gpu: bool | None = None) -> ModelInfo:
@@ -423,12 +432,15 @@ def download_model(model_id: str, handle=None, *, ignore_extra_formats: bool = T
         handle.update(fraction=0.0, message=f"Downloading {label}",
                       detail=f"about {expected / 1e6:,.0f} MB")
 
-    path = snapshot_download(
+    # A download is minutes long, and a dropped connection part-way is the
+    # ordinary failure. The hub keeps what it already fetched, so trying again
+    # resumes rather than starts over.
+    path = _hub.with_retries(lambda: snapshot_download(
         model_id,
         ignore_patterns=_IGNORE if ignore_extra_formats else None,
         tqdm_class=_JobTqdm,
         max_workers=4,
-    )
+    ))
     if handle is not None:
         handle.update(fraction=1.0, message=f"{label} ready", detail="")
     return path

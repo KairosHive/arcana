@@ -118,7 +118,8 @@ def blueprint():
     def _list():
         from . import ops
         return jsonify([{"name": o.name, "kind": o.kind, "summary": o.summary,
-                         "needs": sorted(o.needs), "actors": sorted(o.actors)}
+                         "needs": sorted(o.needs), "actors": sorted(o.actors),
+                         "modalities": o.tags}
                         for o in ops.all_ops()])
 
     @bp.get("/ops/schema.json")

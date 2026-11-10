@@ -22,6 +22,11 @@ from typing import Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, ValidationError
 
+try:
+    from .. import modality as _modality
+except ImportError:                                  # pragma: no cover
+    import modality as _modality
+
 ACTORS = ("person", "cli", "agent")
 KINDS = ("read", "write", "effect")
 
@@ -149,6 +154,82 @@ FLAG_MEANING = {
 }
 
 
+# ─────────────────────────── modalities ───────────────────────────
+# What kind of media an op works with: photos, sounds, videos. An op that takes
+# a dataset or pictures declares it (`modalities=`), `op list` and `--help`
+# print it as a tag, and call() refuses media of another kind before the body
+# runs, in one sentence that names what the op takes and what it was given.
+# An op that takes no media (orient, undo, job list) declares nothing.
+#
+# A field holds media when it names a dataset (it completes as one) or when its
+# metavar is one of the words below, which is how every op already spells a
+# picture argument.
+
+MEDIA_METAVARS = frozenset({"HANDLE", "ITEM", "PICTURE", "MATERIAL"})
+
+
+def media_fields(args_model) -> list[tuple[str, str]]:
+    """(field name, "dataset" or "item") for each field of an args model that holds media."""
+    out = []
+    for name, info in args_model.model_fields.items():
+        extra = info.json_schema_extra if isinstance(info.json_schema_extra, dict) else {}
+        if extra.get("complete") == "dataset":
+            out.append((name, "dataset"))
+        elif extra.get("metavar") in MEDIA_METAVARS:
+            out.append((name, "item"))
+    return out
+
+
+def modality_of_ref(ref: str, role: str = "item") -> str | None:
+    """
+    The modality a reference names, or None when it names no media this can tell.
+
+    A dataset id carries it in its suffix, and so does a handle. A path and a
+    derived picture (out:3f9c1e) are read from the file's extension. A board
+    number (#3), an empty value and anything unrecognised answer None, and the
+    op's body decides.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    if role == "dataset":
+        return _modality.split_dataset_id(ref)[1]
+    if "/" in ref or "\\" in ref:
+        return _modality.of_path(ref)
+    if ref.startswith("out:"):
+        try:
+            from .. import ledger as _ledger
+        except ImportError:                          # pragma: no cover
+            import ledger as _ledger
+        try:
+            entry = _ledger.get(ref)
+        except Exception:
+            entry = None
+        return _modality.of_path(entry["path"]) if entry and entry.get("path") else None
+    return _modality.of_handle(ref)
+
+
+def check_modalities(op: "Op", parsed: Args) -> None:
+    """Refuse media of a kind the op does not take. Runs before the op's body."""
+    if op.modalities is None:
+        return
+    for name, role in media_fields(op.args):
+        value = getattr(parsed, name, None)
+        refs = value if isinstance(value, (list, tuple)) else [value]
+        for ref in refs:
+            if not isinstance(ref, str):
+                continue
+            got = modality_of_ref(ref, role)
+            if got is None or got in op.modalities:
+                continue
+            if role == "dataset":
+                what = f"{ref} holds {_modality.PLURAL[got]}"
+            else:
+                what = f"{ref} is a {_modality.NOUN[got]}"
+            raise Refusal(op.name, f"`{op.name}` works with {_modality.words(op.modalities)}. "
+                                   f"{what}.")
+
+
 # ─────────────────────────── the context of a call ───────────────────────────
 
 @dataclass
@@ -217,6 +298,13 @@ class Op:
     # False for undo and redo, which move history entries themselves and must
     # not be recorded as steps of their own.
     journal: bool = True
+    # The kinds of media the op works with, or None for an op that takes none.
+    modalities: frozenset[str] | None = None
+
+    @property
+    def tags(self) -> list[str]:
+        """The modalities in display order, ["image", "audio"]. Empty for an op that takes no media."""
+        return _modality.tags(self.modalities or ())
 
     @property
     def summary(self) -> str:
@@ -260,6 +348,12 @@ def register(op: Op) -> Op:
         problems.append(f"unknown flags in needs: {sorted(op.needs - set(FLAG_PROBES))}")
     if not op.actors <= set(ACTORS):
         problems.append(f"unknown actors: {sorted(op.actors - set(ACTORS))}")
+    if op.modalities is not None and (not op.modalities or not op.modalities <= set(_modality.ALL)):
+        problems.append(f"modalities are some of {_modality.ALL}, got {sorted(op.modalities)}")
+    if (op.modalities is None and isinstance(op.args, type) and issubclass(op.args, Args)
+            and media_fields(op.args)):
+        problems.append("an op that takes a dataset or pictures declares its modalities ("
+                        + ", ".join(n for n, _ in media_fields(op.args)) + ")")
     if problems:
         raise TypeError(f"op {op.name!r}: " + "; ".join(problems))
 
@@ -278,11 +372,13 @@ def register(op: Op) -> Op:
 
 
 def op(name: str, kind: str, args: type[Args], result: type[Result], *, doc: str,
-       examples: tuple[str, ...] = (), needs=(), actors=ACTORS, journal: bool = True):
+       examples: tuple[str, ...] = (), needs=(), actors=ACTORS, journal: bool = True,
+       modalities=None):
     """Decorator form of register(): the decorated function is the op's body."""
     def wrap(fn):
         register(Op(name, kind, args, result, fn, textwrap.dedent(doc).strip(),
-                    tuple(examples), frozenset(needs), frozenset(actors), journal))
+                    tuple(examples), frozenset(needs), frozenset(actors), journal,
+                    None if modalities is None else frozenset(modalities)))
         return fn
     return wrap
 
@@ -432,6 +528,11 @@ def call(name: str, args=None, actor: str = "cli", ctx: Context | None = None,
                       f"`{found.name}` needs " + ", ".join(FLAG_MEANING[f] for f in missing)
                       + ", which this Arcana does not have.", grammar.help_text(found))
     parsed = validate(found, args)
+    try:
+        check_modalities(found, parsed)
+    except Refusal as e:
+        e.help = grammar.help_text(found)
+        raise
     st = _store()
     if not found.journal and ctx.tx is not None:
         raise Refusal(found.name, f"`{found.name}` runs on its own, outside a batch that "
@@ -454,12 +555,31 @@ def call(name: str, args=None, actor: str = "cli", ctx: Context | None = None,
         if own_tx:
             tx, ctx.tx = ctx.tx, None
             st.STORE.commit(tx)
+        _note(ctx.actor, found, parsed, result)
         return result
     except BaseException:
         if own_tx and ctx.tx is not None:
             tx, ctx.tx = ctx.tx, None
             st.STORE.rollback(tx)
         raise
+
+
+def _note(actor: str, op: Op, parsed: Args, result: Result) -> None:
+    """Tell the page what just ran (activity.py). Never allowed to fail the op."""
+    try:
+        try:
+            from .. import activity as _activity
+        except ImportError:                          # pragma: no cover
+            import activity as _activity
+        try:
+            text = result.text()
+        except Exception:
+            text = ""
+        small = {k: v for k, v in result.model_dump(mode="json", exclude={"attachments"}).items()
+                 if isinstance(v, (str, int, float, bool)) and (not isinstance(v, str) or len(v) < 400)}
+        _activity.note(actor, op.name, parsed.model_dump(mode="json", exclude_defaults=True), text, small)
+    except Exception:
+        pass
 
 
 # ─────────────────────────── batches ───────────────────────────

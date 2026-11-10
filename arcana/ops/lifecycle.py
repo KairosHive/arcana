@@ -29,7 +29,7 @@ except ImportError:                                   # pragma: no cover
     import db as _db
     import models as _models
 
-Modality = Literal["image", "audio"]
+Modality = Literal["image", "audio", "video"]
 Labels = Literal["builtin", "folders", "none"]
 Feature = Literal["palette", "style"]
 
@@ -113,7 +113,8 @@ class CreateArgs(Args):
     name: str = positional(0, description="The new dataset's name.")
     folder: str = Field(description="The folder of pictures (or sounds) to index.",
                         json_schema_extra={"metavar": "PATH"})
-    modality: Modality = Field("image", description="image or audio.")
+    modality: Modality = Field("image", description="image, audio or video. A video is indexed "
+                                                    "by section, cut where the footage changes.")
     model: str | None = Field(None, description="The encoder, from `model list`. Defaults to "
                                                 "the right one for this machine.")
     feature: list[Feature] = Field(default_factory=list,
@@ -128,6 +129,7 @@ class CreateArgs(Args):
 
 
 @op("dataset create", "effect", CreateArgs, Result,
+    modalities=("image", "audio", "video"),
     doc="""
     Index a folder into a new dataset. It encodes every picture with the
     encoder, lays out the map, names the clusters and reads ON1 and Lightroom
@@ -201,6 +203,7 @@ class ExtendArgs(Args):
 
 
 @op("dataset extend", "effect", ExtendArgs, Result,
+    modalities=("image", "audio", "video"),
     doc="""
     Add the files that appeared in a dataset's folder since it was indexed.
     Only the new files are encoded, then the map is laid out again over the
@@ -220,6 +223,8 @@ def _extend(a: ExtendArgs, ctx: Context) -> Result:
                          f"moved, `dataset relocate {a.dataset} --root <folder>` first.")
 
     def compute(progress):
+        if modality == "video":
+            return _extend_video(name, root, progress)
         return _db.extend_dataset(root, name, modality=modality, prune_missing=a.prune,
                                   progress=_db_progress(progress),
                                   should_cancel=_cancelled(progress)) or {}
@@ -230,6 +235,25 @@ def _extend(a: ExtendArgs, ctx: Context) -> Result:
                      else f"nothing new in {root}.", result)(tx)
 
     return run_effect(ctx, f"dataset extend {a.dataset}", compute, record, a.background, kind="index")
+
+
+def _extend_video(name: str, root: str, progress) -> dict:
+    """New videos read and sectioned, then the map laid out again over every section."""
+    try:
+        from .. import video_index as _vi
+    except ImportError:                               # pragma: no cover
+        import video_index as _vi
+    index_path = core.index_path(name, "video")
+    ndim = int(core.load_index(name, "video")[0].ndim)
+    model_id = _db.model_for_dim(ndim, "video")
+    cancelled = _cancelled(progress)
+    got = _vi.extend(name, root, index_path, model_id=model_id, should_cancel=cancelled,
+                     progress=(lambda d, t, m: progress(0.6 * d / max(t, 1), m)) if progress else None)
+    if got["added"]:
+        _db.index_dataset(root, name, modality="video", model_id=model_id, reuse_index=True,
+                          progress=(lambda f, m="", d=0, t=0: progress(0.6 + 0.4 * (f or 0), m or None)) if progress else None,
+                          should_cancel=cancelled)
+    return got
 
 
 class FinishArgs(Args):
@@ -245,6 +269,7 @@ class FinishArgs(Args):
 
 
 @op("dataset finish", "effect", FinishArgs, Result,
+    modalities=("image", "audio", "video"),
     doc="""
     Lay out a dataset again from the index it has, without re-encoding. It
     finishes an indexing run that was cut short, or reworks the clusters,
@@ -283,6 +308,7 @@ class MarksArgs(Args):
 
 
 @op("dataset marks", "effect", MarksArgs, Result,
+    modalities=("image",),
     doc="""
     Read a dataset's ON1 and XMP sidecars again. It picks up stars and colour
     tags changed since indexing, and loads no encoder and decodes no picture.
@@ -339,6 +365,7 @@ class RelocateArgs(Args):
 
 
 @op("dataset relocate", "effect", RelocateArgs, RelocateResult,
+    modalities=("image", "audio"),
     doc="""
     Point a dataset at the folder its files moved to. Files are matched by
     name and checked by content, nothing is re-encoded, and the old index is
@@ -435,6 +462,7 @@ class DeleteArgs(Args):
 
 
 @op("dataset delete", "effect", DeleteArgs, DeleteResult,
+    modalities=("image", "audio", "video"),
     doc="""
     Remove a dataset's index, map and features. The pictures themselves are
     untouched. This cannot be undone, so only the person does it, and

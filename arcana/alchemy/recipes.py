@@ -39,13 +39,15 @@ VAE = "FLUX.2 VAE"
 #   hidden image            a face or a picture hidden in the material
 #   glitch                  the picture taken apart and rebuilt
 #   relief                  the material's own pixels shaped by the picture's light
+#   camera movement         the picture exposed while the camera moves, no material needed
+#   double exposure         a second picture, the material [1], exposed with its own movement over the first
 #   where                   a mask: stacks on any recipe
 #   look                    a finish: stacks on any recipe
 #
 # Each group holds a few recipes that look clearly different. Recipes that drew too close to another
 # are retired: kept, so a film or a saved step that names one still opens, but out of the menu.
 GROUPS = ("material on a thing", "picture in a material", "materials blended", "hidden image", "glitch",
-          "relief", "where", "look")
+          "relief", "camera movement", "double exposure", "where", "look")
 BUILTIN = [
     # material on a thing: latent-lab's atlas, FLUX.2 klein putting the material [1] on a named thing
     Recipe("on a named thing", "material on a thing", "the material [1] (or an IP label) put on one thing, on its own "
@@ -95,6 +97,97 @@ BUILTIN = [
            {"method": "pixels.relief", "knobs": {"ambient": 0.45}, "finish": {"highlights": -30, "clarity": 20}}),
     Recipe("combed", "relief", "the material combed along the picture's contours",
            {"method": "pixels.flow", "knobs": {"length": 0.08, "smear": 0.2}}),
+    # camera movement: chosen by eye on the person's own photographs (see motion.py)
+    Recipe("vertical sweep, violet glow", "camera movement", "a vertical sweep with the picture's detail kept "
+           "and a soft glow, in cool violet, as an ICM marina",
+           {"method": "camera.sweep", "knobs": {"sweep": 0.12, "direction": 1.5708, "detail": 0.8, "glow": 0.3},
+            "finish": {"temperature": -40, "tint": 25, "dehaze": -15}}),
+    Recipe("stop, move, stop", "camera movement", "held still, moved down, held again: two sharp impressions "
+           "joined by the movement",
+           {"method": "camera.sweep", "knobs": {"sweep": 0.12, "direction": 1.5708, "hold_start": 0.45,
+                                                "hold_end": 0.2, "centred": False}}),
+    Recipe("zoom burst", "camera movement", "the camera zoomed in during the exposure, the lights drawn out "
+           "as rays",
+           {"method": "camera.turn", "knobs": {"rotation": 0.0, "zoom": 0.35, "trails": 0.6}}),
+    Recipe("swirl", "camera movement", "the camera turned about the centre: everything circles it",
+           {"method": "camera.turn", "knobs": {"rotation": 22.0}}),
+    Recipe("crossing strokes", "camera movement", "three sweeps fanned across directions over a held sharp "
+           "impression, warm and soft: painterly, its forms still there",
+           {"method": "camera.layers", "knobs": {"sweep": 0.08, "direction": 0.6, "strokes": 3, "spread": 1.2,
+                                                 "hold_start": 0.25, "centred": False},
+            "finish": {"temperature": 25, "clarity": -30, "saturation": -20, "contrast": -10}}),
+    Recipe("edges hold", "camera movement", "a sideways sweep in which strong edges stay and the spaces "
+           "between them flow",
+           {"method": "camera.flow", "knobs": {"sweep": 0.12, "direction": 0.0, "anchor": 0.95}}),
+    Recipe("light streaks over the dark", "camera movement", "the picture's lights drawn down across a still "
+           "dark subject, as a flash closing a long exposure",
+           {"method": "camera.flow", "knobs": {"sweep": 0.14, "direction": 1.5708, "anchor": 0.0, "light": 1.0}}),
+    Recipe("carved strokes", "camera movement", "short strokes that follow the picture's own contours, its "
+           "edges held: the figure stays, the rest turns to carving",
+           {"method": "camera.flow", "knobs": {"sweep": 0.04, "direction": 1.5708, "follow": 1.0, "anchor": 0.5,
+                                               "detail": 0.3}}),
+    Recipe("painted water", "camera movement", "strokes that follow the water's own lines, its light leading, "
+           "with a soft glow",
+           {"method": "camera.flow", "knobs": {"sweep": 0.12, "direction": 0.0, "anchor": 0.0, "follow": 0.8,
+                                               "light": 0.7, "glow": 0.25}}),
+    Recipe("held in fog", "camera movement", "the subject held sharp while the world around softens, drags "
+           "down and hazes, as figures in a misted long exposure",
+           {"method": "camera.sweep", "knobs": {"sweep": 0.08, "direction": 1.5708, "defocus": 4, "glow": 0.5,
+                                                "mask_use": "holds still"},
+            "mask": {"layers": ["subject"], "feather": 14},
+            "finish": {"temperature": 22, "dehaze": -55, "contrast": -10, "vignette": -35, "exposure": 0.15}}),
+    Recipe("the world turns about them", "camera movement", "the subject held sharp while everything else "
+           "turns about them, softly out of focus; set the pivot on them",
+           {"method": "camera.turn", "knobs": {"rotation": 25.0, "pivot_x": 0.45, "pivot_y": 0.4, "defocus": 2,
+                                               "mask_use": "holds still"},
+            "mask": {"layers": ["subject"], "feather": 16}, "finish": {"temperature": 30, "dehaze": -25, "contrast": -10, "vignette": -40, "saturation": -10}}),
+    Recipe("held among strokes", "camera movement", "people held sharp inside three crossing sweeps, warm and "
+           "soft",
+           {"method": "camera.layers", "knobs": {"strokes": 3, "spread": 1.2, "sweep": 0.1, "direction": 0.6,
+                                                 "hold_start": 0.0, "centred": True, "mask_use": "holds still"},
+            "mask": {"layers": ["people"], "feather": 10}, "finish": {"temperature": 25, "clarity": -30, "saturation": -20, "contrast": -10}}),
+    Recipe("strokes all over", "camera movement", "three crossing sweeps over the whole frame and no sharp "
+           "impression: the picture dissolved into warm brushwork",
+           {"method": "camera.layers", "knobs": {"strokes": 3, "spread": 1.2, "sweep": 0.1, "direction": 0.6,
+                                                 "hold_start": 0.0, "centred": True}, "finish": {"temperature": 25, "clarity": -30, "saturation": -20, "contrast": -10}}),
+    # double exposure: chosen by eye on the person's own photographs; each takes a material [1]
+    Recipe("streaming light", "double exposure", "the material swept sideways and screened over the whole "
+           "picture, its forms held under a stream of light",
+           {"method": "camera.double", "knobs": {"blend": "screen", "second": 0.7, "sweep": 0.25, "direction": 0.0,
+                                                 "soft_second": 2}, "finish": {"temperature": 25, "clarity": -30, "saturation": -20, "contrast": -10}}),
+    Recipe("falling through", "double exposure", "the material falls down through the picture, darken keeping "
+           "the darker of the two at each place: the picture's lines stay, the material runs between them",
+           {"method": "camera.double", "knobs": {"blend": "darken", "second": 0.8, "sweep": 0.15,
+                                                 "direction": 1.5708}}),
+    Recipe("a field of colour", "double exposure", "the material softened into a field of colour and light "
+           "behind the picture, lightened in and swept sideways",
+           {"method": "camera.double", "knobs": {"blend": "lighten", "second": 0.8, "sweep": 0.2, "direction": 0.0,
+                                                 "soft_second": 12}}),
+    Recipe("into the light", "double exposure", "the material swept sideways into the picture's lighter half "
+           "only, as a sky turning to water",
+           {"method": "camera.double", "knobs": {"blend": "screen", "second": 0.9, "sweep": 0.2, "direction": 0.0},
+            "mask": {"layers": ["light"], "coverage": [0.45], "feather": 40}}),
+    Recipe("in shadow", "double exposure", "the material multiplied into the picture and drawn down: both "
+           "darken into one muted relief",
+           {"method": "camera.double", "knobs": {"blend": "multiply", "second": 0.8, "sweep": 0.1,
+                                                 "direction": 1.5708}}),
+    Recipe("falling light", "double exposure", "the material's light falling down over the picture, slightly "
+           "softened and screened in",
+           {"method": "camera.double", "knobs": {"blend": "screen", "second": 0.8, "sweep": 0.15,
+                                                 "direction": 1.5708, "soft_second": 1}}),
+    Recipe("turning double", "double exposure", "the material turned about the centre and screened over the "
+           "picture, which turns a little with it",
+           {"method": "camera.double", "knobs": {"blend": "screen", "second": 0.7, "sweep": 0.0, "rotation": 20.0,
+                                                 "picture_moves": 0.3}}),
+    Recipe("two veils", "double exposure", "the picture sweeps across and the material sweeps down, averaged "
+           "into one woven veil",
+           {"method": "camera.double", "knobs": {"blend": "average", "second": 1.0, "sweep": 0.2,
+                                                 "direction": 1.5708, "picture_moves": 1.0, "across": 1.5708,
+                                                 "glow": 0.3}}),
+    Recipe("horizon of two", "double exposure", "the material, swept sideways, fills the top of the frame and "
+           "fades into the picture below",
+           {"method": "camera.double", "knobs": {"blend": "screen", "second": 1.0, "sweep": 0.2, "direction": 0.0},
+            "mask": {"layers": ["from the top"], "coverage": [0.55], "feather": 60}}),
     # where (stacks)
     Recipe("on the subject", "where", "only the main subject, with soft edges",
            {"mask": {"layers": ["subject"], "feather": 3, "follow": 0.3}}),

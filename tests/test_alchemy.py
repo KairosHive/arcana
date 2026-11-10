@@ -42,7 +42,7 @@ def _picture(h=96, w=128):
 # ─────────────────────────── the catalogue ───────────────────────────
 
 def test_every_method_declares_well_formed_knobs():
-    assert set(methods.FAMILIES) == {"pixels", "tokens", "colour", "generative"}
+    assert set(methods.FAMILIES) == {"pixels", "camera", "tokens", "colour", "generative"}
     for m in methods.METHODS.values():
         assert m.id.startswith(m.family + "."), m.id
         assert m.doc and m.label
@@ -74,7 +74,7 @@ def test_weights_are_shares_among_the_materials():
 
 def test_every_method_leads_with_its_dominance_knob():
     """The knob deciding how much the picture or the materials dominate comes first in main."""
-    lead = {"pixels": "amount", "colour": "strength"}
+    lead = {"pixels": "amount", "camera": "amount", "colour": "strength"}
     for m in methods.METHODS.values():
         assert {k.section for k in m.knobs} <= set(methods.SECTIONS), m.id
         if m.family in lead:
@@ -94,6 +94,73 @@ def test_pixel_amount_lays_the_result_over_the_picture():
     half = m.run(step, methods.settle_knobs(m, {"amount": 0.5}))
     assert np.allclose(none, c, atol=1e-6)
     assert np.allclose(half, (c + whole) / 2, atol=1e-5)
+
+
+def test_camera_movement_sums_the_picture_along_its_path():
+    from arcana.alchemy import motion
+    u, w = motion.path(10, 0.4, 0.2)
+    assert w.sum() == pytest.approx(1.0) and w[0] == pytest.approx(0.44) and w[-1] == pytest.approx(0.24)
+    c = _picture()
+    assert np.allclose(motion.expose(c, sweep=0.0), c, atol=2e-3)            # a still camera keeps the picture
+    dot = np.zeros((40, 60, 3), np.float32)
+    dot[20, 30] = 1.0
+    streak = motion.expose(dot, sweep=0.5, direction=0.0)                       # across: 30 px of travel
+    row = streak[20, :, 0]
+    assert (row > 1e-4).sum() >= 25 and streak[:, 30, 0][[5, 35]].max() < 1e-4  # a line, no dashes, nothing up or down
+    kept = motion.expose(dot, sweep=0.5, direction=0.0, hold_start=0.5, centred=False)
+    assert kept[20, 30, 0] > streak[20, 30, 0] * 3                              # the hold leaves a sharp impression
+    lit = motion.expose(dot, sweep=0.5, direction=0.0, trails=1.0)
+    assert lit[20, 25, 0] ** 2.2 > 0.5 > 10 * streak[20, 25, 0] ** 2.2          # trails keep the light near whole
+    for mid in ("camera.sweep", "camera.turn", "camera.layers", "camera.flow"):
+        m = methods.get(mid)
+        assert m.family == "camera" and m.materials == (0, 0) and m.knobs[0].key == "amount"
+
+
+def test_a_mask_holds_its_places_still_or_takes_a_second_exposure():
+    import types
+    from arcana.alchemy import motion
+    y, x = np.mgrid[0:64, 0:96].astype(np.float32)
+    pic = np.repeat((0.5 + 0.4 * np.sin(x / 3.0))[..., None], 3, -1).astype(np.float32)
+    hold = np.zeros((64, 96), np.float32)
+    hold[16:48, 30:60] = 1.0
+    out = motion.expose(pic, sweep=0.2, direction=0.0, hold=hold)
+    free = motion.expose(pic, sweep=0.2, direction=0.0)
+    inside = (slice(20, 44), slice(34, 56))
+    assert np.allclose(out[inside], pic[inside], atol=2e-3)                    # the held place stays sharp
+    assert np.abs(out[:, :20] - free[:, :20]).mean() < 0.02                     # the rest moves as before
+    m = methods.get("camera.sweep")
+    step = types.SimpleNamespace(c=pic, materials=[], H=64, W=96, mask=hold, depth=None)
+    moved = m.run(step, methods.settle_knobs(m, {"sweep": 0.2, "direction": 0.0}))
+    held = m.run(step, methods.settle_knobs(m, {"sweep": 0.2, "direction": 0.0, "mask_use": "holds still"}))
+    assert np.allclose(moved[:, :20], pic[:, :20], atol=1e-6)                  # moves only inside the mask
+    assert np.allclose(held[inside], pic[inside], atol=2e-3)                   # or holds the mask still
+    assert m.masks_itself and methods.get("camera.double").materials == (1, 1)
+    d = methods.get("camera.double")
+    second = np.full_like(pic, 0.6)
+    step = types.SimpleNamespace(c=pic, materials=[second], H=64, W=96, mask=hold, depth=None)
+    got = d.run(step, methods.settle_knobs(d, {"blend": "lighten", "second": 1.0, "sweep": 0.0}))
+    assert np.allclose(got[inside], np.maximum(pic, 0.6)[inside], atol=2e-3)   # the silhouette takes the second
+    assert np.allclose(got[:, :20], pic[:, :20], atol=1e-6)                    # outside, the picture as it was
+
+
+def test_camera_movement_bends_place_by_place():
+    from arcana.alchemy import motion
+    y, x = np.mgrid[0:64, 0:96].astype(np.float32)
+    bars = np.repeat((((x // 12) % 2) * 0.8 + 0.1)[..., None], 3, -1)       # sharp vertical edges
+    flat = motion.expose(bars, sweep=0.2, direction=0.0)
+    held = motion.expose(bars, sweep=0.2, direction=0.0, anchor=1.0)
+    err = lambda a: float(np.abs(a - bars).mean())
+    assert err(held) < 0.5 * err(flat)                                          # the edges hold
+    sky = np.full((64, 96, 3), 0.05, np.float32)
+    sky[20:24, 40:44] = 1.0                                                     # one light in the dark
+    sky[40:44, 10:14] = 0.25                                                    # one dim patch
+    lit = motion.expose(sky, sweep=0.3, direction=0.0, light=1.0)
+    assert lit[21, 50, 0] > 0.15 and abs(lit[41, 12, 0] - sky[41, 12, 0]) < 0.05  # the light streaks, the dim holds
+    rings = np.repeat((0.5 + 0.5 * np.sin(np.hypot(x - 48, y - 32) / 3))[..., None], 3, -1).astype(np.float32)
+    along = motion.expose(rings, sweep=0.15, direction=0.0, follow=1.0)
+    across = motion.expose(rings, sweep=0.15, direction=0.0)
+    off = lambda a: float(np.abs(a - rings).mean())
+    assert off(along) < 0.3 * off(across)                                       # strokes run along the rings
 
 
 # ─────────────────────────── masks ───────────────────────────

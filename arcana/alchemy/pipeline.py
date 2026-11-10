@@ -33,7 +33,7 @@ TOKEN_MULTIPLE = 16
 DRAWN_KEEP = 6                       # steps kept before their finish, so a finish change is instant
 # The largest long side each family draws itself; a larger picture is reached by Real-ESRGAN. Token
 # decoders and diffusion were trained small and grow slow and costly past these.
-DRAW_CAP = {"tokens": 1536, "generative": 1024, "pixels": 3072, "colour": 4096}
+DRAW_CAP = {"tokens": 1536, "generative": 1024, "pixels": 3072, "camera": 2048, "colour": 4096}
 _drawn: collections.OrderedDict = collections.OrderedDict()
 
 
@@ -124,7 +124,7 @@ def _run(spec, long_side, view, with_before):
         out = method.run(step, knobs)
         if out.shape[:2] != (H, W):
             out = mk.cx._resize(out, W, H, mk.Image.BILINEAR) if out.ndim == 2 else                 np.asarray(to_image(out).resize((W, H), mk.Image.LANCZOS), np.float32) / 255.0
-        if m is not None and method.picture:
+        if m is not None and method.picture and not method.masks_itself:
             out = m[..., None] * out + (1 - m[..., None]) * c
         _drawn[key] = out
         while len(_drawn) > DRAWN_KEEP:
@@ -178,7 +178,7 @@ def step_on(c, key, spec, asker=None):
         out = method.run(step, knobs)
         if out.shape[:2] != (H, W):
             out = np.asarray(to_image(out).resize((W, H), mk.Image.LANCZOS), np.float32) / 255.0
-        if m is not None and method.picture:
+        if m is not None and method.picture and not method.masks_itself:
             out = m[..., None] * out + (1 - m[..., None]) * c
         amount = spec.get("amount")
         if amount is not None and float(amount) < 1:

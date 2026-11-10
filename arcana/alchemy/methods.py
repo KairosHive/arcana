@@ -1,8 +1,9 @@
 """Every Alchemy method, declared once: its family, its knobs, what it needs and how it runs.
 
-Four families, by the space each works in:
+Five families, by the space each works in:
 
     pixels      the material's own pixels laid into the picture: nothing invented, live
+    camera      the picture alone, exposed while the camera moves (intentional camera movement): live
     tokens      the pictures as token grids, mixed by arithmetic and drawn back: live
     colour      the material's colours on the picture (arcana's colour transfer)
     generative  a diffusion model redraws the picture with the material in view (arcana's style transfer)
@@ -15,6 +16,7 @@ here appears everywhere with nothing else to edit.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 
@@ -73,6 +75,7 @@ class Method:
     cost: str = "live"           # live | seconds
     needs: tuple = ()            # gpu, diffusers, modflows
     focused: bool = False        # draws only around a small mask, so the frame may stay at full size
+    masks_itself: bool = False   # lays its own result through the mask; the pipeline does not composite again
     listed: bool = True          # shown in the tab's menu; an unlisted method still runs for recipes, films, ops
 
     def public(self):
@@ -642,6 +645,210 @@ PIXELS.append(Method("pixels.detail", "pixels", "detail transfer",
                       M("levels", "int", 4, 1, 6, 1, "levels", "how many scales of detail")),
                      lambda step, k: _style("texture")(step, {**k, "strength": k["amount"]}), materials=(1, 1)))
 
+# ─────────────────────────── camera ───────────────────────────
+
+def _motion(step, k):
+    """The picture exposed while the camera moves (see motion.py). Every camera method runs this; each
+    shows the knobs of its own kind of movement, and the others rest at their defaults.
+
+    The step's mask is used one of two ways (`mask use`). "moves inside" shows the movement only where
+    the mask lets it in, the picture as it was elsewhere. "holds still" keeps the masked places still and
+    sharp while the movement flows on around them, so a feathered subject mask leaves a clear silhouette
+    in a moving world."""
+    v = {**CAMERA_DEFAULTS, **k}
+    m = step.mask
+    holds = m is not None and v["mask_use"] == "holds still"
+    out = _exposed(step, step.c, v, hold=m * float(v["hold_strength"]) if holds else None)
+    if m is not None and not holds:
+        out = m[..., None] * out + (1 - m[..., None]) * step.c
+    a = float(v.get("amount", 1.0))
+    return (step.c + a * (out - step.c) if a < 1.0 else out).astype(np.float32)
+
+
+BLENDS = ("screen", "lighten", "average", "soft light", "darken", "multiply")
+
+
+def _double(step, k):
+    """A double exposure: the material [1] exposed with the camera's movement and laid into the picture
+    by `blend`, at `second` strength. Through a mask (say the subject) the second picture fills only
+    that silhouette, its edge feathered by the mask's own feather."""
+    v = {**CAMERA_DEFAULTS, **k}
+    pic = step.c
+    if float(v["picture_moves"]) > 0:
+        pm = float(v["picture_moves"])
+        pv = {**v, "sweep": v["sweep"] * pm, "rotation": v["rotation"] * pm, "zoom": v["zoom"] * pm,
+              "direction": v["direction"] + v["across"], "strokes": 1, "echoes": 0}
+        pic = _exposed(step, pic, pv)
+    moved = _exposed(step, step.materials[0], {**v, "defocus": v["defocus"] + v["soft_second"]})
+    b = v["blend"]
+    if b == "screen":
+        both = 1 - (1 - pic) * (1 - moved)
+    elif b == "lighten":
+        both = np.maximum(pic, moved)
+    elif b == "darken":
+        both = np.minimum(pic, moved)
+    elif b == "multiply":
+        both = pic * moved
+    elif b == "soft light":                  # the second's colour carried into the first's light
+        both = np.where(moved <= 0.5, pic - (1 - 2 * moved) * pic * (1 - pic),
+                        pic + (2 * moved - 1) * (np.sqrt(np.clip(pic, 0, 1)) - pic))
+    else:
+        both = 0.5 * (pic + moved)
+    t = float(v["second"])
+    out = pic + t * (both - pic)
+    if step.mask is not None:
+        mm = step.mask[..., None]
+        out = mm * out + (1 - mm) * pic
+    a = float(v.get("amount", 1.0))
+    return np.clip(step.c + a * (out - step.c) if a < 1.0 else out, 0, 1).astype(np.float32)
+
+
+def _exposed(step, c, v, hold=None):
+    from . import motion
+
+    s = max(step.H, step.W) / PIX_REF
+    return motion.expose(c, sweep=v["sweep"], direction=v["direction"], rotation=v["rotation"],
+                        zoom=v["zoom"], wobble=v["wobble"], cycles=v["cycles"], hold_start=v["hold_start"],
+                        hold_end=v["hold_end"], centred=bool(v["centred"]), trails=v["trails"],
+                        focus_pull=v["focus_pull"] * s, steps=int(v["steps"]), echoes=int(v["echoes"]),
+                        fade=v["fade"], strokes=int(v["strokes"]), spread=v["spread"], glow=v["glow"],
+                        echo_step=v["echo_step"], echo_angle=v["echo_angle"], irregular=v["irregular"],
+                        drift=v["drift"], seed=int(v["seed"]), detail=v["detail"], parallax=v["parallax"],
+                        depth=step.depth() if v["parallax"] > 0 and getattr(step, "depth", None) else None,
+                        follow=v["follow"], anchor=v["anchor"], light=v["light"], defocus=v["defocus"] * s,
+                        pivot_x=v["pivot_x"], pivot_y=v["pivot_y"], hold=hold)
+
+
+def _cam(**over):
+    """The camera's knobs by key; a method may start one at its own default."""
+    knobs = {
+        "amount": AMOUNT,
+        "sweep": K("sweep", "float", 0.12, 0, 0.8, 0.005, "sweep", "how far the camera travels, as a share of "
+                   "the frame"),
+        "direction": K("direction", "angle", 1.5708, 0, 6.283, 0.05, "direction", "which way it travels: 0 "
+                       "across, 1.57 down"),
+        "rotation": K("rotation", "float", 0.0, -180, 180, 1, "rotation", "degrees the camera turns about the "
+                      "centre"),
+        "zoom": K("zoom", "float", 0.0, -0.8, 0.8, 0.01, "zoom", "how much the frame grows (or shrinks) by the "
+                  "end"),
+        "hold_start": K("hold_start", "float", 0.0, 0, 0.9, 0.01, "hold at start", "the share of the exposure "
+                        "held still first: a sharp impression of the picture"),
+        "hold_end": K("hold_end", "float", 0.0, 0, 0.9, 0.01, "hold at end", "the share held still at the end "
+                      "of the path: a second, moved impression"),
+        "trails": K("trails", "float", 0.0, -1, 1, 0.01, "trails", "0 averages the exposure; toward 1 the "
+                    "brightest copy at each place wins (Lighten), toward -1 the darkest (Darken), so dark branches "
+                    "streak"),
+        "defocus": K("defocus", "float", 0.0, 0, 12, 0.1, "defocus", "a round lens blur before the movement, in "
+                     "pixels: lights bloom into soft discs, as through a misted lens"),
+        "pivot_x": K("pivot_x", "float", 0.5, 0, 1, 0.01, "pivot across", "where a turn or zoom centres, across "
+                     "the frame"),
+        "pivot_y": K("pivot_y", "float", 0.5, 0, 1, 0.01, "pivot down", "where a turn or zoom centres, down the "
+                     "frame"),
+        "anchor": K("anchor", "float", 0.0, 0, 1, 0.01, "edges hold", "strong edges move less and flat places "
+                    "more: the forms stay while the spaces between them flow"),
+        "light": K("light", "float", 0.0, 0, 1, 0.01, "light leads", "the picture's light moves the whole way "
+                   "and streaks over the dark, which holds, as a flash ends a long exposure"),
+        "follow": K("follow", "float", 0.0, 0, 1, 0.01, "follow forms", "the sweep bends along the picture's "
+                    "own contours, so the strokes run with its forms"),
+        "detail": K("detail", "float", 0.0, 0, 1.5, 0.01, "keep detail", "the picture's own fine detail laid "
+                    "back over the movement: edges stay while light and colour flow"),
+        "glow": K("glow", "float", 0.0, 0, 1, 0.01, "glow", "a soft copy screened over the result: a dreamy "
+                  "halo"),
+        "echoes": K("echoes", "int", 0, 0, 12, 1, "echoes", "0 makes one exposure; 2 or more repeats the "
+                    "movement that many times, stepped apart, as several exposures of one gesture"),
+        "strokes": K("strokes", "int", 1, 1, 6, 1, "strokes", "the exposure split into this many movements, "
+                     "fanned across the spread: gestures layered in one frame"),
+        "spread": K("spread", "angle", 0.8, 0, 3.1416, 0.05, "spread", "the range of directions the strokes "
+                    "fan across", when=(("strokes", ">", 1),)),
+        "fade": K("fade", "float", 0.0, 0, 0.9, 0.01, "echo fade", "how much weaker each echo is than the one "
+                  "before", when=(("echoes", ">", 1),)),
+        "echo_step": K("echo_step", "float", 0.06, 0, 0.3, 0.005, "echo step", "how far apart the echoes lie, "
+                       "as a share of the frame", when=(("echoes", ">", 1),)),
+        "echo_angle": K("echo_angle", "angle", 1.5708, 0, 6.283, 0.05, "echo direction", "which way the echoes "
+                        "step: 1.57 down, so ridges lie one behind another", when=(("echoes", ">", 1),)),
+        "irregular": K("irregular", "float", 0.0, 0, 1, 0.01, "uneven spacing", "how unevenly the echoes are "
+                       "spaced", when=(("echoes", ">", 1),)),
+        "drift": K("drift", "float", 0.0, 0, 0.1, 0.001, "echo drift", "how far each echo strays across its "
+                   "step and in scale, as a share of the frame", when=(("echoes", ">", 1),)),
+        "seed": K("seed", "int", 0, 0, 9999, 1, "seed", "which uneven spacing and drift",
+                  when=(("echoes", ">", 1),)),
+        "wobble": K("wobble", "float", 0.0, 0, 0.1, 0.001, "wobble", "a sideways oscillation across the sweep, "
+                    "as a share of the frame"),
+        "cycles": K("cycles", "float", 3.0, 0.5, 12, 0.5, "wobble cycles", "how many times the camera "
+                    "oscillates", when=(("wobble", ">", 0),)),
+        "focus_pull": K("focus_pull", "float", 0.0, 0, 16, 0.1, "focus pull", "how far out of focus the "
+                        "picture drifts along the path, in pixels"),
+        "parallax": K("parallax", "float", 0.0, 0, 1, 0.01, "parallax", "near places move further than far "
+                      "ones, read from depth; strong values tear where near meets far"),
+        "centred": K("centred", "bool", True, label="centred", doc="the path runs through the picture's own "
+                     "place, else it starts there"),
+        "steps": K("steps", "int", 48, 8, 160, 1, "steps", "the fewest copies summed along the path; long paths "
+                   "take more, about one per pixel moved"),
+        "mask_use": K("mask_use", "choice", "moves inside", label="mask", options=("moves inside", "holds still"),
+                      doc="with a mask: the movement only inside it, or the masked places held still and sharp "
+                          "while the rest moves around them"),
+        "hold_strength": K("hold_strength", "float", 1.0, 0, 1, 0.01, "how still", "how fully the masked places "
+                           "hold: below 1 they drift a little with the rest",
+                           when=(("mask_use", "==", "holds still"),)),
+        "blend": K("blend", "choice", "screen", label="blend", options=BLENDS, doc="how the second exposure "
+                   "meets the picture: screen and lighten add light, darken and multiply keep shadows"),
+        "second": K("second", "float", 0.8, 0, 1, 0.01, "second exposure", "how strongly the moving second "
+                    "picture is laid in"),
+        "picture_moves": K("picture_moves", "float", 0.0, 0, 1, 0.01, "picture moves too", "how much of the "
+                           "movement the first picture takes"),
+        "across": K("across", "angle", 0.0, 0, 6.283, 0.05, "picture's turn", "the first picture moves this far "
+                    "round from the second's direction: 1.57 crosses them", when=(("picture_moves", ">", 0),)),
+        "soft_second": K("soft_second", "float", 0.0, 0, 16, 0.1, "soften second", "a lens blur on the second "
+                         "picture alone, in pixels: it becomes a field of colour and light behind the first"),
+    }
+    for key, default in over.items():
+        knobs[key] = dataclasses.replace(knobs[key], default=default)
+    return knobs
+
+
+CAMERA_DEFAULTS = {k: v.default for k, v in _cam().items()}
+
+
+def _camera(mid, label, doc, main, more, run=None, materials=(0, 0), **defaults):
+    kn = _cam(**defaults)
+    if run is None:                          # every movement takes the mask one of two ways
+        main = (*main, "mask_use", "hold_strength")
+    knobs = tuple(kn[k] for k in ("amount", *main)) + tuple(
+        dataclasses.replace(kn[k], section="more") for k in more)
+    return Method(mid, "camera", label, doc, knobs, run or _motion, materials=materials, masks_itself=True)
+
+
+CAMERA = [
+    _camera("camera.sweep", "sweep", "the camera swept in one direction while the picture is exposed, with "
+            "holds that leave sharp impressions and trails that keep the lights",
+            ("sweep", "direction", "hold_start", "hold_end", "trails"),
+            ("defocus", "detail", "glow", "wobble", "cycles", "focus_pull", "centred", "steps")),
+    _camera("camera.turn", "turn and zoom", "the camera turned about the centre or zoomed during the exposure: "
+            "swirls and bursts",
+            ("rotation", "zoom", "pivot_x", "pivot_y", "trails", "hold_start"),
+            ("sweep", "direction", "hold_end", "defocus", "detail", "glow", "focus_pull", "steps"),
+            rotation=20.0, sweep=0.0),
+    _camera("camera.layers", "layered exposures", "several exposures of one gesture in one frame: repeats "
+            "stepped apart, or strokes fanned across directions, over a held sharp impression",
+            ("strokes", "spread", "echoes", "echo_step", "sweep", "direction", "hold_start"),
+            ("trails", "fade", "echo_angle", "irregular", "drift", "seed", "anchor", "defocus", "detail", "glow",
+             "centred", "steps"),
+            strokes=3, spread=1.2, sweep=0.08, direction=0.6, hold_start=0.25, centred=False),
+    _camera("camera.flow", "forms kept", "a movement that bends place by place: edges hold while the spaces "
+            "flow, the light streaks over a still dark, or the strokes follow the picture's own contours",
+            ("anchor", "light", "follow", "sweep", "direction", "detail"),
+            ("glow", "trails", "defocus", "hold_start", "rotation", "pivot_x", "pivot_y", "parallax", "centred",
+             "steps"),
+            anchor=0.8),
+    _camera("camera.double", "double exposure", "a second picture (material [1]) exposed with its own "
+            "movement and laid over the whole picture, or a broad part of it through a mask (a gradient, the light)",
+            ("blend", "second", "sweep", "direction", "picture_moves", "across", "soft_second"),
+            ("rotation", "zoom", "strokes", "spread", "trails", "defocus", "anchor", "follow", "detail", "glow",
+             "pivot_x", "pivot_y", "centred", "steps"),
+            run=_double, materials=(1, 1), sweep=0.1),
+]
+
+
 COLOUR = [
     Method("colour.lab", "colour", "LAB", "the material's colour statistics on the picture, in LAB: instant, any machine",
            (K("strength", "float", 1.0, 0, 1, 0.01, "strength", "how fully the colours move"),),
@@ -749,11 +956,13 @@ GENERATIVE.append(
            _edit, materials=(0, 1), cost="seconds", needs=("diffusers", "gpu"), focused=True))
 
 FAMILIES = {"pixels": "the material's own pixels laid into the picture: nothing invented",
+            "camera": "the picture exposed while the camera moves: swept, turned, layered, its forms held or "
+                      "followed (intentional camera movement)",
             "tokens": "the pictures as token grids, mixed by arithmetic and drawn back",
             "colour": "the material's colours on the picture",
             "generative": "a diffusion model redraws a thing in the picture, or the whole picture, in a material "
                           "[1], an IP label, or a look learned from one of your sets"}
-METHODS = {m.id: m for m in PIXELS + TOKENS + COLOUR + GENERATIVE}
+METHODS = {m.id: m for m in PIXELS + CAMERA + TOKENS + COLOUR + GENERATIVE}
 
 
 def get(method_id: str) -> Method:

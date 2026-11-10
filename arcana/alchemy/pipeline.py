@@ -160,6 +160,8 @@ def step_on(c, key, spec, asker=None):
                      load=lambda ref, w, h: load_frame(resolve(ref), w, h), asker=asker)
     m = mk.build(spec.get("mask"), scene)
     out = c
+    if method is not None and spec.get("amount") is not None and float(spec["amount"]) <= 0.001:
+        method = None                        # a film's amount lane at nothing: the morph alone, drawn quickly
     if method is not None:
         knobs = mt.settle_knobs(method, spec.get("knobs") or {})
         if method.family == "tokens":
@@ -172,6 +174,9 @@ def step_on(c, key, spec, asker=None):
             out = np.asarray(to_image(out).resize((W, H), mk.Image.LANCZOS), np.float32) / 255.0
         if m is not None and method.picture:
             out = m[..., None] * out + (1 - m[..., None]) * c
+        amount = spec.get("amount")
+        if amount is not None and float(amount) < 1:
+            out = c + (out - c) * max(float(amount), 0.0)
     return fn.apply(out, spec.get("finish"), m, seed=crop), m
 
 

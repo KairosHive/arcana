@@ -185,11 +185,11 @@ def test_saved_recipes_are_listed_and_replace_their_namesake(tmp, monkeypatch):
 def test_the_ops_are_registered_with_their_kinds():
     kinds = {o.name: o.kind for o in ops.all_ops() if o.name.startswith("alchemy ")}
     assert kinds == {"alchemy methods": "read", "alchemy memory": "read", "alchemy preview": "read",
-                     "alchemy make": "effect",
+                     "alchemy make": "effect", "alchemy derive": "effect",
                      "alchemy mask presets": "read", "alchemy mask preview": "read",
                      "alchemy recipe list": "read", "alchemy recipe show": "read",
                      "alchemy recipe save": "write", "alchemy film list": "read",
-                     "alchemy film show": "read", "alchemy film save": "write", "alchemy film delete": "write",
+                     "alchemy film show": "read", "alchemy film space": "write", "alchemy film save": "write", "alchemy film delete": "write",
                      "alchemy film preview": "read", "alchemy film make": "effect",
                      "alchemy template list": "read", "alchemy template apply": "read",
                      "alchemy template save": "write", "alchemy template delete": "write"}

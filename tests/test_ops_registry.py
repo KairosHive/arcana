@@ -108,7 +108,7 @@ VOCABULARY = {
 # Examples that load a large model. They run when ARCANA_SLOW_EXAMPLES is set,
 # and their behaviour is tested with stubs in test_colour_ops.py either way.
 # `model download` fetches hundreds of megabytes, so its example never runs here.
-SLOW = {"generate", "colour lut", "alchemy make", "board pdf", "alchemy film preview", "alchemy film make",
+SLOW = {"generate", "colour lut", "alchemy make", "alchemy derive", "board pdf", "alchemy film preview", "alchemy film make",
         "label make", "lora train", "material draw", "material walk", "material keep", "axis make"}
 NETWORK = {"model download"}
 # Examples that index or rewrite a real folder. test_lifecycle.py runs these

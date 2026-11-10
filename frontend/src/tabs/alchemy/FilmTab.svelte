@@ -5,8 +5,8 @@
   import { toast } from '../../lib/stores/toast.svelte'
   import { watchJob } from '../../lib/stores/jobs.svelte'
   import { thumbUrl, filmVideoUrl, basename } from '../../lib/api/media'
-  import { film, commit, refreshMeta, addPicture, spacePictures, addLane, addLook, replaceLook, removeLook, lookSummary, removeSelected, newFilm, openFilm, keysOf, clone, SPACES, type FilmSpec, type LookSummary } from './film.svelte'
-  import { controls, loadStep, alchemyUi } from './alchemy.svelte'
+  import { film, commit, refreshMeta, addPicture, spacePictures, addLane, addLook, replaceLook, removeLook, lookSummary, removeSelected, newFilm, openFilm, keysOf, clone, sorted, laneValue, shapeLane, placeSeries, isFilmRef, FILM_REF, LANE_SHAPES, SPACES, type FilmSpec, type LookSummary } from './film.svelte'
+  import { controls, loadStep, alchemyUi, catalog, method as methodOf, step } from './alchemy.svelte'
   import Timeline from './Timeline.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import Disclosure from '../../lib/ui/Disclosure.svelte'
@@ -89,6 +89,83 @@
   let lanePick = $state<string | null>(null)
   const laneDoc = $derived.by(() => { const m = lanePick ? film.meta?.lanes[lanePick] : null; return m ? `${m.doc ?? ''}. From ${m.lo} to ${m.hi}.` : '' })
 
+  // ---- a lane's whole curve ----
+  const selLane = $derived(film.sel && film.sel.lane !== 'pictures' && film.sel.lane !== 'looks' && film.spec.lanes[film.sel.lane] ? film.sel.lane : null)
+  let shapeLo = $state(0), shapeHi = $state(1), shapeCount = $state(3), shapeOver = $state<'film' | 'after'>('film')
+  let shapeStatus = $state('')
+  let shapeFor = ''
+  $effect(() => {
+    const m = selLane ? film.meta?.lanes[selLane] : null
+    if (!selLane || !m || shapeFor === selLane) return
+    shapeFor = selLane
+    const now = laneValue(sorted(film.spec.lanes[selLane] ?? []), film.t)
+    shapeLo = Math.round(now * 1000) / 1000
+    // A lane of 0 to 1 goes to its far end; a wide slider moves a visible step, 15% of its range.
+    const far = Math.abs(m.hi - now) >= Math.abs(now - m.lo) ? m.hi : m.lo
+    const span = m.hi - m.lo
+    const to = span > 2 ? now + Math.sign(far - now) * 0.15 * span : far
+    shapeHi = Math.round(Math.min(Math.max(to, m.lo), m.hi) * 1000) / 1000
+  })
+  async function shape(kind: string) {
+    if (!selLane) return
+    const L = film.meta?.length || 1
+    const start = shapeOver === 'after' ? film.t : 0
+    shapeStatus = await shapeLane(selLane, kind, shapeLo, shapeHi, start, L, shapeCount)
+    film.sel = null
+  }
+
+  // ---- derivatives of one picture ----
+  const VARY = [
+    { value: 'seed', label: 'new seeds: similar textures' },
+    { value: 'material', label: 'each picture of the collection as material: different textures' },
+    { value: 'recipe', label: 'each chosen recipe: different looks' },
+    { value: 'knob', label: 'one knob stepped: the look growing' },
+  ]
+  let vary = $state('seed'), deriveCount = $state(4), deriveKnob = $state<string | null>(null)
+  let deriveStart = $state(0), deriveEnd = $state(1), knobFor = ''
+  $effect(() => {
+    const k = numberKnobs.find((x) => x.key === deriveKnob)
+    if (!k || knobFor === k.key) return
+    knobFor = k.key
+    deriveStart = k.lo ?? 0; deriveEnd = typeof k.default === 'number' && k.default > (k.lo ?? 0) ? k.default : (k.hi ?? 1)
+  })
+  let deriveEvery = $state(3), deriveBack = $state(true), deriveSteady = $state(true), deriveRecipes = $state<string[]>([])
+  let byChange = $state(true), timingStatus = $state('')
+  let deriveJob = $state<Job | null>(null), deriveStatus = $state('')
+  const derivePic = $derived.by(() => {
+    const sel = film.sel
+    if (!sel || sel.lane !== 'pictures') return null
+    const k = sorted(film.spec.pictures)[sel.i]
+    return k && !isFilmRef(k.ref) ? k : null
+  })
+  const stepMethod = $derived(methodOf(step.method))
+  const numberKnobs = $derived((stepMethod?.knobs ?? []).filter((k) => ['float', 'int', 'angle'].includes(k.kind) && k.lo !== undefined))
+  const otherPictures = $derived(items.filter((p) => p !== derivePic?.ref).slice(0, 12))
+  const recipeNames = $derived((catalog.data?.recipes ?? []).map((r) => r.name))
+  const deriveBusy = $derived(!!deriveJob && ['running', 'queued'].includes(deriveJob.status))
+  async function derive() {
+    const pic = derivePic
+    if (!pic?.ref) { deriveStatus = 'Click a picture on the picture lane first.'; return }
+    const body: Record<string, any> = { controls: controls(), picture: pic.ref, vary, count: deriveCount, size: 1024 }
+    if (vary === 'material') body.each = otherPictures
+    if (vary === 'recipe') body.each = deriveRecipes
+    if (vary === 'knob') { body.knob = deriveKnob; body.start = deriveStart; body.end = deriveEnd }
+    deriveStatus = 'Starting…'
+    try {
+      const r = await post('/api/film/derive', body)
+      const at = pic.t, ref = String(pic.ref)
+      watchJob(r.job, (j) => { deriveJob = j; if (['running', 'queued'].includes(j.status)) deriveStatus = j.message || 'Drawing…' }, async (j) => {
+        deriveJob = j
+        if (j.status !== 'done' || !j.result) { deriveStatus = j.error || `The derivatives ended: ${j.status}.`; return }
+        const ids: string[] = j.result.ids
+        const refs = deriveBack ? [...ids, ref] : ids
+        let why = await placeSeries(refs, at + deriveEvery, deriveEvery)
+        if (!why && deriveSteady) { deriveStatus = 'Measuring the passages for a steady pace…'; why = await spacePictures('even', 'change') }
+        deriveStatus = why || `${ids.length} derivatives after the picture, ${deriveEvery} s apart: ${j.result.labels.join(', ')}. They are kept in output and the Archive.`
+      })
+    } catch (e) { deriveStatus = reason(e) }
+  }
+
   // ---- selected key ----
   const selected = $derived.by(() => {
     const sel = film.sel
@@ -99,12 +176,13 @@
     const key = keys[sel.i]
     let label: string, doc: string
     const m = film.meta?.lanes[sel.lane]
-    if (sel.lane === 'pictures') { label = `Picture ${sel.i + 1}: ${basename(String(key.ref))}`; doc = 'When the film passes this picture.' }
+    if (sel.lane === 'pictures' && isFilmRef(key.ref)) { label = `Film ${String(key.ref).slice(FILM_REF.length)}`; doc = 'The film morphs into this film\'s frame at In, plays it to Out at its speed, and morphs on from there.' }
+    else if (sel.lane === 'pictures') { label = `Picture ${sel.i + 1}: ${basename(String(key.ref))}`; doc = 'When the film passes this picture.' }
     else if (sel.lane === 'looks') { const mm = key.settings?.method || 'none'; label = `Look ${sel.i + 1}: ${mm === 'none' ? 'morph only' : mm}`; doc = 'From here the film moves toward the next look.' }
     else { label = `${m?.label ?? sel.lane}, key ${sel.i + 1}`; doc = m ? `${m.doc ?? ''}. From ${m.lo} to ${m.hi}.` : '' }
-    return { key, label, doc, hasV: 'v' in key }
+    return { key, label, doc, hasV: 'v' in key, isFilm: sel.lane === 'pictures' && isFilmRef(key.ref) }
   })
-  function editKey(patch: { t?: number; v?: number; ease?: string }) {
+  function editKey(patch: { t?: number; v?: number; ease?: string; in?: number; out?: number; speed?: number }) {
     const sel = film.sel
     if (!sel) return
     const s = clone(film.spec)
@@ -114,6 +192,7 @@
     if (patch.t !== undefined) key.t = Math.round(Math.max(0, patch.t) * 1000) / 1000
     if (patch.v !== undefined && 'v' in key) key.v = patch.v
     if (patch.ease) key.ease = patch.ease
+    for (const k of ['in', 'out', 'speed'] as const) if (patch[k] !== undefined) key[k] = Math.round(patch[k]! * 1000) / 1000
     commit(s)
   }
   function key(e: KeyboardEvent) {
@@ -207,6 +286,14 @@
         <button class="pic" title={basename(p)} draggable="true" ondragstart={(e) => dragPicture(e, p)} onclick={() => addPicture(p)}><img src={thumbUrl(p)} alt="" loading="lazy" draggable="false" /></button>
       {/each}
     </div>
+    {#if films.length}
+      <p class="hint shelf">Kept films. One placed on the timeline plays there, and this film morphs into it and out of it.</p>
+      <div class="films">
+        {#each films.filter((f) => f.value !== film.spec.name) as f (f.value)}
+          <button class="filmkey" title="Put this film at the playhead, or drag it onto the timeline" draggable="true" ondragstart={(e) => dragPicture(e, FILM_REF + f.value)} onclick={() => addPicture(FILM_REF + f.value)}>▶ {f.value}</button>
+        {/each}
+      </div>
+    {/if}
   </Card>
 
   <div class="stage">
@@ -255,6 +342,19 @@
         <Button size="sm" disabled={!lanePick} onclick={() => { if (lanePick) addLane(lanePick); lanePick = null }}>Add lane</Button>
       </div>
       <Status text={laneDoc} size="xs" />
+      {#if selLane}
+        <p class="txt">Shape {film.meta?.lanes[selLane]?.label ?? selLane}</p>
+        <div class="row">
+          <Field label="From"><NumberInput bind:value={shapeLo} step="any" size="sm" width="70px" /></Field>
+          <Field label="To"><NumberInput bind:value={shapeHi} step="any" size="sm" width="70px" /></Field>
+          <Field label="Times"><NumberInput bind:value={shapeCount} min={1} max={32} step={1} size="sm" width="56px" /></Field>
+        </div>
+        <Field label="Over"><Select bind:value={shapeOver} options={[{ value: 'film', label: 'the whole film' }, { value: 'after', label: 'the playhead to the end' }]} size="sm" /></Field>
+        <div class="eases">{#each LANE_SHAPES as sh}<button class="ease" title={sh.doc} onclick={() => shape(sh.key)}>{sh.label}</button>{/each}</div>
+        <Status text={shapeStatus} size="xs" />
+      {:else if Object.keys(film.spec.lanes).length}
+        <p class="hint">Click a lane's curve to select it, then shape it whole here: a rise, a swell, a wave.</p>
+      {/if}
       {#if look.index !== null && !look.mask}<p class="hint">The look's mask: set one in the Image subtab, then Use Image's step, and its layers become lanes.</p>{/if}
     </Disclosure>
 
@@ -266,6 +366,13 @@
           <Field label="Time (s)"><NumberInput value={Math.round(selected.key.t * 1000) / 1000} min={0} step={0.05} size="sm" width="80px" onchange={(v) => editKey({ t: v })} /></Field>
           {#if selected.hasV}<Field label="Value"><NumberInput value={selected.key.v ?? 0} step="any" size="sm" width="90px" onchange={(v) => editKey({ v })} /></Field>{/if}
         </div>
+        {#if selected.isFilm}
+          <div class="row">
+            <Field label="In (s)"><NumberInput value={selected.key.in ?? 0} min={0} step={0.1} size="sm" width="70px" onchange={(v) => editKey({ in: v })} /></Field>
+            <Field label="Out (s)"><NumberInput value={selected.key.out ?? 0} min={0} step={0.1} size="sm" width="70px" onchange={(v) => editKey({ out: v })} /></Field>
+            <Field label="Speed"><NumberInput value={selected.key.speed ?? 1} min={0.1} max={8} step={0.1} size="sm" width="60px" onchange={(v) => editKey({ speed: v })} /></Field>
+          </div>
+        {/if}
         <Field label="Curve to the next key">
           <div class="eases">
             {#each EASES as [v, lab]}<button class="ease" class:on={(selected.key.ease ?? 'linear') === v} onclick={() => editKey({ ease: v })}>{lab}</button>{/each}
@@ -278,9 +385,44 @@
       {/if}
     </Disclosure>
 
-    <Disclosure label="Pictures timing" note="speed up, slow down">
-      <p class="hint">Re-time every picture between the first and the last, to speed the morph up or slow it down.</p>
-      <div class="row">{#each [['even', 'even', 'every passage as long'], ['faster', 'speeding up', 'each passage shorter than the one before'], ['slower', 'slowing down', 'each passage longer than the one before'], ['smooth', 'slow at both ends', 'slow to start and to end']] as [k, lab, doc]}<Button size="sm" title={doc} onclick={() => spacePictures(k)}>{lab}</Button>{/each}</div>
+    <Disclosure label="Derivatives" note="one picture, many versions">
+      <p class="hint">Versions of one picture, drawn with the Image subtab's step and laid after it on the picture lane, so the film morphs between them. Keep the result as a film, and it plays inside another film from the shelf on the left.</p>
+      {#if derivePic}
+        <p class="txt row"><img class="mat" src={thumbUrl(String(derivePic.ref))} alt="" /> {basename(String(derivePic.ref))}, at {derivePic.t.toFixed(2)} s</p>
+      {:else}
+        <p class="hint">Click a picture on the picture lane to derive from it.</p>
+      {/if}
+      <p class="hint">The step: {stepMethod?.label ?? step.method}{step.roles['1'] ? ', with material [1]' : ''}.</p>
+      <Field label="What changes"><Select bind:value={vary} options={VARY} size="sm" /></Field>
+      {#if vary === 'seed' || vary === 'knob'}
+        <Field label="How many"><NumberInput bind:value={deriveCount} min={2} max={12} step={1} size="sm" width="60px" /></Field>
+      {/if}
+      {#if vary === 'knob'}
+        <Field label="Knob"><Select bind:value={deriveKnob} options={numberKnobs.map((k) => ({ value: k.key, label: `${k.label} (${k.lo} to ${k.hi})` }))} placeholder="a knob of the step…" size="sm" /></Field>
+        <div class="row">
+          <Field label="From"><NumberInput bind:value={deriveStart} step="any" size="sm" width="70px" /></Field>
+          <Field label="To"><NumberInput bind:value={deriveEnd} step="any" size="sm" width="70px" /></Field>
+        </div>
+      {:else if vary === 'material'}
+        <p class="hint">{otherPictures.length} pictures of the collection, each laid in as material [1] in turn.</p>
+      {:else if vary === 'recipe'}
+        <div class="eases">{#each recipeNames as r}<button class="ease" class:on={deriveRecipes.includes(r)} onclick={() => (deriveRecipes = deriveRecipes.includes(r) ? deriveRecipes.filter((x) => x !== r) : [...deriveRecipes, r])}>{r}</button>{/each}</div>
+      {/if}
+      <div class="row">
+        <Field label="Seconds apart"><NumberInput bind:value={deriveEvery} min={0.5} max={30} step={0.5} size="sm" width="60px" /></Field>
+        <Checkbox bind:checked={deriveBack} label="end on the picture again" />
+      </div>
+      <Checkbox bind:checked={deriveSteady} label="then a steady pace through the whole film" />
+      <Button size="sm" kind="primary" onclick={derive} disabled={!derivePic || deriveBusy}>Make derivatives</Button>
+      {#if deriveBusy}<ProgressBar fraction={deriveJob?.fraction ?? 0} />{/if}
+      <Status text={deriveStatus} size="xs" tone={deriveJob?.status === 'failed' ? 'bad' : 'dim'} />
+    </Disclosure>
+
+    <Disclosure label="Pictures timing" note="a steady morph, then speed" open>
+      <p class="hint">Re-time every picture between the first and the last. Steady gives each passage as long as the picture changes along it, so the morph runs at one rate however far apart the pictures are. The other shapes bend that rate. Held films keep their length.</p>
+      <Checkbox bind:checked={byChange} label="by how much the picture changes (off: every passage as long)" />
+      <div class="row">{#each [['even', 'steady', 'one rate all through'], ['faster', 'speeding up', 'the rate rising toward the end'], ['slower', 'slowing down', 'the rate falling toward the end'], ['smooth', 'slow at both ends', 'slow to start and to end']] as [k, lab, doc]}<Button size="sm" title={doc} onclick={async () => { timingStatus = 'Measuring the passages…'; timingStatus = (await spacePictures(k, byChange ? 'change' : 'time')) || (byChange ? `Re-timed: ${lab}, by how much the picture changes.` : `Re-timed: ${lab}, every passage as long.`) }}>{lab}</Button>{/each}</div>
+      <Status text={timingStatus} size="xs" />
     </Disclosure>
 
     <Disclosure label="Film" note="length, shape, model">
@@ -349,4 +491,8 @@
   .ease { padding: 3px 8px; border: 1px solid var(--arc-line); border-radius: 5px; background: transparent; font-size: 11.5px; color: var(--arc-ink-dim); }
   .ease.on { border-color: var(--arc-accent); color: var(--arc-ink); background: color-mix(in srgb, var(--arc-accent) 18%, transparent); }
   .video { width: 100%; margin-top: 8px; border-radius: var(--r-md); }
+  .shelf { font-size: var(--fs-xs); margin-top: 8px; }
+  .films { display: flex; flex-direction: column; gap: 4px; padding: 4px 2px; }
+  .filmkey { text-align: left; padding: 4px 8px; border: 1px solid var(--arc-line); border-radius: 5px; background: var(--arc-surface-2); color: var(--arc-ink); font-size: 11.5px; cursor: copy; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .filmkey:hover { border-color: var(--tab-alchemy); }
 </style>

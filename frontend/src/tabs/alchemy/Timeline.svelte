@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { film, commit, keysOf, clone, laneValue, sorted, dropPicture, type Key } from './film.svelte'
+  import { film, commit, keysOf, clone, laneValue, sorted, dropPicture, addPicture, isFilmRef, type Key } from './film.svelte'
   import { thumbUrl } from '../../lib/api/media'
 
   /**
@@ -7,6 +7,7 @@
    * look lane, and one lane per keyed number drawn as its curve.
    *
    *   drop a picture from the collection   put it on the picture lane where it lands
+   *   drop a kept film                     it plays there, the film morphing into it and out of it
    *   drag the ruler or an empty lane      scrub
    *   drag a picture or a look             move it in time
    *   drag a lane's key                    move it in time and value
@@ -149,7 +150,7 @@
     e.preventDefault()
     const path = e.dataTransfer.getData(PATH_TYPE), t = dropT
     dropT = null
-    if (path && t !== null) dropPicture(path, t)
+    if (path && t !== null) { if (isFilmRef(path)) addPicture(path, t); else dropPicture(path, t) }
   }
 
   $effect(() => {
@@ -187,8 +188,15 @@
     {#each sorted(shown.pictures) as p, i}
       {@const xx = X(p.t)}
       <line class="key-line" x1={xx} y1={RULER} x2={xx} y2={RULER + PICS} />
+      {#if isFilmRef(p.ref)}
+        {@const w = Math.max(X(p.t + (meta?.pictures[i]?.dur ?? 0)) - xx, 10)}
+        <rect class="seg" class:sel={isSel('pictures', i)} x={xx} y={RULER + 5} width={w} height="44" rx="4" data-kind="key" data-lane="pictures" data-i={i}><title>The film {String(p.ref).slice(5)} plays here</title></rect>
+        <text class="seg-text" x={xx + 6} y={RULER + 22}>▶ {String(p.ref).slice(5)}</text>
+        <text class="seg-text dim" x={xx + 6} y={RULER + 38}>{(meta?.pictures[i]?.dur ?? 0).toFixed(1)} s</text>
+      {:else}
       <image href={meta?.pictures[i]?.path ? thumbUrl(meta.pictures[i].path) : ''} x={xx - 22} y={RULER + 5} width="44" height="44" preserveAspectRatio="xMidYMid slice" class="thumb" data-kind="key" data-lane="pictures" data-i={i} />
       <rect class="thumb-frame" class:sel={isSel('pictures', i)} x={xx - 22} y={RULER + 5} width="44" height="44" rx="4" pointer-events="none" />
+      {/if}
     {/each}
 
     {#each sorted(shown.looks) as k, i}
@@ -212,7 +220,7 @@
     {#if dropT !== null}
       <line class="drop" x1={X(dropT)} y1={RULER} x2={X(dropT)} y2={RULER + PICS} />
     {/if}
-    <text class="hint-text" x="10" y={H - 6}>Drop pictures on the timeline · double-click a lane or press ◆ to add a key · drag keys · click a curve to set its shape · Delete removes</text>
+    <text class="hint-text" x="10" y={H - 6}>Drop pictures or kept films on the timeline · double-click a lane or press ◆ to add a key · drag keys · click a curve to set its shape · Delete removes</text>
 
     <line class="playhead" x1={X(film.t)} y1="0" x2={X(film.t)} y2={H} />
     <path class="playhead-cap" data-kind="ruler" d="M{X(film.t) - 6},0 h12 l-6,8z" />
@@ -239,6 +247,10 @@
   .thumb { cursor: grab; }
   .thumb-frame { fill: none; stroke: var(--arc-line-strong); stroke-width: 1; }
   .thumb-frame.sel { stroke: var(--tab-alchemy); stroke-width: 2; }
+  .seg { fill: color-mix(in srgb, var(--tab-alchemy) 22%, var(--arc-surface-2)); stroke: var(--tab-alchemy); stroke-width: 1; cursor: grab; }
+  .seg.sel { stroke-width: 2.5; }
+  .seg-text { fill: var(--arc-ink); font-size: 10.5px; pointer-events: none; }
+  .seg-text.dim { fill: var(--arc-ink-dim); }
   .look { fill: var(--arc-target); cursor: grab; }
   .look.sel { fill: var(--tab-alchemy); }
   .look-text { fill: var(--arc-ink-dim); font-size: 10px; pointer-events: none; }

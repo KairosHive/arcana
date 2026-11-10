@@ -6,7 +6,7 @@ import { post, reason } from '../../lib/api/client'
 import { load, save } from '../../lib/stores/persist'
 import { toast } from '../../lib/stores/toast.svelte'
 
-export type Key = { t: number; ease?: string; v?: number; ref?: string; settings?: Record<string, any> }
+export type Key = { t: number; ease?: string; v?: number; ref?: string; settings?: Record<string, any>; in?: number; out?: number; speed?: number }
 export type FilmSpec = {
   name: string; fps: number; size: number; aspect: string; space: string; loop: boolean; even: boolean; length?: number
   pictures: Key[]; looks: Key[]; lanes: Record<string, Key[]>
@@ -15,7 +15,7 @@ export type LaneMeta = { label: string; lo: number; hi: number; step: number; gr
 export type LookSummary = { index: number | null; count: number; t?: number; method?: string; model?: string | null; mask?: string; materials?: string[]; finish?: string[]; settings?: Record<string, any> }
 export type FilmMeta = {
   length: number; lanes: Record<string, LaneMeta>; laneOptions: { label: string; value: string; group: string }[]
-  pictures: { t: number; path: string; name: string }[]; looks: { t: number; label: string }[]
+  pictures: { t: number; path: string; name: string; film?: string; dur?: number; in?: number; out?: number; speed?: number }[]; looks: { t: number; label: string }[]
   ok: boolean; status: string; empty: string; normalised: any
 }
 export type Selection = { lane: string; i: number } | null
@@ -100,15 +100,44 @@ export function laneValue(keys: Key[], t: number): number {
 
 // ─────────────────────────── edits that need the engine ───────────────────────────
 
-export async function addPicture(ref: string) {
+export async function addPicture(ref: string, t: number = film.t) {
   try {
-    const r = await post('/api/film/add', { spec: film.spec, ref, t: film.t })
+    const r = await post('/api/film/add', { spec: film.spec, ref, t })
     commit(r.spec); film.t = r.t
   } catch (e) { toast(reason(e), 'bad') }
 }
 
-export async function spacePictures(shape: string) {
-  try { commit((await post('/api/film/space', { spec: film.spec, shape })).spec) } catch (e) { toast(reason(e), 'bad') }
+export const FILM_REF = 'film:'
+export const isFilmRef = (ref?: string) => String(ref ?? '').startsWith(FILM_REF)
+
+export const LANE_SHAPES = [
+  { key: 'rise', label: 'rise', doc: 'from the first value to the second' },
+  { key: 'fall', label: 'fall', doc: 'from the second value back to the first' },
+  { key: 'swell', label: 'swell', doc: 'up to the second value at the middle, and back' },
+  { key: 'dip', label: 'dip', doc: 'down to the first value at the middle, and back' },
+  { key: 'wave', label: 'wave', doc: 'back and forth, a number of times' },
+  { key: 'steps', label: 'steps', doc: 'in a number of steps, each held, then a cut' },
+]
+
+/** A whole curve on a lane between two times, in place of its keys there. */
+export async function shapeLane(path: string, shape: string, lo: number, hi: number, start: number, end: number, count: number): Promise<string> {
+  try {
+    commit((await post('/api/film/shape', { spec: film.spec, path, shape, lo, hi, start, end, count })).spec, null)
+    return ''
+  } catch (e) { return reason(e) }
+}
+
+/** Pictures laid one after another from a time, keys already after it moved later. */
+export async function placeSeries(refs: string[], t: number, every: number): Promise<string> {
+  try {
+    const r = await post('/api/film/series', { spec: film.spec, refs, t, every })
+    commit(r.spec, null)
+    return ''
+  } catch (e) { return reason(e) }
+}
+
+export async function spacePictures(shape: string, by: 'time' | 'change' = 'change'): Promise<string> {
+  try { commit((await post('/api/film/space', { spec: film.spec, shape, by })).spec); return '' } catch (e) { toast(reason(e), 'bad'); return reason(e) }
 }
 
 export async function addLane(path: string) {

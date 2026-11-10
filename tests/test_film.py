@@ -260,3 +260,137 @@ def test_templates_are_listed_deleted_and_undone(ds):
     assert [t.name for t in ops.call("alchemy template list", {}, actor="cli").templates] == ["Slow fade"]
     with pytest.raises(ops.Refusal, match="No film template"):
         ops.call("alchemy template apply", {"template": "rain", "spec": {}}, actor="cli")
+
+
+# ─────────────────────────── a film inside a film, lane shapes, derivatives ───────────────────────────
+
+def _inner(**more):
+    inner = {"name": "inner", "fps": 6, "size": 256, "aspect": "4:3", "even": False, "loop": False,
+             "pictures": [{"t": 0, "ref": "synth:5"}, {"t": 2, "ref": "synth:9"}]}
+    inner.update(more)
+    return F.save(inner)
+
+
+def test_a_kept_film_plays_on_the_picture_lane_between_two_morphs(ds):
+    _inner()
+    f = F.normalised(_spec(pictures=[{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:inner"},
+                                     {"t": 8, "ref": "synth:3"}]))
+    held = f["pictures"][1]
+    assert (held["in"], held["out"], held["speed"]) == (0.0, 2.0, 1.0) and F.span(held) == 2.0
+    stops = F.points(f)
+    assert [(q["t"], q["plays"]) for q in stops] == [(0, False), (3, True), (5, False), (8, False)]
+    assert F.passage(f, 4.0) == (1, 0.5)                      # half way through the held film
+    assert F.passage(f, 6.5)[0] == 2                          # morphing from its last frame to the next picture
+    film = F.Film(f)
+    inner = F.Film(F.load("inner"), 256, 1, aspect="4:3")
+    assert np.allclose(film.morph(4.0), film._fit(inner.frame(1.0), film.W, film.H), atol=1e-5)
+    assert np.allclose(film.stills[2], film._fit(inner.frame(2.0), film.W, film.H), atol=1e-5)
+    assert film.even() and film.table[1][0].tolist() == [0.0, 1.0]   # the held film keeps its own pace
+    # The morph lands on the held film's own frame, so nothing jumps where the film starts or ends.
+    arrive, leave = film.morph(3.0 - 1e-6), film.morph(5.0 + 1e-6)
+    assert np.allclose(arrive, film._fit(inner.frame(0.0), film.W, film.H), atol=2e-3)
+    assert np.allclose(leave, film._fit(inner.frame(2.0), film.W, film.H), atol=2e-3)
+
+
+def test_a_held_film_is_refused_where_it_overlaps_or_holds_itself(ds):
+    _inner()
+    with pytest.raises(ValueError, match="past the next key"):
+        F.normalised(_spec(pictures=[{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:inner"},
+                                     {"t": 4, "ref": "synth:3"}]))
+    with pytest.raises(ValueError, match="cannot hold itself"):
+        F.normalised(_spec(name="inner", pictures=[{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:inner"}]))
+    with pytest.raises(ValueError, match="in before out"):
+        F.normalised(_spec(pictures=[{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:inner", "in": 1.5,
+                                                                      "out": 1.0}, {"t": 9, "ref": "synth:3"}]))
+    F.save({**_spec(name="outer"), "pictures": [{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:inner"}]})
+    nested = {**_spec(name="deep"), "pictures": [{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:outer"}]}
+    assert F.normalised(nested)["pictures"][1]["out"] > 0     # two deep is allowed
+    assert F.stills_of(nested) == ["synth:12", "synth:12", "synth:5", "synth:9"]
+
+
+def test_the_amount_lane_lays_the_look_over_the_morph_bit_by_bit(ds):
+    from arcana.alchemy.pipeline import step_on
+    spec = _spec(looks=[{"t": 0, "settings": {"method": "pixels.detail", "materials": ["synth:7"]}}],
+                 lanes={"amount": [{"t": 0, "v": 0}, {"t": 4, "v": 1}]})
+    f = F.normalised(spec)
+    assert F.look_at(f, 2.0)["amount"] == pytest.approx(0.5)
+    film = F.Film(f)
+    c = film.morph(2.0)
+    full, _ = step_on(c, "k", {**F.look_at(f, 2.0), "amount": 1.0})
+    half, _ = step_on(c, "k", F.look_at(f, 2.0))
+    none, _ = step_on(c, "k", {**F.look_at(f, 2.0), "amount": 0.0})
+    assert np.allclose(none, c, atol=1e-5)
+    assert np.allclose(half, (c + full) / 2, atol=2e-3)
+
+
+def test_a_lane_takes_a_whole_shape_between_two_times():
+    from arcana import ui_film as U
+    s = U.shape_lane({}, "finish.saturation", "wave", -50, 50, 0, 8, 2)
+    keys = s["lanes"]["finish.saturation"]
+    assert [(k["t"], k["v"]) for k in keys] == [(0, -50), (2, 50), (4, -50), (6, 50), (8, -50)]
+    kept = {"lanes": {"finish.exposure": [{"t": 1, "v": 0.2}, {"t": 9, "v": 0.9}]}}
+    s = U.shape_lane(kept, "finish.exposure", "swell", 0, 1, 0, 4)
+    assert [(k["t"], k["v"]) for k in s["lanes"]["finish.exposure"]] == [(0, 0), (2, 1), (4, 0), (9, 0.9)]
+    s = U.shape_lane({}, "amount", "steps", 0, 1, 0, 6, 3)
+    assert [k["v"] for k in s["lanes"]["amount"]] == [0, 0.5, 1, 1] and s["lanes"]["amount"][0]["ease"] == "hold"
+    with pytest.raises(ValueError):
+        U.shape_lane({}, "nothing.here", "rise", 0, 1, 0, 4)
+
+
+def test_a_series_is_laid_after_a_picture_and_moves_what_follows():
+    from arcana import ui_film as U
+    spec = {"pictures": [{"t": 0, "ref": "a"}, {"t": 4, "ref": "b"}]}
+    s, end = U.place_series(spec, ["d1", "d2", "a"], 3, every=3)
+    assert [(p["t"], p["ref"]) for p in s["pictures"]] == [(0, "a"), (3, "d1"), (6, "d2"), (9, "a"), (13, "b")]
+    assert end == 12
+
+
+def test_the_timeline_lists_a_held_film_with_its_length(ds):
+    from arcana import ui_film as U
+    _inner()
+    m = U.meta(_spec(pictures=[{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:inner"}]))
+    assert m["pictures"][1]["film"] == "inner" and m["pictures"][1]["dur"] == 2.0
+    s, t = U.add_picture({"pictures": [{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "synth:7"}]}, "film:inner", 2.0)
+    assert t == 7.0                                          # it would run into the next picture, so it goes last
+    assert "amount" in U.lane_meta(_spec(looks=[{"t": 0, "settings": {"method": "pixels.detail"}}]))[1]
+
+
+def test_derivatives_vary_one_thing_and_are_kept(ds):
+    made = ops.call("alchemy derive", {"picture": "synth:12", "material": ["synth:7"], "method": "pixels.detail",
+                                       "vary": "knob", "knob": "amount", "start": 0.2, "end": 1.0, "count": 3,
+                                       "size": 256})
+    assert len(made.ids) == 3 and all(os.path.isfile(p) for p in made.paths)
+    assert made.labels[0].endswith("0.2") and made.labels[-1].endswith("1")
+    made = ops.call("alchemy derive", {"picture": "synth:12", "method": "tokens.mix", "vary": "material",
+                                       "each": ["synth:7", "synth:3"], "size": 256})
+    assert len(made.ids) == 2
+    with pytest.raises(ops.Refusal, match="same picture every time"):
+        ops.call("alchemy derive", {"picture": "synth:12", "material": ["synth:7"], "method": "pixels.detail",
+                                    "vary": "seed"})
+
+
+def test_steady_spacing_gives_each_passage_the_time_its_change_takes():
+    spec = _spec(loop=False, pictures=[{"t": 0, "ref": "a"}, {"t": 1, "ref": "b"}, {"t": 2, "ref": "c"},
+                                       {"t": 9, "ref": "d"}])
+    f = F.spaced(spec, "even", by="change", changes=([1.0, 3.0, 2.0], 0.0))
+    assert [p["t"] for p in f["pictures"]] == [0, 1.5, 6, 9]          # 1 : 3 : 2 of the nine seconds
+    g = F.spaced(spec, "faster", by="change", changes=([1.0, 3.0, 2.0], 0.0))
+    assert g["pictures"][1]["t"] > 1.5 and g["pictures"][-1]["t"] == 9    # the rate bent, the ends kept
+    h = F.spaced(spec, "even")
+    assert [p["t"] for p in h["pictures"]] == [0, 3, 6, 9]
+
+
+def test_steady_spacing_keeps_a_held_film_whole_and_measures_the_real_change(ds):
+    _inner()
+    spec = _spec(loop=False, pictures=[{"t": 0, "ref": "synth:12"}, {"t": 3, "ref": "film:inner"},
+                                       {"t": 9, "ref": "synth:3"}, {"t": 10, "ref": "synth:7"}])
+    film = F.Film(spec)
+    gaps, back = F.key_changes(film)
+    assert len(gaps) == 3 and all(g > 0 for g in gaps) and back == 0
+    f = F.spaced(spec, "even", by="change")
+    t = [p["t"] for p in f["pictures"]]
+    assert t[0] == 0 and t[-1] == 10 and t[2] - t[1] > 2.0          # the film plays its 2 s, then the morph
+    held = F.normalised(f)["pictures"][1]
+    assert F.span(held) == 2.0
+    morphs = [t[1] - t[0], t[2] - t[1] - 2.0, t[3] - t[2]]
+    assert sum(morphs) == pytest.approx(8.0, abs=1e-2) and min(morphs) > 0

@@ -47,6 +47,11 @@ frames between along the clip's movement, mixed from the key before and the key 
 that draws from noise does not flicker and runs a few times a second of clip instead of on every
 frame. `auto`, the default, takes `keys` for the generative methods and `frame` for the others.
 
+Diffusion stays off clips for now. While a clip plays, a look whose method is generative shows the
+clip as it is, with the look's finish. Carried from key frames, ControlNet still changed on what it
+covers about three times as much as fast handheld footage does (VIDEO_ROADMAP.md, phase 8).
+ARCANA_VIDEO_DIFFUSION=1 turns it back on for tests.
+
 Sound. A clip is heard while it plays, at its speed, unless its key says `"mute": true`; `"gain"` is
 in decibels. The `audio` list places other sounds: `{"t": 0, "ref": "field@audio:212", "gain": -6,
 "fade": [0.5, 2.0], "in": 0, "out": 30}`, a sound or the track of a video, from `t`, faded in and out.
@@ -96,6 +101,15 @@ DEPTH = 2                                    # a film in a film in a film, and n
 TRACK_EVERY = 0.5                            # seconds of a clip between two readings of a model's mask
 TRACK_SIDE = 192                             # the long side the movement between frames is read at
 TEMPORAL = ("auto", "frame", "keys")
+
+
+def diffusion_on_clips() -> bool:
+    """Whether a generative method may run on a playing clip. Off until it holds steady on real footage."""
+    return os.environ.get("ARCANA_VIDEO_DIFFUSION", "0") == "1"
+
+
+def is_diffusion(method) -> bool:
+    return str(method or "").startswith("generative.")
 KEY_MOVE = 0.06                              # a key interval is halved while the clip moves more than this
 KEY_LEAST = 0.125                            # share of the frame across it, down to this many seconds
 REFINE_KEYS = ("feather", "grow", "follow", "ragged", "amount")
@@ -768,6 +782,8 @@ class Film:
         c = self.morph(t)
         look = look_at(self.spec, t)
         k, s = passage(self.spec, t)
+        if self.on_clip(k) and is_diffusion(look.get("method")) and not diffusion_on_clips():
+            look = {**look, "method": "none"}
         if self.by_keys(k, look):
             got = self._propagated(k, s, c)
             if got is not None:
@@ -775,11 +791,15 @@ class Film:
         out, _ = step_on(c, f"film:{id(self)}:{t:.4f}", look, asker=self.asker(t))
         return np.clip(out, 0, 1)
 
+    def on_clip(self, k: int) -> bool:
+        """Whether passage k is a clip playing."""
+        q = self.stops[k]
+        return bool(q["plays"]) and isinstance(self.inner.get(q["key"]), Clip)
+
     def by_keys(self, k: int, look: dict) -> bool:
         """Whether the look at this moment is run on key frames of a playing clip and carried between
         them, instead of on every frame."""
-        q = self.stops[k]
-        if not q["plays"] or not isinstance(self.inner.get(q["key"]), Clip):
+        if not self.on_clip(k):
             return False
         method = str(look.get("method") or "none")
         how = self.spec["temporal"]

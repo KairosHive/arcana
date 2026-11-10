@@ -225,6 +225,28 @@ def test_a_look_runs_on_key_frames_of_a_clip_and_is_carried_between_them(ds, mov
         F.normalised(_spec(moving, pictures=pictures, temporal="often"))
 
 
+def test_diffusion_stays_off_clips_and_the_stills_keep_it(ds, moving, monkeypatch):
+    from arcana.alchemy import pipeline
+
+    ran = []
+
+    def step(c, key, spec, asker=None):
+        ran.append(spec.get("method"))
+        return np.asarray(c, np.float32), None
+
+    monkeypatch.setattr(pipeline, "step_on", step)
+    pictures = [{"t": 0, "ref": "synth:12"}, {"t": 1, "ref": moving, "in": 0, "out": 2}, {"t": 5, "ref": "synth:3"}]
+    look = [{"t": 0, "settings": {"method": "generative.controlnet"}}]
+    film = F.Film(_spec(moving, pictures=pictures, looks=look))
+    film.frame(0.5)                                   # the morph from the first still
+    film.frame(2.0)                                   # the clip playing
+    assert ran == ["generative.controlnet", "none"]
+    monkeypatch.setenv("ARCANA_VIDEO_DIFFUSION", "1")
+    ran.clear()
+    film.frame(1.5)
+    assert ran and all(m == "generative.controlnet" for m in ran)
+
+
 def test_two_carried_keys_mix_by_how_well_each_landed():
     a = np.full((4, 4, 3), 0.2, np.float32)
     b = np.full((4, 4, 3), 0.8, np.float32)

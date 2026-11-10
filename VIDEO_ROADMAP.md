@@ -1177,10 +1177,13 @@ video, then tracked masks and propagated style, then phase 9.
   0.862. A mask read from the word "glasses" overlapped it by 0.829 (lowest
   0.121), and the cross-fade by 0.385. The per-frame detector itself changes
   between neighbouring frames, which lowers that reference.
-- Open. SAM 2's own video propagation, warped noise and previous-frame
-  conditioning (levels 2 and 3 of 3.4) and a video model are still to build.
-  Carried looks still change on what they cover about three times as much as
-  the clip does on fast footage. The audio lane has no page control. Sound from a clip inside a
+- Decision, 10 November 2026. Diffusion methods stay off clips. While a clip
+  plays, a look whose method is generative shows the clip with the look's
+  finish alone, and the Video subtab says so. The non-diffusion methods run
+  on clips, on every frame or carried from keys. `ARCANA_VIDEO_DIFFUSION=1`
+  turns diffusion back on for tests. Phase 9 (warped noise, previous-frame
+  conditioning, a video model) is what would bring it back.
+- Open. SAM 2's own video propagation and the audio lane's page control. Sound from a clip inside a
   held film is left out. The render reads originals at the film's size, and
   scrubbing reads the same files.
 

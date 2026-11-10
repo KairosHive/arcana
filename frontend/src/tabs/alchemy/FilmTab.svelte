@@ -454,6 +454,9 @@
           {#if (film.spec.temporal ?? 'auto') !== 'frame'}<Field label="Key every (s)"><NumberInput value={film.spec.key_every ?? 0.5} min={0.1} max={5} step={0.1} size="sm" width="64px" onchange={(v) => setField('key_every', v)} /></Field>{/if}
           <Checkbox checked={film.spec.sound ?? true} label="sound" onchange={(v) => setField('sound', v)} />
         </div>
+        {#if film.spec.looks.some((l) => String(l.settings?.method ?? '').startsWith('generative.'))}
+          <p class="hint">Diffusion methods stay off clips for now. While a clip plays, a look with one shows the clip with the look's finish alone.</p>
+        {/if}
       {/if}
     </Disclosure>
 

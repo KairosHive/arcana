@@ -984,6 +984,8 @@ class AlchemyFilmSaveArgs(Args):
     "temporal" says how a look meets a playing clip: frame (on every frame),
     keys (on frames every "key_every" seconds, carried between them along the
     clip's movement) or auto, which carries the generative methods.
+    Diffusion methods stay off clips for now: while a clip plays, a look
+    with one shows the clip with the look's finish alone.
     """,
     examples=("alchemy film save --spec " + EXAMPLE_SPEC,))
 def _alchemy_film_save(a: AlchemyFilmSaveArgs, ctx: Context) -> FilmShowResult:

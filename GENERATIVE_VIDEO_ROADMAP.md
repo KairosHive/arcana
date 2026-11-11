@@ -34,6 +34,19 @@ at f60dce3 after the Camera (ICM) commit was merged into it, and 761 tests
 pass. The rebase and merge part of the original Phase 0 is done. New work
 starts from `main`.
 
+### The machines
+
+Arcana runs on any NVIDIA card it can probe, and the generation features
+adapt to the card (section 2, GPU tiers). Two machines are targets.
+
+| Machine | GPU | Architecture | Role |
+|---|---|---|---|
+| Laptop (this one) | RTX 4090 Laptop, 16 GB, driver 610.60 | Ada, sm_89, fp8 compute | Development, the benchmark, the 16 GB tier |
+| Desktop | RTX 3090, 24 GB | Ampere, sm_86, no fp8 compute | The 24 GB tier, checked with the same benchmark runner |
+
+On the 3090, fp8 weights load and are computed in bf16 or fp16, so fp8 saves
+memory there and gains no speed. GGUF weights behave the same on both cards.
+
 ### This machine
 
 | Item | State |
@@ -43,7 +56,7 @@ starts from `main`.
 | ComfyUI | Installed at `Documents\ComfyUI` with ComfyUI-Manager, ComfyUI-GGUF and x-flux. A second, bare checkout is at `Documents\Github\ComfyUI`, and a venv at `comfy-venv`. Neither runs on 127.0.0.1:8188 today. |
 | Video weights in ComfyUI | None. The install holds Flux.1 dev (GGUF), Flux.2 Klein 4B, SD 1.5 with two ControlNets, AnimateDiff v1.4 motion modules, T5-XXL fp8 and Qwen3 4B. |
 
-Every model choice is therefore made for a 16 GB card. The original roadmap
+The 16 GB tier is measured here. The original roadmap
 places Wan 2.2 TI2V-5B in the 24 GB class and LTX at 32 GB and more in its
 standard configuration. On this card both need fp8 or GGUF weights and
 offloading, and the GGUF loader is already installed. A Wan 2.2 14B pair
@@ -163,6 +176,44 @@ stores the graph it actually submitted.
 - Arcana accepts graph templates from its own `workflows/` folder. Agents and
   the page choose presets and set bound values.
 
+### GPU tiers
+
+Each preset holds one or more variants, and each variant states the memory
+and compute it needs. Arcana picks the variant from the card it finds, so the
+same preset name works on a 16 GB laptop, a 24 GB desktop and larger cards.
+
+```json
+{
+  "preset": "nature-subtle",
+  "mode": "animate",
+  "variants": [
+    {"tier": "16", "min_vram_gb": 15, "graph": "wan22-i2v-14b-gguf-q5-4step.json",
+     "needs_fp8_compute": false, "tested_on": ["RTX 4090 Laptop 16 GB"]},
+    {"tier": "24", "min_vram_gb": 23, "graph": "wan22-i2v-14b-fp8-4step.json",
+     "needs_fp8_compute": false, "tested_on": []}
+  ]
+}
+```
+
+The file names above show the shape of a manifest. The benchmark chooses the
+actual models and quantizations.
+
+- The card's total memory and compute capability come from `gpu.hardware()`
+  and `gpu.verdict()`, which already probe through nvidia-smi and torch.
+  ComfyUI's `/system_stats` reports the card it runs on, and Arcana uses that
+  one when the two differ.
+- The richest variant that fits is chosen. The person can pin a variant in
+  settings. A variant that needs fp8 compute is skipped on cards before
+  sm_89.
+- `video presets` shows each variant with its tier, its local state and the
+  cards it was tested on. A variant with an empty `tested_on` list is marked
+  untested and stays out of the defaults.
+- With no usable NVIDIA card, the generation ops are refused through the
+  `gpu` flag, and the rest of Arcana runs as it does today.
+
+Tiers are 16, 24 and 32+. The laptop measures the 16 tier and drafts the 24
+tier. The desktop runs the same benchmark script to mark the 24 tier tested.
+
 ### The GPU lease
 
 The card has 16 GB, and Arcana's own models (the alchemy pipelines, the
@@ -180,9 +231,12 @@ lease decides who holds it.
 
 ## 3. The Creative Director
 
-The person or the agent gives the direction for a whole batch. A planner then
-reads each picture and writes a structured plan, and a compiler turns the plan
-into the prompt for the chosen model family.
+The person or the agent gives the direction for a whole batch. A local
+vision-language model then looks at each picture and writes a structured
+plan, and a compiler turns the plan into the prompt for the chosen model
+family. The vision-language model is the planner on every supported machine.
+The CLIP words described below are a fallback for a machine where it is
+missing or fails to load.
 
 ### Global controls
 
@@ -218,7 +272,11 @@ into the prompt for the chosen model family.
 
 - The planner model runs in `plan_worker.py`, in its own uv environment and
   process, as the omni encoder does. Stopping the process frees its memory
-  before ComfyUI renders.
+  before ComfyUI renders. Planning a batch runs before its renders, so the
+  planner can use most of the card. It has a tier too (a smaller or more
+  quantized model on 16 GB, a larger one on 24 GB), chosen as presets are.
+- The planner returns JSON checked against the plan schema. Invalid output is
+  retried once with the error shown to the model, then the item falls back.
 - With no planner model installed, the plan is built from `item describe`'s
   CLIP words and `captions.py`'s colour names, through a template per
   direction. Each picture still gets its own subjects, and the review screen
@@ -252,8 +310,19 @@ The branch audit is done (section 1). What remains is choosing models.
   first-last-frame workflow, and LTX for I2V, first-last-frame and IC-LoRA
   video-to-video. `VIDEO_ROADMAP.md` named LTX-2.3. The survey confirms the
   versions current today and their licence terms from the model cards.
-- Measure on the 16 GB card, with fp8 or GGUF weights and offloading where
-  needed. Peak memory, first load, warm render, size, fps and length.
+- Measure on the 16 GB card the most capable current pipelines that fit.
+  Candidates include the newest model versions, GGUF (Q8 to Q4) and fp8
+  weights, step-distilled LoRAs that render in 4 to 8 steps, faster attention
+  kernels (SageAttention and its successors), block swapping and
+  torch.compile. Each speed-up is measured against the same model without it,
+  for quality as well as time. Peak memory, first load, warm render, size,
+  fps and length.
+- Draft the 24 GB variants from the same runs (larger quantization or the
+  full fp8 model, longer clips, higher resolution), and write the runner so
+  the desktop measures them with one command.
+- Survey local vision-language models for the planner (Qwen-VL class and its
+  current competitors) on twenty pictures. Quality of the plan, JSON
+  validity, memory and seconds per picture on 16 GB.
 - A benchmark set of 24 to 30 pictures from the person's own datasets, chosen
   by handle and kept as a set (`set save bench-generative ...`), covering
   vegetation, water, cloud and fog, portraits, architecture and texture, in
@@ -274,7 +343,9 @@ The branch audit is done (section 1). What remains is choosing models.
 presets, and the download steps the person runs.
 
 **Gate.** One ComfyUI API-format I2V graph renders on this card from a
-script. Every default preset has a licence entry and a measured memory peak.
+script. Every default preset has a licence entry and a measured memory peak
+on 16 GB, a drafted 24 GB variant, and a planner model chosen for each tier.
+The benchmark runs on another machine with one command.
 
 ---
 
@@ -489,9 +560,9 @@ database, replacing the native morphs, and V2V of any length before Phase 7.
 |---|---|---|
 | 1. Which ComfyUI Arcana talks to | Arcana launches the person's chosen install (`Documents\ComfyUI` here) on demand on a port of its own, so its renders are its own and interrupt is safe. Attaching to a running ComfyUI stays possible, with cancel limited to queued prompts. | Phase 0, by how the person uses ComfyUI outside Arcana |
 | 2. Journal store | State documents written with `write_json`, as the open film is. SQLite only if a batch outgrows them. | Phase 3, at a 200-item batch |
-| 3. Planner model | A local Qwen-VL class model in a worker, with the CLIP words as fallback | Phase 0 survey and Phase 2 gate, by memory beside the renderer |
+| 3. Planner model | A local vision-language model (Qwen-VL class) in a worker, one variant per tier, with the CLIP words as fallback | Phase 0 survey and Phase 2 gate |
 | 4. Destination of a batch | A new board, with the `generated@video` dataset for search | Phase 3 use |
-| 5. Default Animate preset on 16 GB | Decided by the benchmark between a quantized Wan 2.2 and an LTX build that fits | Phase 0 benchmark |
+| 5. Default Animate variant per tier | The best measured quality that renders 5 s in a reasonable time, chosen by the benchmark on 16 GB and checked on the 3090 for 24 GB | Phase 0 benchmark, then the desktop run |
 | 6. Bridge inside the film | A clip key between the two stills, chosen per passage | Phase 5 use |
 
 `VIDEO_ROADMAP.md`'s row "Generative video model, Wan 2.1 VACE through
@@ -504,6 +575,8 @@ diffusers" is replaced by decision 5 and Phase 7 here.
 - The model facts in this plan (sizes, memory classes, licences) come from
   the original roadmap and from `VIDEO_ROADMAP.md`. Phase 0 checks each one
   against the model cards and on this card.
+- The 24 GB variants are drafted on the laptop and count as tested only after
+  the benchmark runs on the 3090.
 - Memory figures for 16 GB are untested. Some candidates may only run with
   offloading slow enough to change the choice of default.
 - The 72 GB of free disk holds about two model families at once.

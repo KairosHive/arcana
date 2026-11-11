@@ -25,7 +25,7 @@ export type Layer = { choice: string; words: string; coverage: number; combine: 
 export const catalog = $state<{ data: Catalog | null; error: string }>({ data: null, error: '' })
 
 /** Which subtab is open, shared so the Archive can open a film in Video and the film can open a look in Image. */
-export const alchemyUi = $state({ sub: 'image' as 'image' | 'video' | 'pattern' | 'colour' })
+export const alchemyUi = $state({ sub: 'image' as 'image' | 'video' | 'pattern' | 'colour', nudge: 0 })
 
 /** Which panel the Image subtab's left column shows: the pictures, or sets and labels. */
 export const alchemyLeft = $state({ pane: 'pictures' as 'pictures' | 'learn' })
@@ -163,9 +163,23 @@ export async function applyRecipe(name: string): Promise<string> {
   return r.doc || ''
 }
 
+/** A step an agent ran (`alchemy preview` or `alchemy make`) onto the stage, its pictures included. */
+export async function showOp(args: Record<string, any>) {
+  const r = await post('/api/alchemy/from-op', { args })
+  await loadCatalog()
+  applyControls(r)
+  if (r.picture) step.roles.T = r.picture
+  save('alchemy.roles', step.roles)
+  alchemyUi.sub = 'image'
+  alchemyUi.nudge++
+}
+
 /** A whole step (a film's look) into the controls: what it does not set goes back to its default. */
 export async function loadStep(settings: Record<string, any>) {
-  const r = await post('/api/alchemy/load', { settings })
+  applyControls(await post('/api/alchemy/load', { settings }))
+}
+
+function applyControls(r: Record<string, any>) {
   if (r.method) chooseMethod(r.method, r.knobs || {})
   step.lead = r.lead ?? 'picture'
   step.zoom = r.zoom ?? 1.0

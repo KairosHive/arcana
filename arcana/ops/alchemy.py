@@ -842,6 +842,9 @@ def _film_of(name: str | None, spec: dict | None, ctx: Context, depth: int = 0) 
     from . import archive
 
     film = _film_mod()
+    if not spec and not name and depth == 0:
+        from . import film as _open
+        spec = _open.current()                   # neither given: the film open in the Video subtab
     spec = spec if spec else film.load(name) if name else None
     if spec is None:
         raise ValueError("Name a kept film, or give one with --spec.")

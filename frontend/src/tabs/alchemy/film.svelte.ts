@@ -1,8 +1,11 @@
-// The film: a spec the page edits, kept in this browser between visits, and
-// what the server says about it (length, lanes on offer, labels). Every edit
-// goes through `commit`, which stores the spec and asks for fresh meta.
+// The film: a spec the page edits, and what the server says about it (length,
+// lanes on offer, labels). Every edit goes through `commit`, which stores the
+// spec, asks for fresh meta and sends it to the server as `film set`. The open
+// film lives on the server (state/film.json), so an agent's `film add` or an
+// undo shows here: when the state signature moves, the page reads it back.
 
-import { post, reason } from '../../lib/api/client'
+import { post, reason, rpc } from '../../lib/api/client'
+import { onStateChange } from '../../lib/stores/app.svelte'
 import { load, save } from '../../lib/stores/persist'
 import { toast } from '../../lib/stores/toast.svelte'
 
@@ -67,6 +70,76 @@ export function commit(spec: FilmSpec, sel?: Selection) {
   save('film.spec', film.spec)
   if (metaTimer) clearTimeout(metaTimer)
   metaTimer = setTimeout(refreshMeta, 80)
+  send()
+}
+
+// ─────────────────────────── the film on the server ───────────────────────────
+
+/** JSON with its keys sorted, so two specs that say the same thing compare equal. */
+function canon(x: unknown): string {
+  return JSON.stringify(x, (_k, v) => (v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v))
+}
+
+let sendTimer: ReturnType<typeof setTimeout> | null = null
+let sending = false
+let lastSent = ''
+
+/** Send the spec a moment after the last edit, so a drag sends once. */
+function send() {
+  if (!synced) return
+  if (sendTimer) clearTimeout(sendTimer)
+  sendTimer = setTimeout(flush, 300)
+}
+
+async function flush() {
+  sendTimer = null
+  const body = canon(film.spec)
+  if (body === lastSent) return
+  sending = true
+  try {
+    await rpc('film set', { spec: film.spec })
+    lastSent = body
+  } catch (e) { film.status = reason(e) } finally { sending = false }
+}
+
+/** Take the server's film in place of this page's, keeping the selection where it still points. */
+function adopt(spec: FilmSpec, said = '') {
+  film.spec = normalise(spec)
+  save('film.spec', film.spec)
+  if (film.sel) {
+    const keys = keysOf(clone(film.spec), film.sel.lane)
+    if (!keys || film.sel.i >= keys.length) film.sel = null
+  }
+  if (said) film.status = said
+  lastSent = canon(film.spec)
+  void refreshMeta()
+}
+
+async function pull() {
+  if (sendTimer || sending) return               // this page's own edit is on its way
+  try {
+    const r = await rpc<{ spec: FilmSpec }>('film current')
+    if (sendTimer || sending) return
+    const body = canon(normalise(r.result.spec))
+    if (body !== canon(film.spec)) adopt(r.result.spec, 'The film changed: an agent, the terminal or an undo edited it.')
+    else lastSent = body
+  } catch { /* the next nudge tries again */ }
+}
+
+let synced = false
+
+/** Start following the server's open film. A film kept in this browser from before seeds an empty server. */
+export async function syncFilm() {
+  if (synced) return
+  synced = true
+  try {
+    const r = await rpc<{ spec: FilmSpec }>('film current')
+    const server = r.result.spec
+    if (!(server.pictures ?? []).length && film.spec.pictures.length) await flush()
+    else adopt(server)
+  } catch { /* the page keeps its own film until the server answers */ }
+  onStateChange(() => { void pull() })
 }
 
 export function keysOf(spec: FilmSpec, lane: string): Key[] | undefined {

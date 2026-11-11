@@ -113,7 +113,9 @@ SLOW = {"generate", "colour lut", "alchemy make", "alchemy derive", "board pdf",
         # These start the shared-space encoder; test_spaces.py runs them with a stub.
         "dataset embed", "search across",
         # Needs a video dataset; test_video_colour.py runs the transfer itself.
-        "colour video", "colour deflicker"}
+        "colour video", "colour deflicker",
+        # Needs an audio dataset; test_film_ops.py runs it.
+        "film audio add"}
 NETWORK = {"model download"}
 # Examples that index or rewrite a real folder. test_lifecycle.py runs these
 # ops against the synthetic dataset with the encoding stubbed.

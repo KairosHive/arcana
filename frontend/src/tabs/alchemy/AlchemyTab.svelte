@@ -4,7 +4,8 @@
   import ModalityTag from '../../lib/components/ModalityTag.svelte'
   import { onMount } from 'svelte'
   import { app } from '../../lib/stores/app.svelte'
-  import { catalog, loadCatalog, controls, alchemyUi, alchemyLeft } from './alchemy.svelte'
+  import { catalog, loadCatalog, reloadCatalog, controls, alchemyUi, alchemyLeft } from './alchemy.svelte'
+  import { onStateChange } from '../../lib/stores/app.svelte'
   import { film, addLook } from './film.svelte'
   import Cast from './Cast.svelte'
   import Learn from './Learn.svelte'
@@ -20,7 +21,8 @@
   let stage: Stage | undefined = $state()
   const visible = $derived(app.mode === 'alchemy')
 
-  onMount(() => { loadCatalog() })
+  // A recipe, label or film kept by an agent or the terminal shows in the menus without a reload.
+  onMount(() => { loadCatalog(); return onStateChange(() => { if (catalog.data) void reloadCatalog() }) })
 
   async function look() {
     const msg = await addLook(controls())

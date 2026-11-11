@@ -209,6 +209,28 @@ def _load_step():
         raise BadRequest(str(e))
 
 
+@bp.post("/alchemy/from-op")
+def _from_op():
+    """The step an `alchemy preview` or `alchemy make` ran with, as the stage's control values and its
+    pictures' files: how an agent's step opens on the person's stage."""
+    from ..ops import archive
+    from ..ops.alchemy import AlchemyPreviewArgs, settings_of
+
+    data = body()
+    args = dict(data.get("args") or {})
+    keep = set(AlchemyPreviewArgs.model_fields) - {"view", "size"}
+    try:
+        parsed = AlchemyPreviewArgs(**{k: v for k, v in args.items() if k in keep})
+        out = _ia.settings_controls(settings_of(parsed), whole=True)
+        out["picture"] = archive.resolve_item(parsed.picture, "person").path if parsed.picture else None
+        out["materials"] = [archive.resolve_item(m, "person").path for m in parsed.material]
+        if parsed.weight:
+            out["weights"] = list(parsed.weight)
+    except (ValueError, KeyError, TypeError) as e:
+        raise BadRequest(f"That step cannot open here: {e}")
+    return jsonify(out)
+
+
 @bp.post("/film/frame")
 def _frame():
     data = body()

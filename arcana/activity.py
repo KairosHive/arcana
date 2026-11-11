@@ -26,7 +26,7 @@ _seq = 0
 QUIET = {"orient", "op list", "help", "history", "settings show", "job list", "job show", "job wait",
          "dataset list", "model list", "board list", "alchemy methods", "alchemy memory", "colour methods",
          "style methods", "pattern presets", "alchemy mask presets", "alchemy recipe list", "alchemy film list",
-         "alchemy template list", "archive list"}
+         "alchemy template list", "archive list", "film current"}
 
 
 def note(actor: str, op: str, args: dict, text: str = "", result: dict | None = None) -> int:

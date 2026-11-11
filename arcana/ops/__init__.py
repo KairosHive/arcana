@@ -20,4 +20,4 @@ from .grammar import help_text, parse_line, parse_tokens   # noqa: F401
 from . import system, dataset, search, item, board          # noqa: F401,E402
 from . import effects, colour, style, lifecycle, alchemy, catalogue  # noqa: F401,E402
 from . import sets, labels, lora, material  # noqa: F401,E402
-from . import shared, pattern, sequence                     # noqa: F401,E402
+from . import shared, pattern, sequence, film                    # noqa: F401,E402

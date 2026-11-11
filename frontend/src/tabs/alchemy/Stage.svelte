@@ -3,7 +3,7 @@
   import { toast } from '../../lib/stores/toast.svelte'
   import { app, touch } from '../../lib/stores/app.svelte'
   import { load, save } from '../../lib/stores/persist'
-  import { step, controls, method, materials } from './alchemy.svelte'
+  import { step, controls, method, materials, alchemyUi } from './alchemy.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Select from '../../lib/ui/Select.svelte'
   import Checkbox from '../../lib/ui/Checkbox.svelte'
@@ -67,7 +67,7 @@
   export function draw() { send(true) }
 
   // Redraw when the stage's own inputs change.
-  $effect(() => { step.view; step.size; step.roles.T; step.roles['1']; step.roles['2']; step.roles['3']; changed() })
+  $effect(() => { step.view; step.size; step.roles.T; step.roles['1']; step.roles['2']; step.roles['3']; alchemyUi.nudge; changed() })
 
   async function keep() {
     keeping = true; keepStatus = ''

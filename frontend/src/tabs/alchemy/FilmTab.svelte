@@ -5,7 +5,7 @@
   import { toast } from '../../lib/stores/toast.svelte'
   import { watchJob } from '../../lib/stores/jobs.svelte'
   import { thumbUrl, filmVideoUrl, basename } from '../../lib/api/media'
-  import { film, commit, refreshMeta, addPicture, spacePictures, addLane, addLook, replaceLook, removeLook, lookSummary, removeSelected, newFilm, openFilm, keysOf, clone, sorted, laneValue, shapeLane, placeSeries, isFilmRef, isClipRef, playsRef, FILM_REF, LANE_SHAPES, SPACES, type FilmSpec, type LookSummary } from './film.svelte'
+  import { film, commit, refreshMeta, syncFilm, addPicture, spacePictures, addLane, addLook, replaceLook, removeLook, lookSummary, removeSelected, newFilm, openFilm, keysOf, clone, sorted, laneValue, shapeLane, placeSeries, isFilmRef, isClipRef, playsRef, FILM_REF, LANE_SHAPES, SPACES, type FilmSpec, type LookSummary } from './film.svelte'
   import { controls, loadStep, alchemyUi, catalog, method as methodOf, step } from './alchemy.svelte'
   import Timeline from './Timeline.svelte'
   import Card from '../../lib/ui/Card.svelte'
@@ -277,7 +277,7 @@
     if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
   }
 
-  onMount(() => { refreshMeta(); listFilms(); return onStateChange(listFilms) })
+  onMount(() => { void syncFilm(); refreshMeta(); listFilms(); return onStateChange(listFilms) })
 </script>
 
 <svelte:window onkeydown={key} />

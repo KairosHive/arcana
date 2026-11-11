@@ -9,6 +9,7 @@
 import { get, session } from '../api/client'
 import { app, pollState, setDataset, setMode } from './app.svelte'
 import { load, save } from './persist'
+import { alchemyUi, showOp } from '../../tabs/alchemy/alchemy.svelte'
 
 export type Activity = { seq: number; t: number; actor: string; op: string; args: Record<string, any>; summary: string; result: Record<string, any> }
 
@@ -53,7 +54,11 @@ export function show(a: Activity): boolean {
   }
   if (a.op.startsWith('board ') || a.op === 'colour harmonize') { setMode('moodboard'); return true }
   if (a.op.startsWith('dataset ')) { setMode('datasets'); return true }
-  if (a.op.startsWith('alchemy film') || a.op.startsWith('alchemy recipe')) { setMode('alchemy'); return true }
+  if (a.op.startsWith('film ') || a.op.startsWith('alchemy film')) { setMode('alchemy'); alchemyUi.sub = 'video'; return true }
+  if (a.op.startsWith('alchemy recipe')) { setMode('alchemy'); return true }
+  if (a.op === 'alchemy preview' || (a.op === 'alchemy make' && !a.result?.path)) {
+    setMode('alchemy'); void showOp(a.args); return true
+  }
   if (a.result?.path || ['pattern make', 'sequence make', 'colour video', 'colour transfer', 'style transfer', 'generate', 'alchemy make'].includes(a.op)) {
     setMode('archive'); return true
   }

@@ -24,7 +24,8 @@ ROLES = ("T", "1", "2", "3")
 ROLE_COLOUR = {"T": _ui.ROLE_TARGET, "1": _ui.ACCENT, "2": "#b08d57", "3": "#7c8f8a"}
 LAYERS = 3
 WORDS, CUSTOM = "__words", "__custom"
-FAMILY_LABEL = {"pixels": "Pixels", "tokens": "Tokens", "colour": "Colour", "generative": "Generative"}
+FAMILY_LABEL = {"pixels": "Pixels", "camera": "Camera (ICM)", "tokens": "Tokens", "colour": "Colour",
+                "generative": "Generative"}
 REFINE = [  # (key, label, lo, hi, step, default, doc)
     ("feather", "feather", 0, 40, 1, 4.0, "how soft the edge is, in pixels at 768"),
     ("grow", "grow", -40, 40, 1, 0.0, "the edge moved out (more) or in (less), in pixels at 768"),

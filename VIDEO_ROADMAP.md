@@ -683,12 +683,11 @@ running app. The page polls `/api/state` every two seconds and reloads boards,
 collection and settings when a signature moves. FilmTab re-lists films and
 ArchiveTab reloads while visible.
 
-**What stays stale today.** Search, story and map results, Moodboard
+**What stayed stale before phase 2.** Search, story and map results, Moodboard
 similarity results, the Alchemy stage and its controls, the recipe list, and
-the open film, which lives in localStorage (`film.svelte.ts:34`). The film spec
-edits (`/film/add`, `space`, `lane`, `look*`, `meta`) are functions in
-`ui_film.py` outside the ops registry, so the agent edits a film only by
-saving a whole spec.
+the open film, which lived in localStorage. The film and recipe parts are
+built (see Status, Phase 2). Search results, map results and the stage
+settings remain in the browser.
 
 **The plan.**
 
@@ -988,8 +987,32 @@ clips in the sandbox.
   something rendered in the Archive.
 - In the page, a search sent as an agent appeared in the strip within three
   seconds, and Show ran it.
-- Open. The film timeline, the Alchemy stage and the recipe list still keep
-  their state in the browser, and film edits are still outside the ops.
+- The open film lives on the server, in `state/film.json`. `arcana/ops/film.py`
+  holds its ops. `film current` reads it. `film open` starts one or opens a
+  kept film, and `film keep` keeps it under a name. `film add`, `film remove`,
+  `film lane`, `film look` and `film audio add` edit it one key at a time, and
+  `film set` replaces the whole spec. Each edit is one undo step for the actor
+  who made it and moves the state signature. The agent names pictures and
+  clips by handle, and file paths are refused from it.
+- `alchemy film show`, `preview` and `make` use the open film when they are
+  given no name and no spec.
+- The Video subtab sends each edit as `film set` 300 ms after the last change,
+  so a drag sends once. When the signature moves it reads `film current` and
+  takes the server's film, keeping its own while an edit of its own is on the
+  way. A film kept in the browser from before seeds an empty server film.
+- An agent's `alchemy preview` opens on the person's stage with its method,
+  knobs, picture and materials, through `/api/alchemy/from-op`. A film op in
+  the strip opens the Video subtab. The recipe and label menus reload when the
+  signature moves.
+- In the page, a `film add` sent from outside the page's code appeared on the
+  open timeline within 2.5 s (three keys became four), and `undo` took it back
+  to three.
+- Open. The page sends its edits as a whole spec, so a person's edit is one
+  `film set` in the history where an agent's is a named op. The search query,
+  its results and the stage settings stay in the browser, so an agent's
+  `search text` appears through the Show button. Streaming preview frames to
+  the stage and a parity test that maps every page control to an op are still
+  to build.
 
 **Phase 4, proxies.** A file a browser cannot decode (10-bit, 4:2:2, HEVC,
 ProRes, mkv, avi) plays through an H.264 proxy made on first request and kept

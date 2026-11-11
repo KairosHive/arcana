@@ -658,6 +658,11 @@ pattern is JSON beside the film's lanes.
 
 ## 3.6 Morphs between videos and generative video
 
+The generated in-between and video-to-video diffusion now run through
+ComfyUI, as `video bridge` and `video transform` in
+`GENERATIVE_VIDEO_ROADMAP.md`, with `video animate` for single pictures. The
+token morphs and motion transfer below stay native.
+
 - **Synchronous token morph.** Two clips play together and each output frame
   decodes a mix of their token grids, weighted by a lane. This is the existing
   film morph with grids that change over time, in the DINOv2 and FLUX.2 VAE
@@ -1219,7 +1224,7 @@ video, then tracked masks and propagated style, then phase 9.
 | Learned dynamics vector | motion lines from a local VLM, since the text doubles as evidence under each result | the dynamics probe |
 | Cut detector | PySceneDetect by default, TransNetV2 when a GPU is present | a count of missed dissolves on real footage |
 | Follow the agent | off by default, with the activity strip always on | use |
-| Generative video model | Wan 2.1 VACE through diffusers | VRAM and quality on this machine, licence terms on the model cards |
+| Generative video model | through ComfyUI, chosen by the benchmark of `GENERATIVE_VIDEO_ROADMAP.md` Phase 0 | memory and quality on the 16 GB card, licence terms on the model cards |
 | Where pattern editing lives | a pattern lane and panel in the Alchemy Video subtab, beside the film's other lanes | use |
 | Default temporal integration for diffusion looks | keyframe and propagate | the flicker measurement of phase 9 |
 
